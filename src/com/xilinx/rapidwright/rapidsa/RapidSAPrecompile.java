@@ -37,8 +37,7 @@ import com.xilinx.rapidwright.edif.EDIFNet;
 import com.xilinx.rapidwright.edif.EDIFNetlist;
 import com.xilinx.rapidwright.edif.EDIFPort;
 import com.xilinx.rapidwright.edif.EDIFTools;
-import com.xilinx.rapidwright.rapidsa.components.GEMMTile;
-import com.xilinx.rapidwright.rapidsa.components.RapidComponent;
+import com.xilinx.rapidwright.rapidsa.components.*;
 import com.xilinx.rapidwright.util.ArrayBuilderSLRCrossingCreator;
 import com.xilinx.rapidwright.util.FileTools;
 import com.xilinx.rapidwright.util.PerformanceExplorer;
@@ -100,14 +99,14 @@ public class RapidSAPrecompile {
 
     private static final List<RapidComponent> COMPONENTS = Collections.unmodifiableList(
             Arrays.asList(
-                    new GEMMTile(4, 4)
-//                    new EdgeBufferTile(4, EdgeBufferTile.Type.WEIGHT),
-//                    new EdgeBufferTile(4, EdgeBufferTile.Type.INPUT),
-//                    new DrainTile(4, 16),
-//                    new ReluTile(4, 8)
-//                    new BufferTile(4, 8)
-//                    new MM2SNOCChannel(),
-//                    new S2MMNOCChannel()
+                    new GEMMTile(4, 4),
+                    new EdgeBufferTile(4, EdgeBufferTile.Type.WEIGHT),
+                    new EdgeBufferTile(4, EdgeBufferTile.Type.INPUT),
+                    new DrainTile(4, 16),
+                    new ReluTile(4, 8),
+                    new BufferTile(4, 8),
+                    new MM2SNOCChannel(),
+                    new S2MMNOCChannel()
             )
     );
 
@@ -140,7 +139,7 @@ public class RapidSAPrecompile {
     }
 
     private static void compileSLRCrossingArtifacts(String compOutputDir, Part part, RapidComponent component,
-                                                    double clkPeriod) {
+                                                    double clkPeriod, boolean singlePerfExplorerRun) {
         if (!component.shouldCompileSLRCrossing()) {
             return;
         }
@@ -188,7 +187,8 @@ public class RapidSAPrecompile {
                 component.getSLRCrossingPBlock(),
                 clkPeriod,
                 REUSE_PE_RESULTS,
-                DISABLE_SLR_CROSSING_HOLD_TIMING);
+                DISABLE_SLR_CROSSING_HOLD_TIMING,
+                singlePerfExplorerRun);
     }
 
     private static void compileCombinedGEMMSLRCrossingSynth(Part part, String compOutputDir,
@@ -447,11 +447,22 @@ public class RapidSAPrecompile {
     }
 
     public static void precompileRapidSAComponents(String outputDirectory, Part part, double clkPeriod) {
-        precompileRapidSAComponents(outputDirectory, part, clkPeriod, false);
+        precompileRapidSAComponents(outputDirectory, part, clkPeriod, false, false);
     }
 
     public static void precompileRapidSAComponents(String outputDirectory, Part part, double clkPeriod,
                                                    boolean slrCrossingsOnly) {
+        precompileRapidSAComponents(outputDirectory, part, clkPeriod, slrCrossingsOnly, false);
+    }
+
+    /**
+     * @param singlePerfExplorerRun when true, the PerformanceExplorer pass runs
+     *        a single Explore/Explore implementation at clock uncertainty 0.0
+     *        (run dir {@code Explore_Explore_0}) instead of the full cross
+     *        product of placer/router directives and clock-uncertainty sweep.
+     */
+    public static void precompileRapidSAComponents(String outputDirectory, Part part, double clkPeriod,
+                                                   boolean slrCrossingsOnly, boolean singlePerfExplorerRun) {
         FileTools.makeDirs(outputDirectory);
         outputDirectory = new File(outputDirectory).getAbsolutePath();
         for (RapidComponent component : COMPONENTS) {
@@ -459,7 +470,7 @@ public class RapidSAPrecompile {
             String compOutputDir = outputDirectory + File.separator + component.getComponentName();
             FileTools.makeDir(compOutputDir);
             if (slrCrossingsOnly) {
-                compileSLRCrossingArtifacts(compOutputDir, part, component, clkPeriod);
+                compileSLRCrossingArtifacts(compOutputDir, part, component, clkPeriod, singlePerfExplorerRun);
                 continue;
             }
 
@@ -488,13 +499,19 @@ public class RapidSAPrecompile {
             }
             PerformanceExplorer pe = new PerformanceExplorer(d, peRunDir, component.getClkName(), clkPeriod);
 
-            pe.setMinClockUncertainty(DEFAULT_MIN_CLK_UNCERT);
-            pe.setMaxClockUncertainty(DEFAULT_MAX_CLK_UNCERT);
-            pe.setClockUncertaintyStep(DEFAULT_STEP_CLK_UNCERT);
-            pe.updateClockUncertaintyValues();
+            if (singlePerfExplorerRun) {
+                pe.setPlacerDirectives(Collections.singletonList(PlacerDirective.Explore));
+                pe.setRouterDirectives(Collections.singletonList(RouterDirective.Explore));
+                pe.setClockUncertaintyValues(Collections.singletonList(0.0));
+            } else {
+                pe.setMinClockUncertainty(DEFAULT_MIN_CLK_UNCERT);
+                pe.setMaxClockUncertainty(DEFAULT_MAX_CLK_UNCERT);
+                pe.setClockUncertaintyStep(DEFAULT_STEP_CLK_UNCERT);
+                pe.updateClockUncertaintyValues();
 
-            pe.setPlacerDirectives(DEFAULT_PLACE_DIRECTIVES);
-            pe.setRouterDirectives(DEFAULT_ROUTE_DIRECTIVES);
+                pe.setPlacerDirectives(DEFAULT_PLACE_DIRECTIVES);
+                pe.setRouterDirectives(DEFAULT_ROUTE_DIRECTIVES);
+            }
             pe.setVivadoPath(DEFAULT_VIVADO);
             pe.setContainRouting(true);
             pe.setBaseClockUncertainty(0.3);
@@ -535,7 +552,7 @@ public class RapidSAPrecompile {
             // without further surgery.
             cleanPnrCheckpoint(compOutputDir + File.separator + PNR_DCP_NAME);
 
-            compileSLRCrossingArtifacts(compOutputDir, part, component, clkPeriod);
+            compileSLRCrossingArtifacts(compOutputDir, part, component, clkPeriod, singlePerfExplorerRun);
         }
     }
 

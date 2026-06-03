@@ -85,6 +85,7 @@ public class RapidSA {
         OptionParser parser = new OptionParser();
         parser.accepts("precompile", "Run precompilation of all RapidSA components and exit");
         parser.accepts("precompile-slr-crossings-only", "Generate only SLR crossing artifacts for applicable precompiled RapidSA components and exit");
+        parser.accepts("precompile-no-explore", "When precompiling, run a single Explore/Explore PerformanceExplorer implementation (clk uncertainty 0.0) instead of the full 60-run sweep");
         parser.accepts("rows", "Number of GEMM tile rows in the systolic array").withRequiredArg().ofType(Integer.class).defaultsTo(8);
         parser.accepts("cols", "Number of GEMM tile columns in the systolic array").withRequiredArg().ofType(Integer.class).defaultsTo(8);
         parser.accepts("route", "After building the array, run RWRoute partial route + HoldFixer in-process and write a routed DCP");
@@ -111,12 +112,14 @@ public class RapidSA {
         }
 
         if (options.has("precompile-slr-crossings-only")) {
-            RapidSAPrecompile.precompileRapidSAComponents("RapidSA", part, 2.0, true);
+            RapidSAPrecompile.precompileRapidSAComponents("RapidSA", part, 2.0, true,
+                    options.has("precompile-no-explore"));
             return;
         }
 
         if (options.has("precompile")) {
-            RapidSAPrecompile.precompileRapidSAComponents("RapidSA", part, 2.0);
+            RapidSAPrecompile.precompileRapidSAComponents("RapidSA", part, 2.0, false,
+                    options.has("precompile-no-explore"));
             return;
         }
 

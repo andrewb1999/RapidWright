@@ -352,12 +352,19 @@ public class ArrayBuilderSLRCrossingCreator {
         return bestCandidate;
     }
 
-    private static void explorePerformance(Design design, String runDirectory, boolean reuse, double clkPeriod) {
+    private static void explorePerformance(Design design, String runDirectory, boolean reuse, double clkPeriod,
+                                           boolean noExplore) {
         PerformanceExplorer pe = new PerformanceExplorer(design, runDirectory, "clk", clkPeriod);
-        pe.setMinClockUncertainty(DEFAULT_MIN_CLK_UNCERT);
-        pe.setMaxClockUncertainty(DEFAULT_MAX_CLK_UNCERT);
-        pe.setClockUncertaintyStep(DEFAULT_STEP_CLK_UNCERT);
-        pe.updateClockUncertaintyValues();
+        if (noExplore) {
+            pe.setPlacerDirectives(Arrays.asList(PlacerDirective.Explore));
+            pe.setRouterDirectives(Arrays.asList(RouterDirective.Explore));
+            pe.setClockUncertaintyValues(Arrays.asList(0.0));
+        } else {
+            pe.setMinClockUncertainty(DEFAULT_MIN_CLK_UNCERT);
+            pe.setMaxClockUncertainty(DEFAULT_MAX_CLK_UNCERT);
+            pe.setClockUncertaintyStep(DEFAULT_STEP_CLK_UNCERT);
+            pe.updateClockUncertaintyValues();
+        }
         pe.setBaseClockUncertainty(DEFAULT_BASE_CLK_UNCERT);
         pe.setGetBestPerPBlock(true);
         pe.setReusePreviousResults(reuse);
@@ -403,6 +410,22 @@ public class ArrayBuilderSLRCrossingCreator {
                                          String outputPath, PBlock pblockOverride,
                                          double clkPeriod, boolean reusePreviousResults,
                                          boolean disableHoldTiming) {
+        createSLRCrossing(kernelDesign, topDesign, sideMap, topInstName, bottomInstName,
+                outputPath, pblockOverride, clkPeriod, reusePreviousResults, disableHoldTiming, false);
+    }
+
+    /**
+     * @param noExplore when true, the PerformanceExplorer pass runs a single
+     *        Explore/Explore implementation at clock uncertainty 0.0 instead of
+     *        the full cross product of placer/router directives and the
+     *        clock-uncertainty sweep.
+     */
+    public static void createSLRCrossing(Design kernelDesign, Design topDesign,
+                                         Map<EDIFPort, PBlockSide> sideMap,
+                                         String topInstName, String bottomInstName,
+                                         String outputPath, PBlock pblockOverride,
+                                         double clkPeriod, boolean reusePreviousResults,
+                                         boolean disableHoldTiming, boolean noExplore) {
         if (!kernelDesign.getDevice().getName().equals("xcv80")) {
             System.out.println("SLRCrossing creator currently only tested for xcv80");
         }
@@ -527,7 +550,7 @@ public class ArrayBuilderSLRCrossingCreator {
         addNoReplicateConstraintsForSLRCrossingNets(topDesign, topInstName, bottomInstName);
 
         String runDirectory = Paths.get(outputPath).getParent().resolve(PE_RUN_DIR).toString();
-        explorePerformance(topDesign, runDirectory, reusePreviousResults, clkPeriod);
+        explorePerformance(topDesign, runDirectory, reusePreviousResults, clkPeriod, noExplore);
         Design bestDesign = Design.readCheckpoint(Paths.get(runDirectory, "pblock0_best.dcp").toString());
         EDIFTools.removeVivadoBusPreventionAnnotations(bestDesign.getNetlist());
         removePEClockBUFGCE(bestDesign);
