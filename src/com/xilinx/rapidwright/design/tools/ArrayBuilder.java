@@ -1168,8 +1168,8 @@ public class ArrayBuilder {
 
             PartialRouter.routeDesignPartialNonTimingDriven(array, pinsToRoute);
         } else if (config.isRouteDesign()) {
-            t.stop().start("Route Design");
-            PartialRouter.routeDesignWithUserDefinedArguments(array, new String[]{
+            t.stop().start("Route design");
+            PartialCUFR.routeDesignWithUserDefinedArguments(array, new String[]{
                     "--fixBoundingBox",
                     "--useUTurnNodes",
                     "--nonTimingDriven",
