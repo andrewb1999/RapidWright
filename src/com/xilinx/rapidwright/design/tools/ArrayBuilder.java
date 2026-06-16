@@ -61,7 +61,6 @@ import com.xilinx.rapidwright.edif.EDIFPortInst;
 import com.xilinx.rapidwright.edif.EDIFTools;
 import com.xilinx.rapidwright.placer.blockplacer.Point;
 import com.xilinx.rapidwright.edif.EDIFValueType;
-import com.xilinx.rapidwright.rwroute.HoldFixer;
 import com.xilinx.rapidwright.rwroute.PartialCUFR;
 import com.xilinx.rapidwright.rwroute.PartialRouter;
 import com.xilinx.rapidwright.tests.CodePerfTracker;
@@ -1175,11 +1174,6 @@ public class ArrayBuilder {
                     "--useUTurnNodes",
                     "--nonTimingDriven",
             });
-
-            // Fix hold violations
-            t.stop().start("Fix Hold Violations");
-            HoldFixer holdFixer = new HoldFixer(array, getTopClockName());
-            holdFixer.fixHoldViolations();
         }
     }
 

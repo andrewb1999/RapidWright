@@ -48,7 +48,6 @@ import com.xilinx.rapidwright.edif.EDIFNetlist;
 import com.xilinx.rapidwright.edif.EDIFPort;
 import com.xilinx.rapidwright.edif.EDIFPortInst;
 import com.xilinx.rapidwright.edif.EDIFTools;
-import com.xilinx.rapidwright.rapidsa.RapidSAPrecompile;
 import joptsimple.OptionParser;
 import joptsimple.OptionSet;
 
@@ -82,6 +81,7 @@ public class ArrayBuilderSLRCrossingCreator {
     private static final double DEFAULT_SLR_CROSSING_MAX_DELAY = 1.600;
     private static final double DEFAULT_SLR_CROSSING_MIN_DELAY = 0.250;
     private static final int MAX_SLR_CROSSING_PBLOCK_SEPARATION_ROWS = 200;
+    public static final String DEFAULT_HD_CLK_SRC = "BUFGCE_X2Y0";
 
     private static OptionParser createOptionParser() {
         return new OptionParser() {
@@ -578,10 +578,10 @@ public class ArrayBuilderSLRCrossingCreator {
         EDIFNet clkInNet = topCell.createNet(PE_CLOCK_INPUT_NET_NAME);
         clkInNet.addPortInst(clkPortInst);
 
-        Site bufgSite = design.getDevice().getSite(RapidSAPrecompile.DEFAULT_HD_CLK_SRC);
+        Site bufgSite = design.getDevice().getSite(DEFAULT_HD_CLK_SRC);
         if (bufgSite == null) {
             throw new RuntimeException("Unable to find PE BUFG site "
-                    + RapidSAPrecompile.DEFAULT_HD_CLK_SRC);
+                    + DEFAULT_HD_CLK_SRC);
         }
         Cell bufg = ArrayBuilder.createBUFGCE(design, topCell, PE_CLOCK_BUFG_NAME, bufgSite);
 
