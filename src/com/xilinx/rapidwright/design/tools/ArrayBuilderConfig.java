@@ -78,6 +78,12 @@ public class ArrayBuilderConfig {
 
     private boolean routeDesign;
 
+    private boolean flipPlacementHorizontally;
+
+    private int columnOffset;
+
+    private int rowOffset;
+
     private String sideMapFile;
 
     private String workDir;
@@ -129,6 +135,8 @@ public class ArrayBuilderConfig {
         routeClock = true;
         routeDesign = false;
         reuseResults = false;
+        columnOffset = 0;
+        rowOffset = 0;
         pblockStrings = null;
         workDir = "ArrayBuilder-" + FileTools.getTimeStamp().replace(" ", "-");
     }
@@ -300,7 +308,6 @@ public class ArrayBuilderConfig {
 
         return "array.dcp";
     }
-
 
     public void setKernelDesign(Design kernelDesign) {
         this.kernelDesign = kernelDesign;
@@ -476,5 +483,29 @@ public class ArrayBuilderConfig {
 
     public void setReuseResults(boolean reuseResults) {
         this.reuseResults = reuseResults;
+    }
+
+    public boolean isFlipPlacementHorizontally() {
+        return flipPlacementHorizontally;
+    }
+
+    public void setFlipPlacementHorizontally(boolean flipPlacementHorizontally) {
+        this.flipPlacementHorizontally = flipPlacementHorizontally;
+    }
+
+    public int getColumnOffset() {
+        return columnOffset;
+    }
+
+    public void setColumnOffset(int columnOffset) {
+        this.columnOffset = columnOffset;
+    }
+
+    public int getRowOffset() {
+        return rowOffset;
+    }
+
+    public void setRowOffset(int rowOffset) {
+        this.rowOffset = rowOffset;
     }
 }

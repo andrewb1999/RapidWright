@@ -23,25 +23,6 @@
 
 package com.xilinx.rapidwright.design.tools;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Queue;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-
 import com.xilinx.rapidwright.design.Cell;
 import com.xilinx.rapidwright.design.ClockTools;
 import com.xilinx.rapidwright.design.Design;
@@ -60,11 +41,13 @@ import com.xilinx.rapidwright.design.blocks.PBlockGenerator;
 import com.xilinx.rapidwright.design.blocks.PBlockRange;
 import com.xilinx.rapidwright.design.blocks.PBlockSide;
 import com.xilinx.rapidwright.device.BEL;
+import com.xilinx.rapidwright.device.SiteTypeEnum;
 import com.xilinx.rapidwright.device.ClockRegion;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.Series;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.device.Tile;
+import com.xilinx.rapidwright.eco.ECOPlacementHelper;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.edif.EDIFCellInst;
 import com.xilinx.rapidwright.edif.EDIFDirection;
@@ -74,6 +57,7 @@ import com.xilinx.rapidwright.edif.EDIFNet;
 import com.xilinx.rapidwright.edif.EDIFPort;
 import com.xilinx.rapidwright.edif.EDIFPortInst;
 import com.xilinx.rapidwright.edif.EDIFTools;
+import com.xilinx.rapidwright.placer.blockplacer.Point;
 import com.xilinx.rapidwright.edif.EDIFValueType;
 import com.xilinx.rapidwright.rwroute.PartialCUFR;
 import com.xilinx.rapidwright.rwroute.PartialRouter;
@@ -83,8 +67,26 @@ import com.xilinx.rapidwright.util.MessageGenerator;
 import com.xilinx.rapidwright.util.Pair;
 import com.xilinx.rapidwright.util.PerformanceExplorer;
 import com.xilinx.rapidwright.util.VivadoTools;
-
 import joptsimple.OptionParser;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static com.xilinx.rapidwright.util.Utils.isBRAM;
 import static com.xilinx.rapidwright.util.Utils.isDSP;
@@ -95,6 +97,9 @@ import static com.xilinx.rapidwright.util.Utils.isSLICE;
  * implementation in an array across the fabric.
  */
 public class ArrayBuilder {
+
+    private static final Set<SiteTypeEnum> VALID_CENTROID_SITE_TYPES =
+            new HashSet<>(Arrays.asList(SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM));
 
     private Design kernelDesign;
 
@@ -114,6 +119,17 @@ public class ArrayBuilder {
 
     private Map<ModuleInst, Site> newPlacementMap;
 
+    private Map<Pair<Integer, Integer>, Site> logicalToCentroidMap;
+
+    /**
+     * Bounding boxes of all GEMM tile and SLR-crossing module instances placed by
+     * {@link #placeModuleInstancesAutomatically}. Retained here because
+     * {@link #createArray()} calls {@code array.flattenDesign()} after placement,
+     * which collapses the corresponding {@code ModuleInst}s and makes
+     * {@code array.getModuleInsts()} no longer expose them.
+     */
+    private List<RelocatableTileRectangle> placedArrayBoundingBoxes;
+
     private List<Module> modules;
 
     private List<String> modInstNames;
@@ -122,9 +138,13 @@ public class ArrayBuilder {
 
     public ArrayBuilder(ArrayBuilderConfig config) {
         newPlacementMap = new HashMap<>();
+        logicalToCentroidMap = new HashMap<>();
+        placedArrayBoundingBoxes = new ArrayList<>();
         modInstNames = new ArrayList<>();
         modules = new ArrayList<>();
         this.config = config;
+        this.t = new CodePerfTracker(ArrayBuilder.class.getName());
+        this.t.start("Init");
     }
 
     public ArrayBuilder(ArrayBuilderConfig config, CodePerfTracker t) {
@@ -186,7 +206,31 @@ public class ArrayBuilder {
         return newPlacementMap;
     }
 
-    private void initializeArrayBuilder() {
+    public Map<Pair<Integer, Integer>, Site> getLogicalToCentroidMap() {
+        return logicalToCentroidMap;
+    }
+
+    /**
+     * Bounding boxes of all GEMM tile and SLR-crossing module instances that were
+     * placed during {@link #createArray()}. Use this from downstream placement
+     * passes (e.g. peripheral edge buffers) instead of {@code Design.getModuleInsts()},
+     * which loses these entries after the post-placement {@code flattenDesign()}.
+     */
+    public List<RelocatableTileRectangle> getPlacedArrayBoundingBoxes() {
+        return placedArrayBoundingBoxes;
+    }
+
+    private Site getModuleInstCentroid(ModuleInst mi) {
+        List<Point> points = new ArrayList<>();
+        for (SiteInst si : mi.getSiteInsts()) {
+            Tile t = si.getTile();
+            points.add(new Point(t.getColumn(), t.getRow()));
+        }
+        return ECOPlacementHelper.getCentroidOfPoints(
+                array.getDevice(), points, VALID_CENTROID_SITE_TYPES);
+    }
+
+    public void initializeArrayBuilder() {
         assert (config.getKernelDesign() != null);
 
         kernelDesign = config.getKernelDesign();
@@ -426,7 +470,7 @@ public class ArrayBuilder {
         return modules;
     }
 
-    private List<Pair<Pair<Integer, Integer>, String>> calculateIdealArrayPlacement() {
+    private ArrayNetlistGraph.IdealArrayPlacement calculateIdealArrayPlacement() {
         t.stop().start("Calculate ideal array placement");
         // Find instances in existing design
         modInstNames = getMatchingModuleInstanceNames(modules.get(0), array);
@@ -439,23 +483,12 @@ public class ArrayBuilder {
             sideMap = InlineFlopTools.parseSideMap(getKernelDesign().getNetlist(), config.getSideMapFile());
         }
         setCondensedGraph(new ArrayNetlistGraph(array, modInstNames, sideMap));
-        Map<Pair<Integer, Integer>, String> idealPlacement =
+        ArrayNetlistGraph.IdealArrayPlacement idealPlacement =
                 getCondensedGraph().getGreedyPlacementGrid();
-        return idealPlacement.entrySet().stream()
-                .map((e) -> new Pair<>(e.getKey(), e.getValue()))
-                .sorted((p1, p2) -> {
-                    Pair<Integer, Integer> pa = p1.getFirst();
-                    Pair<Integer, Integer> pb = p2.getFirst();
-                    if (!Objects.equals(pa.getSecond(), pb.getSecond())) {
-                        return pa.getSecond().compareTo(pb.getSecond());
-                    }
-
-                    return pa.getFirst().compareTo(pb.getFirst());
-                })
-                .collect(Collectors.toList());
+        return idealPlacement;
     }
 
-    private List<Pair<Pair<Integer, Integer>, String>> prepareArrayForPlacement() {
+    private ArrayNetlistGraph.IdealArrayPlacement prepareArrayForPlacement() {
         Path workDir = Paths.get(config.getWorkDir());
         if (!config.isSkipImpl()) {
             modules = implementKernel(workDir);
@@ -501,24 +534,15 @@ public class ArrayBuilder {
             modules.add(m);
         }
 
-        // List containing pairs of (x,y) coordinates with the moduleInst name placed at that ideal (x,y) coordinate
-        List<Pair<Pair<Integer, Integer>, String>> idealPlacementList = null;
+        ArrayNetlistGraph.IdealArrayPlacement idealPlacement = null;
         if (getTopDesign() == null) {
             array = new Design("array", getKernelDesign().getPartName());
         } else {
             array = getTopDesign();
-            if (config.getInputPlacementFileName() == null) {
-                idealPlacementList = calculateIdealArrayPlacement();
-            } else {
-                // Placement from file, also still need to find matching module instances
-                modInstNames = getMatchingModuleInstanceNames(modules.get(0), array);
-                if (modInstNames.isEmpty()) {
-                    throw new RuntimeException("Failed to find module instances in top design that match kernel interface");
-                }
-                config.setInstCountLimit(modInstNames.size());
-            }
+            idealPlacement = calculateIdealArrayPlacement();
         }
-        return idealPlacementList;
+
+        return idealPlacement;
     }
 
     private void placeInstancesWithManualPlacementFile() {
@@ -556,69 +580,108 @@ public class ArrayBuilder {
         }
     }
 
-    private void placeModuleInstancesAutomatically(List<Pair<Pair<Integer, Integer>, String>> idealPlacementList) {
-        int placed = 0;
-        ModuleInst curr = null;
-        int i = 0;
-
+    private void placeModuleInstancesAutomatically(ArrayNetlistGraph.IdealArrayPlacement idealPlacement) {
         // TODO: Figure out how to handle placement for multiple modules
         Module module = modules.get(0);
         RelocatableTileRectangle boundingBox = module.getBoundingBox();
         List<RelocatableTileRectangle> boundingBoxes = new ArrayList<>();
         List<List<Site>> validPlacementGrid = getValidPlacementGrid(module);
-        int gridX = 0;
-        int gridY = 5;
-        int lastYCoordinate = 0;
-        boolean searchDown = true;
-        while (placed < config.getInstCountLimit()) {
-            if (curr == null) {
-                String instName = modInstNames == null ? ("inst_" + i) : idealPlacementList.get(i).getSecond();
-                int yCoordinate = idealPlacementList.get(i).getFirst().getSecond();
-                if (yCoordinate > lastYCoordinate) {
-                    gridX = 0;
-                    searchDown = true;
+        Set<Pair<Integer, Integer>> alreadyPlaced = new HashSet<>();
+        Map<Pair<Integer, Integer>, Pair<Integer, Integer>> idealToPhysicalPlacementMap = new HashMap<>();
+        int topLeftPhysicalPlacementX = config.getColumnOffset();
+        int topLeftPhysicalPlacementY = config.getRowOffset();
+        int topRightPhysicalPlacementX = validPlacementGrid.get(topLeftPhysicalPlacementY).size() - 1 - config.getColumnOffset();
+        int numPlaced = 0;
+        for (int x = 0; x < idealPlacement.getArrayWidth(); x++) {
+            for (int y = 0; y < idealPlacement.getArrayHeight(); y++) {
+                boolean searchHorizontally = (y == 0);
+                if (alreadyPlaced.contains(new Pair<>(x, y))) {
+                    // Already placed as part of an SLR crossing module
+                    continue;
                 }
-                lastYCoordinate = yCoordinate;
-                curr = array.createModuleInst(instName, module);
-                i++;
-            }
-            if (gridY >= validPlacementGrid.size()) {
-                throw new RuntimeException("Optimal placement is too tall for device");
-            }
-            if (gridX >= validPlacementGrid.get(gridY).size()) {
-                throw new RuntimeException("Optimal placement is too wide for device");
-            }
-            Site anchor = validPlacementGrid.get(gridY).get(gridX);
-            RelocatableTileRectangle newBoundingBox =
-                    boundingBox.getCorresponding(anchor.getTile(), module.getAnchor().getTile());
-            boolean noOverlap = boundingBoxes.stream().noneMatch((b) -> b.overlaps(newBoundingBox));
-            if (config.isExactPlacement() || (noOverlap && !boundingBoxStraddlesClockRegion(newBoundingBox))) {
-                if (curr.place(anchor, true, false)) {
-                    if (config.isExactPlacement() && (straddlesClockRegion(curr)
-                            || !NetTools.getNetsWithOverlappingNodes(array).isEmpty())
-                    ) {
-                        curr.unplace();
+                String instToPlace = idealPlacement.getInstanceAtLocation(x, y);
+                int physX;
+                int physY;
+                if (x == 0 && y == 0) {
+                    // First element to place
+                    if (config.isFlipPlacementHorizontally()) {
+                        physX = topRightPhysicalPlacementX;
                     } else {
-                        boundingBoxes.add(newBoundingBox);
-                        placed++;
-                        newPlacementMap.put(curr, anchor);
-                        System.out.println("  ** PLACED: " + placed + " " + anchor + " " + curr.getName()
-                                + " " + curr.getAnchor().getTile().getSLR());
-                        curr = null;
-                        searchDown = false;
+                        physX = topLeftPhysicalPlacementX;
+                    }
+                    physY = topLeftPhysicalPlacementY;
+                } else {
+                    // Start from previous placement
+                    if (searchHorizontally) {
+                        Pair<Integer, Integer> westPrevLoc = idealToPhysicalPlacementMap.get(new Pair<>(x - 1, y));
+                        physX = westPrevLoc.getFirst();
+                        physY = westPrevLoc.getSecond();
+                    } else {
+                        Pair<Integer, Integer> northPrevLoc = idealToPhysicalPlacementMap.get(new Pair<>(x, y - 1));
+                        physX = northPrevLoc.getFirst();
+                        physY = northPrevLoc.getSecond();
+                    }
+                }
+
+                boolean placed = false;
+                while (!placed) {
+                    Site anchor = validPlacementGrid.get(physY).get(physX);
+                    RelocatableTileRectangle newBoundingBox =
+                            boundingBox.getCorresponding(anchor.getTile(), module.getAnchor().getTile());
+                    boolean noOverlap = boundingBoxes.stream().noneMatch((b) -> b.overlaps(newBoundingBox));
+                    if (noOverlap && !boundingBoxStraddlesClockRegion(newBoundingBox)) {
+                        // Choose proposed anchor to place instance
+                        ModuleInst curr = array.createModuleInst(instToPlace, module);
+                        if (curr.place(anchor, false, false)) {
+                            placed = true;
+                            boundingBoxes.add(newBoundingBox);
+                            newPlacementMap.put(curr, anchor);
+                            logicalToCentroidMap.put(new Pair<>(x, y), getModuleInstCentroid(curr));
+                            idealToPhysicalPlacementMap.put(new Pair<>(x, y), new Pair<>(physX, physY));
+                            System.out.println("  ** PLACED: " + numPlaced + " " + anchor + " " + curr.getName()
+                                    + " " + curr.getAnchor().getTile().getSLR());
+                            numPlaced++;
+                        } else {
+                            throw new RuntimeException("Failed to place module at site that should be valid anchor");
+                        }
+                    }
+                    if (!placed) {
+                        // Could not place at proposed anchor, get new proposal
+                        if (searchHorizontally) {
+                            // Search horizontally from physX for valid placement
+                            if (config.isFlipPlacementHorizontally()) {
+                                // Search to the left
+                                physX--;
+                                if (physX < 0) {
+                                    throw new RuntimeException("Optimal placement is too wide for device");
+                                }
+                            } else {
+                                // Search to the right
+                                physX++;
+                                if (physX >= validPlacementGrid.get(physY).size()) {
+                                    throw new RuntimeException("Optimal placement is too wide for device");
+                                }
+                            }
+                        } else {
+                            // Search down from physY for valid placement
+                            physY++;
+                            if (physY >= validPlacementGrid.size()) {
+                                throw new RuntimeException("Optimal placement is too tall for device");
+                            }
+                        }
                     }
                 }
             }
-            if (!searchDown) {
-                gridX++;
-            } else {
-                gridY++;
-            }
         }
+
+        // Retain the placement-time bounding boxes so downstream placement passes
+        // can still see GEMM tile and SLR-crossing footprints after createArray()'s
+        // flattenDesign() collapses the corresponding ModuleInsts.
+        placedArrayBoundingBoxes.addAll(boundingBoxes);
     }
 
     private void placeArray() {
-        List<Pair<Pair<Integer, Integer>, String>> idealPlacementList = prepareArrayForPlacement();
+        ArrayNetlistGraph.IdealArrayPlacement idealPlacement = prepareArrayForPlacement();
 
         t.stop().start("Place Instances");
         if (config.getOutputPlacementLocsFileName() != null) {
@@ -638,7 +701,7 @@ public class ArrayBuilder {
         if (config.getInputPlacementFileName() != null) {
             placeInstancesWithManualPlacementFile();
         } else {
-            placeModuleInstancesAutomatically(idealPlacementList);
+            placeModuleInstancesAutomatically(idealPlacement);
         }
 
         if (config.getOutputPlacementFileName() != null) {
@@ -729,7 +792,7 @@ public class ArrayBuilder {
     private void routeArray() {
         if (config.isRouteClock() && !config.isRouteDesign()) {
             t.stop().start("Route clock");
-            Net clockNet = array.getNet(config.getTopClockName());
+            Net clockNet = array.getNet(getTopClockName());
             DesignTools.makePhysNetNameConsistent(array, clockNet);
             DesignTools.createPossiblePinsToStaticNets(array);
             DesignTools.createMissingSitePinInsts(array, clockNet);
@@ -747,13 +810,16 @@ public class ArrayBuilder {
     }
 
     public void createArray() {
-        // Place the array
         placeArray();
 
         // Unroute conflicting nets
-        List<Net> unrouted = NetTools.unrouteNetsWithOverlappingNodes(getArray());
-        if (!unrouted.isEmpty()) {
-            System.out.println("Found " + unrouted.size() + " overlapping nets, that were unrouted.");
+        List<Net> overlapping = NetTools.getNetsWithOverlappingNodes(getArray());
+        for (Net net : overlapping) {
+            System.out.println("[overlap-unroute] " + net.getName());
+            net.unroute();
+        }
+        if (!overlapping.isEmpty()) {
+            System.out.println("Found " + overlapping.size() + " overlapping nets, that were unrouted.");
         }
 
         if (config.isSkipImpl() && config.getTopDesign() == null) {
@@ -763,7 +829,8 @@ public class ArrayBuilder {
         if (config.shouldUnrouteStaticNets()) {
             unrouteStaticNets(array);
         }
-        array.getNetlist().consolidateAllToWorkLibrary();
+
+        array.getNetlist().consolidateAllToWorkLibrary(false, true);
         array.flattenDesign();
 
         if (config.isOutOfContext()) {

@@ -52,6 +52,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -61,6 +62,88 @@ import java.util.stream.Collectors;
  * nearest neighbors.
  */
 public class ArrayNetlistGraph {
+    public static class IdealArrayPlacement {
+        private Map<Pair<Integer, Integer>, String> placementMap;
+        private Map<String, Pair<Integer, Integer>> reversePlacementMap;
+        private List<Pair<Pair<Integer, Integer>, String>> rowColumnOrder;
+        private Integer arrayWidth;
+        private Integer arrayHeight;
+        IdealArrayPlacement() {
+            placementMap = new HashMap<>();
+            reversePlacementMap = new HashMap<>();
+            rowColumnOrder = null;
+            arrayWidth = null;
+            arrayHeight = null;
+        }
+
+        public void place(String inst, int x, int y) {
+            place(inst, new Pair<>(x, y));
+        }
+
+        public void place(String inst, Pair<Integer, Integer> loc) {
+            placementMap.put(loc, inst);
+            reversePlacementMap.put(inst, loc);
+            rowColumnOrder = null;
+            arrayWidth = null;
+            arrayHeight = null;
+        }
+
+        public Pair<Integer, Integer> getPlacement(String inst) {
+            return reversePlacementMap.get(inst);
+        }
+
+        public boolean placementExistsAtLocation(Pair<Integer, Integer> loc) {
+            return placementMap.containsKey(loc);
+        }
+
+        public String getInstanceAtLocation(int x, int y) {
+            return placementMap.get(new Pair<>(x, y));
+        }
+
+        public List<Pair<Pair<Integer, Integer>, String>> getRowColumnOrderList() {
+            if (rowColumnOrder == null) {
+                rowColumnOrder = placementMap.entrySet().stream()
+                        .map((e) -> new Pair<>(e.getKey(), e.getValue()))
+                        .sorted((p1, p2) -> {
+                            Pair<Integer, Integer> pa = p1.getFirst();
+                            Pair<Integer, Integer> pb = p2.getFirst();
+                            if (!Objects.equals(pa.getSecond(), pb.getSecond())) {
+                                return pa.getSecond().compareTo(pb.getSecond());
+                            }
+
+                            return pa.getFirst().compareTo(pb.getFirst());
+                        })
+                        .collect(Collectors.toList());
+            }
+            return rowColumnOrder;
+        }
+
+        public int getArrayWidth() {
+            if (arrayWidth == null) {
+                int maxXCoord = -1;
+                for (Pair<Integer, Integer> loc : placementMap.keySet()) {
+                    if (loc.getFirst() > maxXCoord) {
+                        maxXCoord = loc.getFirst();
+                    }
+                }
+                arrayWidth = maxXCoord + 1;
+            }
+            return arrayWidth;
+        }
+
+        public int getArrayHeight() {
+            if (arrayHeight == null) {
+                int maxYCoord = -1;
+                for (Pair<Integer, Integer> loc : placementMap.keySet()) {
+                    if (loc.getSecond() > maxYCoord) {
+                        maxYCoord = loc.getSecond();
+                    }
+                }
+                arrayHeight = maxYCoord + 1;
+            }
+            return arrayHeight;
+        }
+    }
     /**
      * Graph edge that contains an orthogonal direction from the provided side map.
      * Direction is used to pick a placement that improves routability.
@@ -157,15 +240,13 @@ public class ArrayNetlistGraph {
         return new TopologicalOrderIterator<>(graph);
     }
 
-    public Map<Pair<Integer, Integer>, String> getGreedyPlacementGrid() {
-        Map<Pair<Integer, Integer>, String> placementMap = new HashMap<>();
-        Map<String, Pair<Integer, Integer>> reversePlacementMap = new HashMap<>();
+    public IdealArrayPlacement getGreedyPlacementGrid() {
+        IdealArrayPlacement idealPlacement = new IdealArrayPlacement();
         Map<String, Integer> candidateMap = new HashMap<>();
         Iterator<String> iterator = getTopologicalOrderIterator();
         DijkstraShortestPath<String, NetlistEdge> dsp = new DijkstraShortestPath<>(graph);
         String topLeftNode = iterator.next();
-        placementMap.put(new Pair<>(0, 0), topLeftNode);
-        reversePlacementMap.put(topLeftNode, new Pair<>(0, 0));
+        idealPlacement.place(topLeftNode, 0, 0);
         for (NetlistEdge edge : graph.outgoingEdgesOf(topLeftNode)) {
             String node = graph.getEdgeTarget(edge);
             candidateMap.put(node, 1);
@@ -182,8 +263,7 @@ public class ArrayNetlistGraph {
             } else {
                 extraConstraintPlacement = new Pair<>(0, 1);
             }
-            placementMap.put(extraConstraintPlacement, extraConstraintNode);
-            reversePlacementMap.put(extraConstraintNode, extraConstraintPlacement);
+            idealPlacement.place(extraConstraintNode, extraConstraintPlacement);
             for (NetlistEdge edge : graph.outgoingEdgesOf(extraConstraintNode)) {
                 String targetNode = graph.getEdgeTarget(edge);
                 int count = candidateMap.computeIfAbsent(targetNode, (n) -> 0);
@@ -219,7 +299,7 @@ public class ArrayNetlistGraph {
             }
             List<Pair<Integer, Integer>> inNeighborPlacements = new ArrayList<>();
             for (String inNeighbor : inNeighbors) {
-                inNeighborPlacements.add(reversePlacementMap.get(inNeighbor));
+                inNeighborPlacements.add(idealPlacement.getPlacement(inNeighbor));
             }
             inNeighborPlacements = inNeighborPlacements.stream().sorted(
                     (p1, p2) -> {
@@ -242,30 +322,29 @@ public class ArrayNetlistGraph {
             }
             Pair<Integer, Integer> placement = null;
             for (Pair<Integer, Integer> location : validPlacements) {
-                if (!placementMap.containsKey(location)) {
+                if (!idealPlacement.placementExistsAtLocation(location)) {
                     placement = location;
                 }
             }
             if (placement == null) {
                 throw new RuntimeException("Could not find valid greedy placement for cell: " + node);
             }
-            placementMap.put(placement, node);
-            reversePlacementMap.put(node, placement);
+            idealPlacement.place(node, placement);
         }
 
         for (int y = 0; y < graph.vertexSet().size(); y++) {
             for (int x = 0; x < graph.vertexSet().size(); x++) {
-                if (placementMap.containsKey(new Pair<>(x, y))) {
-                    System.out.println("Placed " + placementMap.get(new Pair<>(x, y)) + " at (" + x + ", " + y + ")");
+                if (idealPlacement.placementExistsAtLocation(new Pair<>(x, y))) {
+                    System.out.println("Placed " + idealPlacement.getInstanceAtLocation(x, y) + " at (" + x + ", " + y + ")");
                 }
             }
         }
 
-        return placementMap;
+        return idealPlacement;
     }
 
-    public Map<Pair<Integer, Integer>, String> getOptimalPlacementGrid(int width, int height) {
-        Map<Pair<Integer, Integer>, String> placementMap = new HashMap<>();
+    public IdealArrayPlacement getOptimalPlacementGrid(int width, int height) {
+        IdealArrayPlacement idealPlacement = new IdealArrayPlacement();
         int numNodes = graph.vertexSet().size();
         Map<Integer, String> numToNameMap = new HashMap<>();
         Map<String, Integer> nameToNumMap = new HashMap<>();
@@ -419,7 +498,7 @@ public class ArrayNetlistGraph {
                     for (int n = 0; n < numNodes; n++) {
                         if (solver.booleanValue(placements[n][x][y])) {
                             System.out.println("Placed " + numToNameMap.get(n) + " at (" + x + ", " + y + ")");
-                            placementMap.put(new Pair<>(x, y), numToNameMap.get(n));
+                            idealPlacement.place(numToNameMap.get(n), new Pair<>(x, y));
                             break;
                         }
                     }
@@ -429,7 +508,7 @@ public class ArrayNetlistGraph {
             throw new RuntimeException("Failed to find optimal placement grid, solver returned status: " + status);
         }
 
-        return placementMap;
+        return idealPlacement;
     }
 
     @Override
