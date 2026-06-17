@@ -699,7 +699,7 @@ public class ArrayBuilder {
         array.setAutoIOBuffers(false);
     }
 
-    private static void unrouteStaticNets(Design design) {
+    public static void unrouteStaticNets(Design design) {
         Net gndNet = design.getNet(Net.GND_NET);
         if (gndNet != null) {
             gndNet.unroute();
@@ -750,10 +750,32 @@ public class ArrayBuilder {
         // Place the array
         placeArray();
 
-        // Unroute conflicting nets
-        List<Net> unrouted = NetTools.unrouteNetsWithOverlappingNodes(getArray());
-        if (!unrouted.isEmpty()) {
-            System.out.println("Found " + unrouted.size() + " overlapping nets, that were unrouted.");
+        // Unroute conflicting nets. Refuse to unroute static nets (VCC/GND):
+        // doing so silently strips every per-tile static-net PIP from the
+        // merged array and leaves tens of thousands of static sinks for the
+        // downstream router to recover. Such overlaps indicate a placement or
+        // precompile issue (e.g. out-of-pblock STATIC_SOURCE LUTs in a kernel)
+        // that should be fixed at its source.
+        List<Net> overlapping = NetTools.getNetsWithOverlappingNodes(getArray());
+        List<Net> staticOverlaps = new ArrayList<>();
+        for (Net net : overlapping) {
+            if (net.isStaticNet()) {
+                staticOverlaps.add(net);
+            }
+        }
+        if (!staticOverlaps.isEmpty()) {
+            StringBuilder sb = new StringBuilder("Refusing to unroute static net(s) due to overlapping nodes:");
+            for (Net net : staticOverlaps) {
+                sb.append(' ').append(net.getName());
+            }
+            throw new RuntimeException(sb.toString());
+        }
+        for (Net net : overlapping) {
+            System.out.println("[overlap-unroute] " + net.getName());
+            net.unroute();
+        }
+        if (!overlapping.isEmpty()) {
+            System.out.println("Found " + overlapping.size() + " overlapping nets, that were unrouted.");
         }
 
         if (config.isSkipImpl() && config.getTopDesign() == null) {
