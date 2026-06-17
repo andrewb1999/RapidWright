@@ -84,6 +84,22 @@ public class ArrayBuilderConfig {
 
     private int rowOffset;
 
+    /**
+     * Restricts {@link ArrayBuilder#createArray()} to place tiles only on
+     * sites whose {@code Tile.getSLR().getId() == targetSLR}. {@code -1}
+     * (the default) means no constraint. Used by the multi-SA flow to
+     * keep each SA segment confined to its own SLR.
+     */
+    private int targetSLR = -1;
+
+    /**
+     * If non-null, only top-level instances whose name starts with this
+     * prefix are considered by {@link ArrayBuilder} for placement. Lets
+     * each per-SA ArrayBuilder pass operate on only its own segment's
+     * tiles in a multi-SA design (e.g. {@code "sa0_"}).
+     */
+    private String instanceNamePrefix = null;
+
     private String sideMapFile;
 
     private String workDir;
@@ -507,5 +523,21 @@ public class ArrayBuilderConfig {
 
     public void setRowOffset(int rowOffset) {
         this.rowOffset = rowOffset;
+    }
+
+    public int getTargetSLR() {
+        return targetSLR;
+    }
+
+    public void setTargetSLR(int targetSLR) {
+        this.targetSLR = targetSLR;
+    }
+
+    public String getInstanceNamePrefix() {
+        return instanceNamePrefix;
+    }
+
+    public void setInstanceNamePrefix(String instanceNamePrefix) {
+        this.instanceNamePrefix = instanceNamePrefix;
     }
 }
