@@ -26,26 +26,30 @@
  */
 package com.xilinx.rapidwright.util;
 
+import com.xilinx.rapidwright.design.ConstraintGroup;
+import com.xilinx.rapidwright.design.Design;
+import com.xilinx.rapidwright.design.NetTools;
+import com.xilinx.rapidwright.design.blocks.PBlock;
+import com.xilinx.rapidwright.design.blocks.PBlockSide;
+import com.xilinx.rapidwright.design.tools.InlineFlopTools;
+import com.xilinx.rapidwright.edif.EDIFPort;
+import com.xilinx.rapidwright.edif.EDIFTools;
+import joptsimple.OptionParser;
+import joptsimple.OptionSet;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.DecimalFormat;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
-
-import com.xilinx.rapidwright.design.ConstraintGroup;
-import com.xilinx.rapidwright.design.Design;
-import com.xilinx.rapidwright.design.NetTools;
-import com.xilinx.rapidwright.design.blocks.PBlock;
-
-import com.xilinx.rapidwright.design.tools.InlineFlopTools;
-import com.xilinx.rapidwright.design.blocks.PBlockSide;
-import com.xilinx.rapidwright.edif.EDIFPort;
-import com.xilinx.rapidwright.edif.EDIFTools;
-import joptsimple.OptionParser;
-import joptsimple.OptionSet;
 
 /**
  * This class is designed to run multiple instances of Vivado with the goal
@@ -91,11 +95,11 @@ public class PerformanceExplorer {
 
     private boolean getBestPerPBlock;
 
-    private ArrayList<PlacerDirective> placerDirectives;
+    private List<PlacerDirective> placerDirectives;
 
-    private ArrayList<RouterDirective> routerDirectives;
+    private List<RouterDirective> routerDirectives;
 
-    private ArrayList<Double> clockUncertaintyValues;
+    private List<Double> clockUncertaintyValues;
 
     private double minClockUncertainty = DEFAULT_MIN_CLK_UNCERT;
 
@@ -108,6 +112,10 @@ public class PerformanceExplorer {
     private boolean reusePreviousResults;
 
     private boolean ensureExternalRoutability;
+
+    private boolean lockPlacement;
+
+    private double baseClockUncertainty = 0.0;
 
     private String externalRoutabilitySideFile;
 
@@ -185,11 +193,11 @@ public class PerformanceExplorer {
         this.pblocks = pblocks;
     }
 
-    public ArrayList<PlacerDirective> getPlacerDirectives() {
+    public List<PlacerDirective> getPlacerDirectives() {
         return placerDirectives;
     }
 
-    public void setPlacerDirectives(ArrayList<PlacerDirective> placerDirectives) {
+    public void setPlacerDirectives(List<PlacerDirective> placerDirectives) {
         this.placerDirectives = placerDirectives;
     }
 
@@ -201,11 +209,11 @@ public class PerformanceExplorer {
         }
     }
 
-    public ArrayList<RouterDirective> getRouterDirectives() {
+    public List<RouterDirective> getRouterDirectives() {
         return routerDirectives;
     }
 
-    public void setRouterDirectives(ArrayList<RouterDirective> routerDirectives) {
+    public void setRouterDirectives(List<RouterDirective> routerDirectives) {
         this.routerDirectives = routerDirectives;
     }
 
@@ -217,11 +225,11 @@ public class PerformanceExplorer {
         }
     }
 
-    public ArrayList<Double> getClockUncertaintyValues() {
+    public List<Double> getClockUncertaintyValues() {
         return clockUncertaintyValues;
     }
 
-    public void setClockUncertaintyValues(ArrayList<Double> clockUncertaintyValues) {
+    public void setClockUncertaintyValues(List<Double> clockUncertaintyValues) {
         this.clockUncertaintyValues = clockUncertaintyValues;
     }
 
@@ -296,12 +304,42 @@ public class PerformanceExplorer {
         this.ensureExternalRoutability = ensureExternalRoutability;
     }
 
+    public boolean lockPlacement() {
+        return lockPlacement;
+    }
+
+    public void setLockPlacement(boolean lockPlacement) {
+        this.lockPlacement = lockPlacement;
+    }
+
+    public double getBaseClockUncertainty() {
+        return baseClockUncertainty;
+    }
+
+    public void setBaseClockUncertainty(double baseClockUncertainty) {
+        this.baseClockUncertainty = baseClockUncertainty;
+    }
+
     public String getExternalRoutabilitySideFile() {
         return externalRoutabilitySideFile;
     }
 
+    /**
+     * Sets a side-map file to be parsed (via
+     * {@link InlineFlopTools#parseSideMap}) when {@link #explorePerformance()}
+     * runs. Ignored if a side map was set directly with
+     * {@link #setExternalRoutabilitySideMap(Map)}.
+     */
     public void setExternalRoutabilitySideFile(String externalRoutabilitySideFile) {
         this.externalRoutabilitySideFile = externalRoutabilitySideFile;
+    }
+
+    public Map<EDIFPort, PBlockSide> getExternalRoutabilitySideMap() {
+        return externalRoutabilitySideMap;
+    }
+
+    public void setExternalRoutabilitySideMap(Map<EDIFPort, PBlockSide> externalRoutabilitySideMap) {
+        this.externalRoutabilitySideMap = externalRoutabilitySideMap;
     }
 
     public PBlock getPBlock(int i) {
@@ -338,15 +376,15 @@ public class PerformanceExplorer {
                 lines.add("set_property CONTAIN_ROUTING 1 [get_pblocks "+ pblockName+"]");
             }
         }
-        if (ensureExternalRoutability()) {
+        if (lockPlacement()) {
             lines.add("lock_design -level placement");
         }
         lines.add("opt_design");
-        if (!ensureExternalRoutability()) {
+        if (!lockPlacement()) {
             lines.add("place_design -unplace");
         }
         lines.add("place_design -directive " + p.name());
-        lines.add("set_clock_uncertainty -setup 0.0 [get_clocks "+clkName+"]");
+        lines.add("set_clock_uncertainty -setup "+baseClockUncertainty+" [get_clocks "+clkName+"]");
         lines.add("report_timing -file "+instDirectory + File.separator+PLACED_TIMING_RESULT);
         lines.add("route_design -directive " + r.name());
         lines.add("report_timing -file "+instDirectory + File.separator+ROUTED_TIMING_RESULT);
@@ -382,7 +420,7 @@ public class PerformanceExplorer {
         }
     }
 
-    public void explorePerformance() {
+    public boolean explorePerformance() {
         if (vivadoPath.equals(DEFAULT_VIVADO) && !FileTools.isVivadoOnPath()) {
             throw new RuntimeException("ERROR: Couldn't find \n"
                 + "    vivado on PATH, please update PATH or specify path with option -" + VIVADO_PATH_OPT);
@@ -414,12 +452,14 @@ public class PerformanceExplorer {
             if (ensureExternalRoutability()) {
                 EDIFTools.removeVivadoBusPreventionAnnotations(design.getNetlist());
                 design.getNetlist().resetParentNetMap();
-                if (getExternalRoutabilitySideFile() == null) {
+                if (getExternalRoutabilitySideMap() == null && getExternalRoutabilitySideFile() != null) {
+                    setExternalRoutabilitySideMap(InlineFlopTools.parseSideMap(design.getNetlist(),
+                            getExternalRoutabilitySideFile()));
+                }
+                if (getExternalRoutabilitySideMap() == null) {
                     InlineFlopTools.createAndPlaceFlopsInlineOnTopPortsArbitrarily(design, clkName, pblock);
                 } else {
-                    Map<EDIFPort, PBlockSide> sideMap =
-                            InlineFlopTools.parseSideMap(design.getNetlist(),
-                                    getExternalRoutabilitySideFile());
+                    Map<EDIFPort, PBlockSide> sideMap = getExternalRoutabilitySideMap();
                     InlineFlopTools.createAndPlacePortFlopsOnSide(design, clkName, pblock, sideMap);
                 }
                 EDIFTools.ensurePreservedInterfaceVivado(design.getNetlist());
@@ -469,6 +509,7 @@ public class PerformanceExplorer {
         boolean success = jobs.runAllToCompletion(maxConcurrentJobs);
 
         System.out.println("Performance Explorer " + (success ? "Finished Successfully." : "Failed!"));
+        return success;
     }
 
     private Float parseWNSFromTimingReport(Path timingReport) {
@@ -535,6 +576,10 @@ public class PerformanceExplorer {
 
             System.out.println("Best result found at: " + bestPath);
             Design d = Design.readCheckpoint(bestPath + File.separator + "routed.dcp");
+
+            if (d.getNOCDesign() != null) {
+                d.getNOCDesign().clearSolution();
+            }
 
             if (ensureExternalRoutability()) {
                 InlineFlopTools.removeInlineFlops(d);
@@ -655,8 +700,12 @@ public class PerformanceExplorer {
         pe.setGetBestPerPBlock(opts.has(COLLECT_RESULTS_OPT));
         pe.setReusePreviousResults(opts.has(REUSE_PREVIOUS_RESULTS));
         pe.setEnsureExternalRoutability(opts.has(ENSURE_EXT_ROUTABILITY));
+        pe.setLockPlacement(opts.has(ENSURE_EXT_ROUTABILITY));
         if (opts.hasArgument(ENSURE_EXT_ROUTABILITY)) {
-            pe.setExternalRoutabilitySideFile((String) opts.valueOf(ENSURE_EXT_ROUTABILITY));
+            Map<EDIFPort, PBlockSide> sideMap =
+                    InlineFlopTools.parseSideMap(pe.getDesign().getNetlist(),
+                            (String) opts.valueOf(ENSURE_EXT_ROUTABILITY));
+            pe.setExternalRoutabilitySideMap(sideMap);
         }
 
         if (opts.hasArgument(PBLOCK_FILE_OPT)) {
