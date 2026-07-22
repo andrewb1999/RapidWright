@@ -561,8 +561,15 @@ public class ECOTools {
                             if (otherEhpi.equals(ehpi)) {
                                 continue;
                             }
-                            // TODO: Use getLeafHierPortInst() to get parent net?
-                            EDIFHierNet otherParentNet = netlist.getParentNet(otherEhpi.getHierarchicalNet());
+                            // Resolve through the leaf source port inst rather than
+                            // EDIFNetlist.getParentNet(), which builds the full
+                            // parent-net map on first use; fall back to the map for
+                            // nets with no leaf source (e.g. undriven nets)
+                            EDIFHierNet otherHierNet = otherEhpi.getHierarchicalNet();
+                            EDIFHierPortInst otherLeafSource = otherHierNet.getLeafSourcePortInst();
+                            EDIFHierNet otherParentNet = otherLeafSource != null
+                                    ? otherLeafSource.getHierarchicalNet()
+                                    : netlist.getParentNet(otherHierNet);
                             if (!otherParentNet.equals(parentNet)) {
                                 // This SPI also services a different port inst that is connected to a
                                 // different net than the new one we're trying to connect up
