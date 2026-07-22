@@ -30,6 +30,7 @@ import java.util.Map;
 import com.xilinx.rapidwright.design.Design;
 import com.xilinx.rapidwright.design.DesignTools;
 import com.xilinx.rapidwright.design.Net;
+import com.xilinx.rapidwright.design.NetTools;
 import com.xilinx.rapidwright.design.NetType;
 import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.device.IntentCode;
@@ -92,6 +93,7 @@ public class TimingAndWirelengthReport{
             if (net.getType() != NetType.WIRE) continue;
             if (!RouterHelper.isRoutableNetWithSourceSinks(net)) continue;
             if (net.getSource().toString().contains("CLK")) continue;
+            if (NetTools.isGlobalClock(net)) continue;
             NetWrapper netplus = createNetWrapper(net);
             for (Node node : RouterHelper.getNodesOfNet(net)) {
                 if (RouteNodeGraph.isExcludedTile(node)) {
