@@ -467,7 +467,16 @@ public class Utils{
 
         moduleSiteTypes = EnumSet.of(
             SiteTypeEnum.LAGUNA,
-            SiteTypeEnum.BUFGCE
+            SiteTypeEnum.BUFGCE,
+            SiteTypeEnum.NOC_NMU128,
+            SiteTypeEnum.NOC_NMU512,
+            SiteTypeEnum.NOC_NSU128,
+            SiteTypeEnum.NOC_NSU512,
+            SiteTypeEnum.NOC_NPS4,
+            SiteTypeEnum.NOC_NPS5555,
+            SiteTypeEnum.NOC_NPS6,
+            SiteTypeEnum.NOC_NPS7575,
+            SiteTypeEnum.NOC_NPS_VNOC
             // SiteTypeEnum.PS7
         );
         moduleSiteTypes.addAll(sliceDspBramUramTypes);
