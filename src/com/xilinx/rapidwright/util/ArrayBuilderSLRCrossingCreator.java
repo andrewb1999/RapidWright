@@ -445,7 +445,7 @@ public class ArrayBuilderSLRCrossingCreator {
             pblock = pblocks.values().iterator().next();
         }
 
-        List<String> clockNets = ConstraintTools.getClockNetsFromXDC(kernelDesign);
+        List<String> clockNets = ConstraintTools.getClockNetPortNamesFromXDC(kernelDesign);
 
         assert(clockNets.size() == 1);
 
