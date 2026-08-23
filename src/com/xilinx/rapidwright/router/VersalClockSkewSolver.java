@@ -96,6 +96,19 @@ public class VersalClockSkewSolver {
         }
     }
 
+    /** A launch/capture site pair and the clock skew currently between them. */
+    public static class SkewConstraint {
+        public final Site launch;
+        public final Site capture;
+        public final double skewNs;
+
+        public SkewConstraint(Site launch, Site capture, double skewNs) {
+            this.launch = launch;
+            this.capture = capture;
+            this.skewNs = skewNs;
+        }
+    }
+
     /** Result of a solve: the tap assignment and the target it achieves. */
     public static class Solution {
         public final Map<Site, Integer> taps;
@@ -376,6 +389,27 @@ public class VersalClockSkewSolver {
             constraints.add(new int[] { index.get(c.destination), index.get(c.source), w });
         }
 
+        return relax(constraints, nodes, maxTaps);
+    }
+
+    /**
+     * Solves a system of difference constraints {@code t_u - t_v <= w} for the
+     * pointwise-minimum non-negative solution, by raising values from zero
+     * until nothing moves.
+     *
+     * <p>Each constraint is equivalently a lower bound {@code t_v >= t_u - w},
+     * and the feasible set of such a system is closed under pointwise minimum,
+     * so the fixpoint of that relaxation is the least feasible assignment.
+     * Minimum movement is what we want: every tap beyond what the objective
+     * requires is unmodelled risk to whatever the constraint set does not
+     * cover. Failure to settle means a positive cycle — the system is
+     * infeasible.
+     *
+     * @return The minimal feasible assignment, or null if infeasible.
+     */
+    private static Map<Site, Integer> relax(List<int[]> constraints, List<Site> nodes,
+                                            int maxTaps) {
+        int n = nodes.size();
         int[] t = new int[n];
         boolean settled = false;
         for (int iter = 0; iter <= n && !settled; iter++) {
@@ -392,7 +426,7 @@ public class VersalClockSkewSolver {
             }
         }
         if (!settled) {
-            return null; // positive cycle: target unachievable
+            return null; // positive cycle: infeasible
         }
 
         Map<Site, Integer> taps = new HashMap<>();
@@ -404,6 +438,214 @@ public class VersalClockSkewSolver {
             taps.put(nodes.get(i), t[i]);
         }
         return taps;
+    }
+
+    /**
+     * Finds the tap assignment that minimizes the largest clock skew on any of
+     * the given launch/capture pairs.
+     *
+     * <p>This is the objective to use when only clock arrival is known and data
+     * path delays are not. Slack-based solving is strictly better when slacks
+     * are available — it can spend skew where a path needs it — but it requires
+     * timing analysis; skew is computable from the clock network alone. For a
+     * design whose violations are skew-induced rather than logic-bound the two
+     * coincide, which is the common case for an assembled array.
+     *
+     * <p>Delaying a capture site's clock raises the skew on paths ending there
+     * and lowers it on paths starting there, so bounding {@code |skew|} by some
+     * value gives two difference constraints per pair, and the smallest
+     * achievable bound follows by bisection on the same relaxation used for
+     * slack solving.
+     *
+     * @param pairs      Connected launch/capture site pairs and their skews.
+     * @param tapDelayNs Delay per tap, in ns.
+     * @param maxTaps    Largest tap value the hardware accepts.
+     * @return The assignment achieving the smallest bound found;
+     *         {@code achievedSetupTarget} carries that bound, in ns.
+     */
+    public static Solution solveSkew(List<SkewConstraint> pairs, double tapDelayNs, int maxTaps) {
+        Set<Site> sites = new HashSet<>();
+        double worst = 0;
+        for (SkewConstraint c : pairs) {
+            sites.add(c.launch);
+            sites.add(c.capture);
+            worst = Math.max(worst, Math.abs(c.skewNs));
+        }
+        if (pairs.isEmpty()) {
+            return new Solution(new HashMap<>(), 0, true);
+        }
+
+        // The bound can be no worse than today's and no better than zero.
+        double lo = 0;
+        double hi = worst;
+        Map<Site, Integer> best = null;
+        double bestBound = worst;
+        for (int i = 0; i < 40; i++) {
+            double mid = (lo + hi) / 2;
+            Map<Site, Integer> taps = feasibleSkew(pairs, sites, mid, tapDelayNs, maxTaps);
+            if (taps != null) {
+                best = taps;
+                bestBound = mid;
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        if (best == null) {
+            return new Solution(new HashMap<>(), worst, false);
+        }
+        Map<Site, Integer> nonZero = new HashMap<>();
+        for (Entry<Site, Integer> e : best.entrySet()) {
+            if (e.getValue() != 0) {
+                nonZero.put(e.getKey(), e.getValue());
+            }
+        }
+        return new Solution(nonZero, bestBound, true);
+    }
+
+    /**
+     * Minimizes skew across all pairs rather than only the worst one.
+     *
+     * <p>Plain min-max stops as soon as the hardest pair cannot improve, which
+     * on a real design is usually a pair pinned by a block RAM or DSP endpoint
+     * that has no leaf delay to program. Every other pair is then left wherever
+     * it happened to be, even when taps were available to improve it. This
+     * instead solves min-max, freezes the pairs that are actually binding at
+     * the bound they reached, and repeats on the rest, so each round tightens
+     * everything that still has room.
+     *
+     * @param rounds Maximum refinement rounds; the loop also stops early once a
+     *               round frees nothing.
+     * @return The assignment from the final round; {@code achievedSetupTarget}
+     *         carries the bound the still-improvable pairs reached.
+     */
+    public static Solution solveSkewLexicographic(List<SkewConstraint> pairs, double tapDelayNs,
+                                                  int maxTaps, int rounds) {
+        Set<Site> sites = new HashSet<>();
+        for (SkewConstraint c : pairs) {
+            sites.add(c.launch);
+            sites.add(c.capture);
+        }
+        if (pairs.isEmpty()) {
+            return new Solution(new HashMap<>(), 0, true);
+        }
+
+        List<SkewConstraint> active = new ArrayList<>(pairs);
+        // Pairs that cannot improve further, held at the bound they reached.
+        List<SkewConstraint> frozen = new ArrayList<>();
+        List<Double> frozenBounds = new ArrayList<>();
+        Map<Site, Integer> best = null;
+        double lastBound = Double.NaN;
+
+        for (int round = 0; round < rounds && !active.isEmpty(); round++) {
+            double worst = 0;
+            for (SkewConstraint c : active) {
+                worst = Math.max(worst, Math.abs(c.skewNs));
+            }
+            double lo = 0;
+            double hi = worst;
+            Map<Site, Integer> roundBest = null;
+            double roundBound = worst;
+            for (int i = 0; i < 40; i++) {
+                double mid = (lo + hi) / 2;
+                Map<Site, Integer> taps = feasibleSkew(active, frozen, frozenBounds, sites, mid,
+                        tapDelayNs, maxTaps);
+                if (taps != null) {
+                    roundBest = taps;
+                    roundBound = mid;
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            if (roundBest == null) {
+                break;
+            }
+            best = roundBest;
+            lastBound = roundBound;
+
+            // A pair sitting at the bound is what is holding it up; hold it
+            // there and let the remaining pairs tighten further.
+            double epsilon = tapDelayNs / 2;
+            List<SkewConstraint> stillActive = new ArrayList<>();
+            for (SkewConstraint c : active) {
+                double achieved = Math.abs(c.skewNs
+                        + tapDelayNs * (roundBest.getOrDefault(c.capture, 0)
+                                - roundBest.getOrDefault(c.launch, 0)));
+                if (achieved >= roundBound - epsilon) {
+                    frozen.add(c);
+                    frozenBounds.add(roundBound);
+                } else {
+                    stillActive.add(c);
+                }
+            }
+            if (stillActive.size() == active.size()) {
+                break;
+            }
+            active = stillActive;
+        }
+
+        if (best == null) {
+            return new Solution(new HashMap<>(), Double.NaN, false);
+        }
+        Map<Site, Integer> nonZero = new HashMap<>();
+        for (Entry<Site, Integer> e : best.entrySet()) {
+            if (e.getValue() != 0) {
+                nonZero.put(e.getKey(), e.getValue());
+            }
+        }
+        return new Solution(nonZero, lastBound, true);
+    }
+
+    /**
+     * Tests whether every pair's skew can be brought within {@code boundNs}.
+     *
+     * @return A feasible tap assignment, or null if the bound is unreachable.
+     */
+    private static Map<Site, Integer> feasibleSkew(List<SkewConstraint> pairs, Set<Site> sites,
+                                                   double boundNs, double tapDelayNs, int maxTaps) {
+        return feasibleSkew(pairs, java.util.Collections.emptyList(),
+                java.util.Collections.emptyList(), sites, boundNs, tapDelayNs, maxTaps);
+    }
+
+    /**
+     * Tests whether the active pairs can reach {@code boundNs} while the frozen
+     * pairs stay within the bounds they were left at.
+     */
+    private static Map<Site, Integer> feasibleSkew(List<SkewConstraint> pairs,
+                                                   List<SkewConstraint> frozen,
+                                                   List<Double> frozenBounds,
+                                                   Set<Site> sites, double boundNs,
+                                                   double tapDelayNs, int maxTaps) {
+        List<Site> nodes = new ArrayList<>(sites);
+        Map<Site, Integer> index = new HashMap<>();
+        for (int i = 0; i < nodes.size(); i++) {
+            index.put(nodes.get(i), i);
+        }
+
+        // Each entry is {u, v, w} for the constraint t_u - t_v <= w.
+        List<int[]> constraints = new ArrayList<>((pairs.size() + frozen.size()) * 2);
+        for (SkewConstraint c : pairs) {
+            addSkewBound(constraints, index, c, boundNs, tapDelayNs);
+        }
+        for (int i = 0; i < frozen.size(); i++) {
+            addSkewBound(constraints, index, frozen.get(i), frozenBounds.get(i), tapDelayNs);
+        }
+        return relax(constraints, nodes, maxTaps);
+    }
+
+    /**
+     * Bounds one pair's skew magnitude, as the two difference constraints
+     * {@code |skew + t_capture - t_launch| <= bound}.
+     */
+    private static void addSkewBound(List<int[]> constraints, Map<Site, Integer> index,
+                                     SkewConstraint c, double boundNs, double tapDelayNs) {
+        int l = index.get(c.launch);
+        int cap = index.get(c.capture);
+        constraints.add(new int[] { cap, l,
+                (int) Math.floor((boundNs - c.skewNs) / tapDelayNs) });
+        constraints.add(new int[] { l, cap,
+                (int) Math.floor((boundNs + c.skewNs) / tapDelayNs) });
     }
 
     /** True if the site has a programmable leaf clock delay (SLICEs only). */
