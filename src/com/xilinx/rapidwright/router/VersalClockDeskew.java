@@ -117,6 +117,49 @@ public class VersalClockDeskew {
     }
 
     /**
+     * Reads back the leaf clock delay currently programmed on a SLICE, or 0 if
+     * none is set. Needed to accumulate taps across refinement passes, since a
+     * timing report of an already-tapped design measures slack that includes
+     * those taps.
+     */
+    public static int getLeafClockDelay(Design design, Site slice) {
+        Map<Site, SiteConfig> attrs = design.getBELAttrs();
+        if (attrs == null) {
+            return 0;
+        }
+        SiteConfig sc = attrs.get(slice);
+        if (sc == null) {
+            return 0;
+        }
+        BEL bel = slice.getBEL(FF_CLK_MOD);
+        if (bel == null) {
+            return 0;
+        }
+        BELAttr attr = sc.getBELAttribute(bel, ATTR_CLK_DLY_VAL);
+        if (attr == null) {
+            return 0;
+        }
+        return parseTapValue(attr.getValue());
+    }
+
+    /**
+     * Parses a Verilog-style 4-bit literal such as {@code 4'h3} into its
+     * integer value.
+     */
+    public static int parseTapValue(String value) {
+        if (value == null) {
+            return 0;
+        }
+        int tick = value.indexOf('\'');
+        String digits = tick == -1 ? value : value.substring(tick + 2);
+        try {
+            return Integer.parseInt(digits.trim(), 16);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /**
      * Arms Vivado's optimized delay calculation on the GCLK_DELAY_SSIT
      * distribution delay sites of the tiles the given clock net's routing
      * passes through (matching what Vivado's router emits alongside its leaf
