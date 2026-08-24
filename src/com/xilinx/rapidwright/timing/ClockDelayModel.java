@@ -50,4 +50,21 @@ public interface ClockDelayModel {
      * once. Zero when the model does not track it.
      */
     float getPessimismRemovalPs(Site launch, Site capture, boolean setup);
+
+    /**
+     * Arrival at one clock site pin. A block RAM's two clock pins take
+     * different leaf routes and arrive at different times; models that track
+     * routes per pin override this, others answer for the site.
+     *
+     * @param sitePin the site pin name, or null for the site's clock
+     */
+    default Float getArrivalPs(Site site, String sitePin, Corner corner) {
+        return getArrivalPs(site, corner);
+    }
+
+    /** Pessimism removal for a pair of clock site pins; see {@link #getArrivalPs(Site, String, Corner)}. */
+    default float getPessimismRemovalPs(Site launch, String launchPin, Site capture, String capturePin,
+                                        boolean setup) {
+        return getPessimismRemovalPs(launch, capture, setup);
+    }
 }

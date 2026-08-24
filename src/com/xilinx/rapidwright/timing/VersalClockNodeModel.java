@@ -72,6 +72,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
     private final int bufgMinPs;
 
     private final Map<Site, List<Node>> siteRoute = new HashMap<>();
+    /** Route per clock site pin, keyed "site/pin": a block RAM's two clocks differ. */
+    private final Map<String, List<Node>> pinRoute = new HashMap<>();
     private final Map<Node, Integer> children = new HashMap<>();
 
     private long termsPriced;
@@ -109,8 +111,57 @@ public class VersalClockNodeModel implements ClockDelayModel {
             List<Node> route = VersalClockTimingModel.routeToSink(parent, spi.getConnectedNode());
             if (!route.isEmpty()) {
                 siteRoute.putIfAbsent(spi.getSite(), route);
+                pinRoute.put(spi.getSite().getName() + "/" + spi.getName(), route);
             }
         }
+        // A DSP58 is a macro whose clock is an internal net, and Vivado's
+        // checkpoint gives the physical clock no site pin there. Any site
+        // whose cells are clocked by this net through such a boundary gets
+        // its route from the site's own CLK pin node.
+        if (design != null) {
+            for (com.xilinx.rapidwright.design.SiteInst si : design.getSiteInsts()) {
+                Site site = si.getSite();
+                if (siteRoute.containsKey(site)) {
+                    continue;
+                }
+                int pin = site.getPinIndex("CLK");
+                if (pin < 0 || !clockedBy(si, clk)) {
+                    continue;
+                }
+                List<Node> route = VersalClockTimingModel.routeToSink(parent, site.getConnectedNode(pin));
+                if (!route.isEmpty()) {
+                    siteRoute.put(site, route);
+                    pinRoute.put(site.getName() + "/CLK", route);
+                    sitesFromSitePin++;
+                }
+            }
+        }
+    }
+
+    private int sitesFromSitePin;
+
+    /** Whether any cell in the site has its CLK driven, through any hierarchy, by this net. */
+    private static boolean clockedBy(com.xilinx.rapidwright.design.SiteInst si, Net clk) {
+        com.xilinx.rapidwright.edif.EDIFNetlist netlist = si.getDesign().getNetlist();
+        for (com.xilinx.rapidwright.design.Cell c : si.getCells()) {
+            // The macro's internal clock net does not resolve upward, so
+            // climb to the first enclosing instance whose clock port does.
+            com.xilinx.rapidwright.edif.EDIFHierCellInst inst = c.getEDIFHierCellInst();
+            for (int level = 0; inst != null && level < 4; level++, inst = inst.getParent()) {
+                for (com.xilinx.rapidwright.edif.EDIFHierPortInst hp : inst.getHierPortInsts()) {
+                    if (!hp.getPortInst().getName().toLowerCase().contains("clk")
+                            || hp.getHierarchicalNet() == null) {
+                        continue;
+                    }
+                    com.xilinx.rapidwright.edif.EDIFHierNet pn = netlist.getParentNet(hp.getHierarchicalNet());
+                    String name = (pn != null ? pn : hp.getHierarchicalNet()).getHierarchicalNetName();
+                    if (name.equals(clk.getName())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /** Builds the model for a clock net from the default table location. */
@@ -135,7 +186,13 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 || ic.contains("BUFG");
     }
 
-    /** The arrival term key: per instance for trunk nodes, per type for leaves. */
+    /**
+     * The arrival term key: per instance for trunk nodes, per type for leaves.
+     * (Keying leaves by wire template, to separate a block RAM's
+     * {@code IRI_QUADRANT_RED} and {@code GREEN} clock pins that Vivado
+     * times 700 ps apart, was tried and made Vivado-routed trees worse: the
+     * difference is programmed leaf state the fit cannot see, not topology.)
+     */
     public static String arrivalKey(Node n) {
         return isTrunk(n) ? n.toString() : n.getIntentCode().toString();
     }
@@ -192,7 +249,16 @@ public class VersalClockNodeModel implements ClockDelayModel {
 
     @Override
     public Float getArrivalPs(Site site, Corner corner) {
-        List<Node> route = siteRoute.get(site);
+        return arrival(site, siteRoute.get(site), corner);
+    }
+
+    @Override
+    public Float getArrivalPs(Site site, String sitePin, Corner corner) {
+        List<Node> route = sitePin == null ? null : pinRoute.get(site.getName() + "/" + sitePin);
+        return arrival(site, route != null ? route : siteRoute.get(site), corner);
+    }
+
+    private Float arrival(Site site, List<Node> route, Corner corner) {
         if (route == null) {
             return null;
         }
@@ -248,8 +314,18 @@ public class VersalClockNodeModel implements ClockDelayModel {
      */
     @Override
     public float getPessimismRemovalPs(Site launch, Site capture, boolean setup) {
-        List<Node> a = siteRoute.get(launch);
-        List<Node> b = siteRoute.get(capture);
+        return pessimism(siteRoute.get(launch), siteRoute.get(capture), setup);
+    }
+
+    @Override
+    public float getPessimismRemovalPs(Site launch, String launchPin, Site capture, String capturePin,
+                                       boolean setup) {
+        List<Node> a = launchPin == null ? null : pinRoute.get(launch.getName() + "/" + launchPin);
+        List<Node> b = capturePin == null ? null : pinRoute.get(capture.getName() + "/" + capturePin);
+        return pessimism(a != null ? a : siteRoute.get(launch), b != null ? b : siteRoute.get(capture), setup);
+    }
+
+    private float pessimism(List<Node> a, List<Node> b, boolean setup) {
         if (a == null || b == null) {
             return 0;
         }
@@ -282,8 +358,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
     /** How much pricing used exact terms vs type fallbacks, for reporting. */
     public String getCoverageSummary() {
         long total = termsPriced + termsFallback + termsUnknown;
-        return String.format("clock terms: %d exact, %d type-fallback, %d unknown (of %d)",
-                termsPriced, termsFallback, termsUnknown, total);
+        return String.format("clock terms: %d exact, %d type-fallback, %d unknown (of %d); %d sites routed from CLK site pin",
+                termsPriced, termsFallback, termsUnknown, total, sitesFromSitePin);
     }
 
     private void read(Path table) throws IOException {

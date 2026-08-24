@@ -129,6 +129,9 @@ public class VersalLogicDelayModel implements LogicDelayModel {
                 }
                 arcs.put(key(f[0], f[1], f[2], f[3]),
                         new float[] { Float.parseFloat(f[4]), Float.parseFloat(f[5]) });
+                if (f[0].indexOf('#') >= 0) {
+                    modeBels.add(f[0]);
+                }
             } else {
                 // site_type from_bel/pin to_bel/pin max min
                 if (f.length < 5) {
@@ -167,17 +170,135 @@ public class VersalLogicDelayModel implements LogicDelayModel {
         return TimingFidelity.SIGNOFF;
     }
 
+    /**
+     * The cell properties that decide which arcs a memory or DSP has: port
+     * widths and write modes make a block RAM's data pins belong to one clock
+     * or the other, and register-stage counts turn a DSP58 arc from a
+     * propagation into a check. Any property not present on the cell is
+     * simply left out, so plain flip-flops and LUTs have an empty signature.
+     */
+    public static final String[] MODE_PROPERTIES = {
+        // Block RAM and UltraRAM.
+        "READ_WIDTH_A", "READ_WIDTH_B", "WRITE_WIDTH_A", "WRITE_WIDTH_B", "WRITE_MODE_A", "WRITE_MODE_B",
+        "DOA_REG", "DOB_REG", "CASCADE_ORDER_A", "CASCADE_ORDER_B", "OREG_A", "OREG_B", "IREG_PRE_A",
+        "IREG_PRE_B", "REG_CAS_A", "REG_CAS_B", "EN_ECC_PIPE", "EN_ECC_READ", "EN_ECC_WRITE",
+        // DSP58.
+        "AREG", "BREG", "ACASCREG", "BCASCREG", "ADREG", "MREG", "PREG", "CREG", "DREG", "OPMODEREG",
+        "ALUMODEREG", "CARRYINREG", "CARRYINSELREG", "INMODEREG", "USE_MULT", "USE_SIMD", "DSP_MODE",
+        "AMULTSEL", "BMULTSEL", "PREADDINSEL", "USE_WIDEXOR", "USE_PATTERN_DETECT", "A_INPUT", "B_INPUT",
+        "RESET_MODE", "CONJUGATEREG_A", "CONJUGATEREG_B",
+        // Carry lookahead: each bit either looks ahead or bypasses, and the
+        // bypass input CYx only has arcs in the second case.
+        "LOOKA", "LOOKB", "LOOKC", "LOOKD", "LOOKE", "LOOKF", "LOOKG", "LOOKH",
+    };
+
+    /**
+     * Whether a LUT's output depends on the input at this BEL pin: Vivado
+     * disables the arc from an input the INIT function ignores, so a walk
+     * must not go through it. Cells that are not plain LUTs are always
+     * sensitive.
+     */
+    public static boolean lutInputUsed(Cell cell, String fromBelPin) {
+        String type = cell.getType();
+        if (type == null || !type.matches("LUT[1-6]")) {
+            return true;
+        }
+        String logical = cell.getLogicalPinMapping(fromBelPin);
+        com.xilinx.rapidwright.edif.EDIFCellInst inst = cell.getEDIFCellInst();
+        if (logical == null || !logical.startsWith("I") || inst == null) {
+            return true;
+        }
+        com.xilinx.rapidwright.edif.EDIFPropertyValue init = inst.getProperty("INIT");
+        if (init == null) {
+            return true;
+        }
+        int bit;
+        try {
+            bit = Integer.parseInt(logical.substring(1));
+        } catch (NumberFormatException e) {
+            return true;
+        }
+        int size = type.charAt(3) - '0';
+        long value = com.xilinx.rapidwright.design.tools.LUTTools.getInitValue(init.getValue());
+        int rows = 1 << size;
+        for (int x = 0; x < rows; x++) {
+            if (((value >>> x) & 1) != ((value >>> (x ^ (1 << bit))) & 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The cell's mode signature: its present {@link #MODE_PROPERTIES}, or "" for none. */
+    public static String modeSignature(Cell cell) {
+        com.xilinx.rapidwright.edif.EDIFCellInst inst = cell.getEDIFCellInst();
+        if (inst == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String p : MODE_PROPERTIES) {
+            com.xilinx.rapidwright.edif.EDIFPropertyValue v = inst.getProperty(p);
+            if (v == null) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append(';');
+            }
+            sb.append(p).append('=').append(v.getValue().replaceAll("\\s+", "_"));
+        }
+        return sb.toString();
+    }
+
+    /** The table key's BEL column for a cell: the BEL, mode-qualified when the cell has a mode. */
+    public static String modeQualifiedBEL(Cell cell) {
+        String bel = qualifiedBEL(cell);
+        if (bel == null) {
+            return null;
+        }
+        String sig = modeSignature(cell);
+        return sig.isEmpty() ? bel : bel + "#" + sig;
+    }
+
+    private long modeHits;
+    private long modeMisses;
+
+    /** How often a mode-qualified arc was found versus falling back to the plain BEL. */
+    public String getModeSummary() {
+        return "logic arcs: " + modeHits + " mode-qualified, " + modeMisses + " plain-BEL fallback";
+    }
+
     private Float lookup(Cell cell, String from, String to, String kind, Corner corner) {
         String bel = qualifiedBEL(cell);
         if (bel == null) {
             return null;
         }
+        int ci = corner == Corner.SLOW_MIN ? 1 : 0;
+        // The arc set of a memory or DSP is a property of its configuration;
+        // the mode-qualified entry is authoritative when the table has this
+        // configuration at all, and the plain BEL entry (the union over every
+        // configuration seen) is the fallback for one it has not.
+        String sig = modeSignature(cell);
+        if (!sig.isEmpty()) {
+            String modeBel = bel + "#" + sig;
+            if (modeBels.contains(modeBel)) {
+                float[] d = arcs.get(key(modeBel, from, to, kind));
+                modeHits++;
+                return d == null ? null : d[ci];
+            }
+            modeMisses++;
+        }
         float[] d = arcs.get(key(bel, from, to, kind));
-        return d == null ? null : d[corner == Corner.SLOW_MIN ? 1 : 0];
+        return d == null ? null : d[ci];
     }
+
+    /** Mode-qualified BEL names the table has any arc for. */
+    private final java.util.Set<String> modeBels = new java.util.HashSet<>();
 
     @Override
     public Float getPropagationDelayPs(Cell cell, String fromBelPin, String toBelPin, Corner corner) {
+        if (!lutInputUsed(cell, fromBelPin)) {
+            return null;
+        }
         return lookup(cell, fromBelPin, toBelPin, KIND_PROP, corner);
     }
 

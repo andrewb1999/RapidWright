@@ -72,7 +72,9 @@ import com.xilinx.rapidwright.edif.EDIFHierPortInst;
 public class SignoffTimingAnalysis {
 
     /** Levels of combinational logic to follow between registers. */
-    public static final int DEFAULT_MAX_LOGIC_DEPTH = 12;
+    // Vivado counts every DSP58 sub-block as a level, so a multiply into a
+    // carry chain reaches fifteen; dominance pruning keeps deep walks cheap.
+    public static final int DEFAULT_MAX_LOGIC_DEPTH = 40;
 
     /** One priced path, with the components its slack was assembled from. */
     public static class PathResult {
@@ -98,12 +100,14 @@ public class SignoffTimingAnalysis {
         public final List<String> pins;
         /** The net delay of each hop along the data path, in path order. */
         public final List<Float> hopNetPs;
+        /** Logic delay of each cell on the path, in walk order. */
+        public final List<Float> hopLogicPs;
 
         PathResult(Cell launch, Cell capture, String startpoint, String endpoint, boolean setup,
                    float requirementPs, float launchClockPs, float captureClockPs,
                    float pessimismRemovalPs, float uncertaintyPs, float clockToQPs, float netPs,
                    float logicPs, float checkPs, int logicLevels, List<String> pins,
-                   List<Float> hopNetPs) {
+                   List<Float> hopNetPs, List<Float> hopLogicPs) {
             this.launch = launch;
             this.capture = capture;
             this.startpoint = startpoint;
@@ -121,6 +125,7 @@ public class SignoffTimingAnalysis {
             this.logicLevels = logicLevels;
             this.pins = pins;
             this.hopNetPs = hopNetPs;
+            this.hopLogicPs = hopLogicPs;
             if (setup) {
                 float arrival = launchClockPs + clockToQPs + netPs + logicPs;
                 float required = requirementPs + captureClockPs + pessimismRemovalPs
@@ -266,17 +271,40 @@ public class SignoffTimingAnalysis {
                 coverage.uncoveredClockSiteTypes.merge(launch.getSiteInst().getSiteTypeEnum().name(), 1, Integer::sum);
                 continue;
             }
-            String clkBel = clockBelPin(launch);
+            List<String> clkBels = clockBelPins(launch);
+            bestArrival = new HashMap<>();
             EDIFHierCellInst inst = launch.getEDIFHierCellInst();
             for (EDIFHierPortInst out : inst.getHierPortInsts()) {
                 if (out.getPortInst().getDirection() != EDIFDirection.OUTPUT) {
                     continue;
                 }
                 String qBel = launch.getPhysicalPinMapping(out.getPortInst().getName());
-                if (qBel == null || clkBel == null) {
+                if (qBel == null || clkBels.isEmpty()) {
                     continue;
                 }
-                Float clockToQ = logicModel.getPropagationDelayPs(launch, clkBel, qBel, launchCorner);
+                // A dual-clock primitive (block RAM) launches each output from
+                // one of its clocks: the one the library has an arc from.
+                Float clockToQ = null;
+                launchClockPin = null;
+                for (String candidate : CLOCK_PIN_NAMES) {
+                    String clkBel = launch.getPhysicalPinMapping(candidate);
+                    if (clkBel == null) {
+                        continue;
+                    }
+                    clockToQ = logicModel.getPropagationDelayPs(launch, clkBel, qBel, launchCorner);
+                    if (clockToQ != null) {
+                        launchClockPin = candidate;
+                        launchSitePin = clockSitePin(launch, clkBel);
+                        break;
+                    }
+                }
+                if (clockToQ != null) {
+                    // The arrival at the pin this output launches from.
+                    Float atPin = clockModel.getArrivalPs(launch.getSite(), launchSitePin, launchCorner);
+                    if (atPin != null) {
+                        launchClock = atPin;
+                    }
+                }
                 if (clockToQ == null) {
                     coverage.unpricedLogic++;
                     continue;
@@ -297,6 +325,24 @@ public class SignoffTimingAnalysis {
      * Follows one output pin forward through its net, pricing each sink:
      * registers end a path, combinational cells continue it.
      */
+    /** Best data arrival per pin from the launch being walked, for pruning. */
+    private Map<String, Float> bestArrival = new HashMap<>();
+    /** Logic delay of each cell on the walk so far. */
+    private final List<Float> logicStack = new ArrayList<>();
+    /** The logical clock pin whose arc launched the path being walked. */
+    private String launchClockPin;
+    /** The site pin that clock reaches the launching cell through. */
+    private String launchSitePin;
+
+    /** The site pin a cell's clock BEL pin is fed from, or null if not resolvable. */
+    private String clockSitePin(Cell cell, String clkBel) {
+        try {
+            return DesignTools.getRoutedSitePinFromPhysicalPin(cell, clock, clkBel);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
     private void follow(Cell launch, float launchClock, float clockToQ, EDIFHierPortInst out,
                         float netSoFar, float logicSoFar, int depth, List<String> pins,
                         List<Float> hops, Set<String> onPath, boolean setup,
@@ -332,6 +378,18 @@ public class SignoffTimingAnalysis {
                 continue;
             }
             float netHere = netSoFar + netDelay;
+            // Dominance: from one launch, the clocks and pessimism removal of
+            // every path to a given capture are the same, so a pin already
+            // reached with a no-better arrival cannot yield a worse slack.
+            // This keeps the walk polynomial through wide combinational
+            // buses (an unclocked DSP58) where path enumeration explodes.
+            float arrival = netHere + logicSoFar;
+            String pinKey = sink.getFullHierarchicalInstName() + "/" + logicalPin;
+            Float prev = bestArrival.get(pinKey);
+            if (prev != null && (setup ? arrival <= prev : arrival >= prev)) {
+                continue;
+            }
+            bestArrival.put(pinKey, arrival);
             hops.add(netDelay);
 
             if (isRegister(cell)) {
@@ -369,8 +427,10 @@ public class SignoffTimingAnalysis {
                 }
                 pins.add(pinName(sink));
                 pins.add(pinName(next));
+                logicStack.add(prop);
                 follow(launch, launchClock, clockToQ, next, netHere, logicSoFar + prop, depth + 1,
                         pins, hops, onPath, setup, worst);
+                logicStack.remove(logicStack.size() - 1);
                 pins.remove(pins.size() - 1);
                 pins.remove(pins.size() - 1);
             }
@@ -389,35 +449,43 @@ public class SignoffTimingAnalysis {
             return;
         }
         Corner captureCorner = setup ? Corner.SLOW_MIN : Corner.SLOW_MAX;
-        Float captureClock = clockModel.getArrivalPs(capture.getSite(), captureCorner);
+        // The requirement is a library value at the slow corner's worst case,
+        // checked against whichever of the cell's clocks the library binds
+        // this data pin to (a block RAM's write data is checked by CLKBWRCLK).
+        Float check = null;
+        String captureSitePin = null;
+        for (String clkBel : clockBelPins(capture)) {
+            check = setup ? logicModel.getSetupPs(capture, clkBel, dataBel, Corner.SLOW_MAX)
+                    : logicModel.getHoldPs(capture, clkBel, dataBel, Corner.SLOW_MAX);
+            if (check != null) {
+                captureSitePin = clockSitePin(capture, clkBel);
+                break;
+            }
+        }
+        if (check == null) {
+            coverage.unpricedCheck++;
+            return;
+        }
+        // The arrival at the clock pin that performs the check.
+        Float captureClock = clockModel.getArrivalPs(capture.getSite(), captureSitePin, captureCorner);
         if (captureClock == null) {
             coverage.unpricedClock++;
             coverage.uncoveredClockSiteTypes.merge(capture.getSiteInst().getSiteTypeEnum().name(), 1, Integer::sum);
             return;
         }
-        String clkBel = clockBelPin(capture);
-        if (clkBel == null) {
-            coverage.unpricedCheck++;
-            return;
-        }
-        // The requirement is a library value at the slow corner's worst case.
-        Float check = setup ? logicModel.getSetupPs(capture, clkBel, dataBel, Corner.SLOW_MAX)
-                : logicModel.getHoldPs(capture, clkBel, dataBel, Corner.SLOW_MAX);
-        if (check == null) {
-            coverage.unpricedCheck++;
-            return;
-        }
-        float cpr = clockModel.getPessimismRemovalPs(launch.getSite(), capture.getSite(), setup);
+        float cpr = clockModel.getPessimismRemovalPs(launch.getSite(), launchSitePin, capture.getSite(),
+                captureSitePin, setup);
 
         List<String> pathPins = new ArrayList<>(pins);
         pathPins.add(pinName(endPin));
         String startpoint = launch.getEDIFHierCellInst().getFullHierarchicalInstName() + "/"
-                + clockLogicalPin(launch);
+                + (launchClockPin != null ? launchClockPin : clockLogicalPin(launch));
         String endpoint = capture.getEDIFHierCellInst().getFullHierarchicalInstName() + "/"
                 + dataLogicalPin;
         PathResult r = new PathResult(launch, capture, startpoint, endpoint, setup, periodPs,
                 launchClock, captureClock, cpr, setup ? uncertaintyPs : holdUncertaintyPs,
-                clockToQ, netPs, logicPs, check, depth, pathPins, new ArrayList<>(hops));
+                clockToQ, netPs, logicPs, check, depth, pathPins, new ArrayList<>(hops),
+                new ArrayList<>(logicStack));
         coverage.pathsPriced++;
         PathResult prev = worst.get(endpoint);
         if (prev == null || r.slackPs < prev.slackPs) {
@@ -515,9 +583,16 @@ public class SignoffTimingAnalysis {
     }
 
     /** The BEL pin a register's clock arrives on. */
-    private static String clockBelPin(Cell cell) {
-        String logical = clockLogicalPin(cell);
-        return logical == null ? null : cell.getPhysicalPinMapping(logical);
+    /** Every mapped clock BEL pin of a cell, in library-preference order. */
+    private static List<String> clockBelPins(Cell cell) {
+        List<String> bels = new ArrayList<>();
+        for (String candidate : CLOCK_PIN_NAMES) {
+            String bel = cell.getPhysicalPinMapping(candidate);
+            if (bel != null && !bels.contains(bel)) {
+                bels.add(bel);
+            }
+        }
+        return bels;
     }
 
     private static final String[] CLOCK_PIN_NAMES = { "C", "CLK", "WCLK", "CLKARDCLK", "CLKBWRCLK",
@@ -551,7 +626,46 @@ public class SignoffTimingAnalysis {
         if (inst == null || inst.getCellType() == null) {
             return false;
         }
-        return clockLogicalPin(cell) != null;
+        String logical = clockLogicalPin(cell);
+        if (logical == null) {
+            return false;
+        }
+        // A clock pin tied to a constant makes the cell combinational: an
+        // HLS multiplier is a DSP58 with CLK at ground, and paths run
+        // straight through it.
+        return !hasTiedClock(cell, logical);
+    }
+
+    /**
+     * Whether the cell's clock, resolved through any macro hierarchy it sits
+     * in, is a constant. A macro's internal clock net does not resolve to a
+     * physical net, so the climb looks for the first enclosing instance
+     * whose clock port does.
+     */
+    private static boolean hasTiedClock(Cell cell, String logical) {
+        SiteInst si = cell.getSiteInst();
+        if (si == null || si.getDesign() == null) {
+            return false;
+        }
+        Design design = si.getDesign();
+        EDIFHierCellInst inst = cell.getEDIFHierCellInst();
+        for (int level = 0; inst != null && level < 4; level++, inst = inst.getParent()) {
+            for (EDIFHierPortInst hp : inst.getHierPortInsts()) {
+                String name = hp.getPortInst().getName();
+                if (!(level == 0 ? name.equals(logical) : name.toLowerCase().contains("clk"))
+                        || hp.getHierarchicalNet() == null) {
+                    continue;
+                }
+                Net net = design.getNetlist().getPhysicalNetFromPin(hp, design);
+                if (net != null && net.isStaticNet()) {
+                    return true;
+                }
+                if (net != null && (!net.getPins().isEmpty() || !net.getPIPs().isEmpty())) {
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     /** A worst-slack summary line in the spirit of Vivado's. */
