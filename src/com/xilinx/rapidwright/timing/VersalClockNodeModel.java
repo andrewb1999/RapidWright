@@ -66,6 +66,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
 
     private final Map<String, double[]> arrival = new HashMap<>();
     private final Map<String, double[]> byType = new HashMap<>();
+    /** Arrival-scale fallback per wire template, from fitted instance means. */
+    private final Map<String, double[]> typeFallback = new HashMap<>();
     private final int bufgMaxPs;
     private final int bufgMinPs;
 
@@ -75,6 +77,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
     private long termsPriced;
     private long termsFallback;
     private long termsUnknown;
+    private final boolean armed;
+    private final com.xilinx.rapidwright.design.Design design;
 
     public VersalClockNodeModel(Net clk, Path table) throws IOException {
         this(clk, table, VersalClockTimingModel.DEFAULT_BUFG_MAX_PS,
@@ -85,6 +89,9 @@ public class VersalClockNodeModel implements ClockDelayModel {
             throws IOException {
         this.bufgMaxPs = bufgMaxPs;
         this.bufgMinPs = bufgMinPs;
+        com.xilinx.rapidwright.design.Design design = clk.getDesign();
+        this.armed = design != null && hasArmedStations(design);
+        this.design = design;
         read(table);
         if (arrival.isEmpty()) {
             throw new IOException("No clock_node_delay entries in " + table);
@@ -138,6 +145,31 @@ public class VersalClockNodeModel implements ClockDelayModel {
         return n.getIntentCode() + "@" + n.getTile().getTileTypeEnum();
     }
 
+    /** Feature name for programmed leaf deskew taps at the sink slice. */
+    public static final String LEAF_TAPS_TERM = "LEAF_TAPS";
+    /** Feature name for armed SSIT delay stations crossed by the route. */
+    public static final String ARMED_STATION_TERM = "ARMED_STATIONS";
+
+    /** Whether a route node passes through an SSIT programmable delay station. */
+    public static boolean isDelayStationNode(Node n) {
+        return n.getWireName().contains("PD_OPT_DELAY");
+    }
+
+    /**
+     * Whether the design armed the SSIT stations' optimized (self-computed)
+     * delay. Vivado's router arms them design-wide; an armed station carries
+     * delay no route topology reveals, so it is a fitted per-crossing term.
+     */
+    public static boolean hasArmedStations(com.xilinx.rapidwright.design.Design design) {
+        for (Map.Entry<com.xilinx.rapidwright.device.Site, com.xilinx.rapidwright.design.SiteConfig> e
+                : design.getBELAttrs().entrySet()) {
+            if (e.getKey().getSiteTypeEnum().name().contains("GCLK_DELAY")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // ClockDelayModel.
     // ------------------------------------------------------------------
@@ -160,9 +192,11 @@ public class VersalClockNodeModel implements ClockDelayModel {
             if (term != null) {
                 termsPriced++;
             } else {
-                // A trunk instance the fit never saw: its type-by-tile term
-                // is the bound the transfer experiments validated.
-                term = byType.get(typeKey(n));
+                // A trunk instance the fit never saw: fall back to the mean
+                // of fitted instance terms of the same wire template — an
+                // arrival-scale value. The pessimism coefficients are
+                // whole-route distributors and must never be summed here.
+                term = typeFallback.get(n.getWireName().replaceAll("\\d+", "#"));
                 if (term != null) {
                     termsFallback++;
                 } else {
@@ -171,6 +205,27 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 }
             }
             t += term[ci];
+        }
+        // Programmed state the checkpoint carries: leaf deskew taps at the
+        // sink slice, and armed SSIT delay stations crossed by the route.
+        if (design != null && site.getName().startsWith("SLICE")) {
+            int taps = com.xilinx.rapidwright.router.VersalClockDeskew.getLeafClockDelay(design, site);
+            if (taps > 0) {
+                double[] term = byType.get(LEAF_TAPS_TERM);
+                t += taps * (term != null ? term[ci] : 68.0);
+            }
+        }
+        if (armed) {
+            int stations = 0;
+            for (Node n : route) {
+                if (isDelayStationNode(n)) {
+                    stations++;
+                }
+            }
+            double[] term = byType.get(ARMED_STATION_TERM);
+            if (stations > 0 && term != null) {
+                t += stations * term[ci];
+            }
         }
         return (float) t;
     }
@@ -227,7 +282,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
             if (t.isEmpty() || t.startsWith("#")) {
                 continue;
             }
-            if (t.startsWith("clock_node_delay") || t.startsWith("clock_pessimism_delay")) {
+            if (t.startsWith("clock_node_delay") || t.startsWith("clock_pessimism_delay")
+                    || t.startsWith("clock_type_fallback")) {
                 section = t.split("\\s+")[0];
                 continue;
             }
@@ -236,7 +292,13 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 continue;
             }
             double[] v = new double[] { Double.parseDouble(f[1]), Double.parseDouble(f[2]) };
-            (section.equals("clock_node_delay") ? arrival : byType).put(f[0], v);
+            if (section.equals("clock_node_delay")) {
+                arrival.put(f[0], v);
+            } else if (section.equals("clock_type_fallback")) {
+                typeFallback.put(f[0], v);
+            } else {
+                byType.put(f[0], v);
+            }
         }
     }
 }
