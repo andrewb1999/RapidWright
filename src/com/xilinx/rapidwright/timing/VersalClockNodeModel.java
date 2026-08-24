@@ -215,6 +215,62 @@ public class VersalClockNodeModel implements ClockDelayModel {
         return com.xilinx.rapidwright.router.VersalClockDeskew.getLeafClockDelay(design, site);
     }
 
+    /** Feature name for programmed delay taps on interface (IRI) leaves. */
+    public static final String IRI_TAPS_TERM = "IRI_TAPS";
+
+    /**
+     * Programmed delay taps on the interface leaf a route ends through.
+     * Block RAM, DSP and other non-slice sinks take their clock from an
+     * {@code IRI_QUAD} site whose {@code IRI_FF_CLK_MOD} can select a
+     * delayed clock ({@code CLK_SEL=DLYD_CLK}) with {@code CLK_DLY_VAL_COE}
+     * taps — Vivado's deskew for those pins, which made a block RAM's two
+     * clocks arrive 700 ps apart. Zero when nothing is programmed.
+     */
+    public static int iriTaps(com.xilinx.rapidwright.design.Design design, List<Node> route) {
+        if (design == null || design.getBELAttrs() == null) {
+            return 0;
+        }
+        for (Node n : route) {
+            com.xilinx.rapidwright.device.SitePin sp = n.getSitePin();
+            if (sp == null || !sp.getSite().getSiteTypeEnum().name().startsWith("IRI_QUAD")) {
+                continue;
+            }
+            com.xilinx.rapidwright.design.SiteConfig sc = design.getBELAttrs().get(sp.getSite());
+            if (sc == null) {
+                continue;
+            }
+            for (Map.Entry<com.xilinx.rapidwright.device.BEL, Map<String, com.xilinx.rapidwright.design.BELAttr>> e
+                    : sc.getBELAttributes().entrySet()) {
+                if (!e.getKey().getName().equals("IRI_FF_CLK_MOD")) {
+                    continue;
+                }
+                com.xilinx.rapidwright.design.BELAttr sel = e.getValue().get("CLK_SEL");
+                com.xilinx.rapidwright.design.BELAttr val = e.getValue().get("CLK_DLY_VAL_COE");
+                if (sel == null || val == null || !sel.getValue().contains("DLYD")) {
+                    return 0;
+                }
+                return parseTaps(val.getValue());
+            }
+        }
+        return 0;
+    }
+
+    /** Parses a Verilog-style sized literal such as {@code 4'hB}, or a plain integer. */
+    static int parseTaps(String v) {
+        try {
+            int q = v.indexOf('\'');
+            if (q < 0) {
+                return Integer.parseInt(v.trim());
+            }
+            char base = Character.toLowerCase(v.charAt(q + 1));
+            String digits = v.substring(q + 2).trim();
+            int radix = base == 'h' ? 16 : base == 'b' ? 2 : base == 'o' ? 8 : 10;
+            return Integer.parseInt(digits, radix);
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    }
+
     /** Whether a route node passes through an SSIT programmable delay station. */
     public static boolean isDelayStationNode(Node n) {
         return n.getWireName().contains("PD_OPT_DELAY");
@@ -290,6 +346,14 @@ public class VersalClockNodeModel implements ClockDelayModel {
             if (taps > 0) {
                 double[] term = byType.get(LEAF_TAPS_TERM);
                 t += taps * (term != null ? term[ci] : 68.0);
+            }
+            int iri = iriTaps(design, route);
+            if (iri > 0) {
+                double[] term = byType.get(IRI_TAPS_TERM);
+                if (term == null) {
+                    term = byType.get(LEAF_TAPS_TERM);
+                }
+                t += iri * (term != null ? term[ci] : 68.0);
             }
         }
         if (armed) {
