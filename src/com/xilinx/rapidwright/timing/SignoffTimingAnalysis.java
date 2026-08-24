@@ -162,6 +162,8 @@ public class SignoffTimingAnalysis {
         public int unpricedLogic;
         public int unpricedCheck;
         public int depthExceeded;
+        /** Registers in a clock site but clocked by another net, and paths into them. */
+        public int otherClock;
         /** Hops that never leave the site. */
         public int intraSiteHops;
         /** Of those, the ones with no characterized delay, priced at zero. */
@@ -179,7 +181,8 @@ public class SignoffTimingAnalysis {
                     + ", endpoints " + endpointsPriced + "; dropped: clock " + unpricedClock
                     + " " + uncoveredClockSiteTypes + ", net " + unpricedNet + " "
                     + unpricedNetReasons + ", logic " + unpricedLogic + ", check "
-                    + unpricedCheck + ", depth " + depthExceeded + "; intra-site hops "
+                    + unpricedCheck + ", depth " + depthExceeded + ", other clock " + otherClock
+                    + "; intra-site hops "
                     + intraSiteHops + " (" + intraSiteUnknown + " unknown: "
                     + intraSiteUnknownPairs + ")";
         }
@@ -248,6 +251,11 @@ public class SignoffTimingAnalysis {
 
         for (Cell launch : placed.values()) {
             if (!isRegister(launch) || !clockSites.contains(launch.getSite().getName())) {
+                continue;
+            }
+            if (!isOnClock(launch)) {
+                // In a site the clock reaches, but clocked by something else.
+                coverage.otherClock++;
                 continue;
             }
             coverage.launchRegisters++;
@@ -375,6 +383,11 @@ public class SignoffTimingAnalysis {
                             String dataLogicalPin, String dataBel, float netPs, float logicPs,
                             int depth, List<String> pins, List<Float> hops, EDIFHierPortInst endPin,
                             boolean setup, Map<String, PathResult> worst) {
+        if (!isOnClock(capture)) {
+            // A path into another clock domain is not this analysis's to price.
+            coverage.otherClock++;
+            return;
+        }
         Corner captureCorner = setup ? Corner.SLOW_MIN : Corner.SLOW_MAX;
         Float captureClock = clockModel.getArrivalPs(capture.getSite(), captureCorner);
         if (captureClock == null) {
@@ -462,6 +475,29 @@ public class SignoffTimingAnalysis {
             coverage.unpricedNetReasons.merge("model", 1, Integer::sum);
         }
         return d;
+    }
+
+    /**
+     * Whether a register's clock pin is driven by the analysed clock net.
+     * Being in a site the clock reaches is not enough: a slice can hold
+     * registers on two clocks. Pins whose net cannot be resolved (macro
+     * internals) are taken to be on the clock, since their site is.
+     */
+    private boolean isOnClock(Cell cell) {
+        String logical = clockLogicalPin(cell);
+        EDIFHierCellInst inst = cell.getEDIFHierCellInst();
+        if (logical == null || inst == null) {
+            return true;
+        }
+        EDIFHierPortInst pin = inst.getPortInst(logical);
+        if (pin == null) {
+            return true;
+        }
+        Net net = design.getNetlist().getPhysicalNetFromPin(pin, design);
+        if (net == null) {
+            return true;
+        }
+        return net == clock || (net.getPins().isEmpty() && net.getPIPs().isEmpty());
     }
 
     private Set<String> clockSiteNames() {
