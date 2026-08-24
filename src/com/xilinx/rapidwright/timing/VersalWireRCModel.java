@@ -147,9 +147,14 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         return w.contains("EE") || w.contains("WW");
     }
 
-    /** The per-position correction key for a horizontal span wire. */
-    public static String hwireKey(Node n) {
-        return wireClass(n) + "@" + n.getTile().getColumn();
+    /**
+     * The per-position correction key for a span wire: horizontal wires vary
+     * by which columns they cross (keyed by column), vertical ones by which
+     * rows (keyed by row) — the transverse coordinate is uniform silicon.
+     */
+    public static String spanKey(Node n) {
+        return wireClass(n) + "@"
+                + (isHorizontal(n) ? n.getTile().getColumn() : n.getTile().getRow());
     }
 
     /**
@@ -281,9 +286,9 @@ public class VersalWireRCModel implements InterconnectDelayModel {
                     t += rows * sp[0];
                 }
             }
-            if (isSpanWire(n) && isHorizontal(n)) {
+            if (isSpanWire(n)) {
                 hwireNodes++;
-                double[] corr = hwireCorr.get(hwireKey(n));
+                double[] corr = hwireCorr.get(spanKey(n));
                 if (corr != null) {
                     hwireCovered++;
                     t += corr[ci];
@@ -347,6 +352,10 @@ public class VersalWireRCModel implements InterconnectDelayModel {
             }
             String[] f = t.split("\\s+");
             if (section == null || f.length < 3) {
+                continue;
+            }
+            // Under-sampled keys carry attribution noise, not signal.
+            if (f.length > 3 && Double.parseDouble(f[3]) < 4) {
                 continue;
             }
             hwireCorr.put(f[0], new double[] { Double.parseDouble(f[1]), Double.parseDouble(f[2]) });
