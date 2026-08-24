@@ -18,12 +18,13 @@
  *
  */
 
-package com.xilinx.rapidwright.router;
+package com.xilinx.rapidwright.timing;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -41,7 +42,7 @@ import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.device.Tile;
 import com.xilinx.rapidwright.rwroute.RouterHelper;
-import com.xilinx.rapidwright.timing.ClkRouteTiming;
+import com.xilinx.rapidwright.util.FileTools;
 
 /**
  * Computes clock arrival and skew for a routed Versal clock net from
@@ -67,7 +68,7 @@ import com.xilinx.rapidwright.timing.ClkRouteTiming;
  * (about one {@link VersalClockDeskew} tap). Dropping the pessimism term
  * instead gives a mean error of 491ps, larger than the skew being measured.
  */
-public class VersalClockTimingModel {
+public class VersalClockTimingModel implements ClockDelayModel {
 
     /**
      * Input net plus BUFG cell delay in ps, which sits between the clock port
@@ -89,6 +90,26 @@ public class VersalClockTimingModel {
 
     public static final int DEFAULT_BUFG_MAX_PS = 146;
     public static final int DEFAULT_BUFG_MIN_PS = 120;
+
+    /** Default table locations, relative to the RapidWright data directory. */
+    public static final String DEFAULT_MAX_FILE = "data/versal_clk_route_timing_max.txt";
+    public static final String DEFAULT_MIN_FILE = "data/versal_clk_route_timing_min.txt";
+    public static final String DEFAULT_CPR_FILE = "data/versal_clk_cpr_by_divergence.txt";
+
+    /**
+     * Builds the model for a clock net from the tables at their default
+     * locations in the RapidWright installation.
+     */
+    public static VersalClockTimingModel load(Net clk) throws IOException {
+        String max = FileTools.getRapidWrightResourceFileName(DEFAULT_MAX_FILE);
+        String min = FileTools.getRapidWrightResourceFileName(DEFAULT_MIN_FILE);
+        String cpr = FileTools.getRapidWrightResourceFileName(DEFAULT_CPR_FILE);
+        if (max == null || min == null) {
+            throw new IOException("Cannot locate " + DEFAULT_MAX_FILE + ": RAPIDWRIGHT_PATH is not set");
+        }
+        Path cprPath = cpr != null && Files.exists(Paths.get(cpr)) ? Paths.get(cpr) : null;
+        return new VersalClockTimingModel(clk, Paths.get(max), Paths.get(min), cprPath);
+    }
 
     public VersalClockTimingModel(Net clk, Path maxDelayFile, Path minDelayFile, Path cprFile)
             throws IOException {
@@ -121,16 +142,10 @@ public class VersalClockTimingModel {
             if (t != null) {
                 siteTile.put(spi.getSite(), t.getName());
             }
-            Node sink = spi.getConnectedNode();
-            if (sink == null || !parent.containsKey(sink)) {
-                continue;
+            List<Node> route = routeToSink(parent, spi.getConnectedNode());
+            if (!route.isEmpty()) {
+                siteRoute.put(spi.getSite(), route);
             }
-            List<Node> route = new ArrayList<>();
-            for (Node n = sink; n != null; n = parent.get(n)) {
-                route.add(n);
-            }
-            Collections.reverse(route);
-            siteRoute.put(spi.getSite(), route);
         }
     }
 
@@ -144,6 +159,63 @@ public class VersalClockTimingModel {
      * vertical routing spine are not represented by PIPs at all, so the search
      * also steps to downhill neighbours belonging to the net.
      */
+    /**
+     * The nodes from the clock source to a sink, in source-to-sink order, or
+     * an empty list if the sink cannot be joined to the routed tree.
+     *
+     * <p>A sink pin's node is not always among the net's PIPs: a checkpoint
+     * can leave out the final hop into a DSP or interface tile, so the pin's
+     * node is joined by searching uphill from it for the nearest node the
+     * routed tree does reach.
+     */
+    public static List<Node> routeToSink(Map<Node, Node> parent, Node sink) {
+        List<Node> tail = new ArrayList<>();
+        Node join = sink;
+        if (sink != null && !parent.containsKey(sink)) {
+            join = null;
+            Map<Node, Node> up = new HashMap<>();
+            Deque<Node> queue = new ArrayDeque<>();
+            queue.add(sink);
+            up.put(sink, null);
+            int expanded = 0;
+            while (!queue.isEmpty() && join == null && expanded++ < MAX_UPHILL_SEARCH) {
+                Node n = queue.poll();
+                for (Node u : n.getAllUphillNodes()) {
+                    if (up.containsKey(u)) {
+                        continue;
+                    }
+                    up.put(u, n);
+                    if (parent.containsKey(u)) {
+                        join = u;
+                        break;
+                    }
+                    queue.add(u);
+                }
+            }
+            if (join == null) {
+                return tail;
+            }
+            // From the join back down to the sink, excluding the join itself.
+            for (Node n = up.get(join); n != null; n = up.get(n)) {
+                tail.add(n);
+            }
+        }
+        List<Node> route = new ArrayList<>();
+        for (Node n = join; n != null; n = parent.get(n)) {
+            route.add(n);
+        }
+        Collections.reverse(route);
+        route.addAll(tail);
+        return route;
+    }
+
+    /**
+     * Uphill nodes to examine when joining a sink to the tree. The hops are
+     * few, but an interface tile's clock mux fans in from many nodes, so the
+     * search has to be allowed to look past them.
+     */
+    private static final int MAX_UPHILL_SEARCH = 4096;
+
     private static Map<Node, Node> buildParents(Net clk) {
         Map<Node, List<Node>> downhill = new HashMap<>();
         Set<Node> netNodes = new HashSet<>();
@@ -226,6 +298,31 @@ public class VersalClockTimingModel {
      *                back different amounts for the same shared path.
      * @return Skew in ps, or null if either site is not covered by the data.
      */
+    @Override
+    public TimingFidelity getFidelity() {
+        return TimingFidelity.SIGNOFF;
+    }
+
+    /**
+     * Clock arrival at a site, from the clock source through the buffer:
+     * Vivado's startpoint clock delay at {@link Corner#SLOW_MAX} and its
+     * endpoint clock delay at {@link Corner#SLOW_MIN}.
+     */
+    @Override
+    public Float getArrivalPs(Site site, Corner corner) {
+        if (corner == Corner.SLOW_MIN) {
+            Short c = captureDelay(site);
+            return c == null ? null : (float) (c + bufgMinPs);
+        }
+        Short l = launchDelay(site);
+        return l == null ? null : (float) (l + bufgMaxPs);
+    }
+
+    @Override
+    public float getPessimismRemovalPs(Site launch, Site capture, boolean setup) {
+        return getCprPs(launch, capture, setup);
+    }
+
     public Integer getSkewPs(Site launch, Site capture, boolean setup) {
         Short l = launchDelay(launch);
         Short c = captureDelay(capture);
@@ -248,12 +345,32 @@ public class VersalClockTimingModel {
         if (a == null || b == null) {
             return 0;
         }
-        Node div = divergenceNode(a, b);
-        if (div == null) {
-            return 0;
+        int n = Math.min(a.size(), b.size());
+        int shared = 0;
+        while (shared < n && a.get(shared).equals(b.get(shared))) {
+            shared++;
         }
-        Integer v = cpr.get((setup ? "setup " : "hold ") + div);
-        return v == null ? 0 : v;
+        // The table was sampled from real paths, so a divergence node the
+        // sample never saw can be missing. The nearest shared ancestor that is
+        // present bounds the credit from below, which is closer than nothing.
+        String prefix = setup ? "setup " : "hold ";
+        for (int i = shared - 1; i >= 0; i--) {
+            Integer v = cpr.get(prefix + a.get(i));
+            if (v != null) {
+                if (i < shared - 1) {
+                    fallbackCount++;
+                }
+                return v;
+            }
+        }
+        return 0;
+    }
+
+    private int fallbackCount = 0;
+
+    /** How many pessimism lookups fell back to an ancestor of the divergence node. */
+    public int getCprFallbackCount() {
+        return fallbackCount;
     }
 
     /**

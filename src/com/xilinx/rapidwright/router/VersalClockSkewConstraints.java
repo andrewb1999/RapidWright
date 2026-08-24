@@ -40,6 +40,7 @@ import com.xilinx.rapidwright.edif.EDIFDirection;
 import com.xilinx.rapidwright.edif.EDIFNet;
 import com.xilinx.rapidwright.edif.EDIFPortInst;
 import com.xilinx.rapidwright.router.VersalClockSkewSolver.SkewConstraint;
+import com.xilinx.rapidwright.timing.VersalClockTimingModel;
 
 /**
  * Derives the launch/capture site pairs a clock skew solve needs, by walking
