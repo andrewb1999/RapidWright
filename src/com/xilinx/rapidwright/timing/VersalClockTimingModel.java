@@ -216,7 +216,7 @@ public class VersalClockTimingModel implements ClockDelayModel {
      */
     private static final int MAX_UPHILL_SEARCH = 4096;
 
-    private static Map<Node, Node> buildParents(Net clk) {
+    public static Map<Node, Node> buildParents(Net clk) {
         Map<Node, List<Node>> downhill = new HashMap<>();
         Set<Node> netNodes = new HashSet<>();
         for (PIP p : clk.getPIPs()) {
