@@ -60,6 +60,8 @@ public class TimingManager {
     private float timingRequirement;
     private float pessimismA = (float) 1.03;
     private float pessimismB = 100;
+    /** What the model backing this manager promises; see {@link TimingFidelity}. */
+    private final TimingFidelity fidelity;
     
     /**
      * Default constructor: creates the TimingManager object, which the user needs to create for 
@@ -79,6 +81,7 @@ public class TimingManager {
      */
     public TimingManager(Design design, boolean doBuild) {
         this.design = design;
+        fidelity = TimingFidelity.forSeries(design.getSeries());
         timingModel = new TimingModel(design.getDevice());
         timingGraph = new TimingGraph(design);
         timingModel.setTimingManager(this);
@@ -91,6 +94,7 @@ public class TimingManager {
     
     public TimingManager(Design design, RuntimeTrackerTree timer, RWRouteConfig config, ClkRouteTiming clkTiming, Collection<Net> targetNets, boolean isPartialRouting) {
         this.design = design;
+        fidelity = TimingFidelity.forSeries(design.getSeries());
         setTimingRequirement();
         verbose = config.isVerbose();
         setPessimismFactors(config.getPessimismA(), config.getPessimismB());
@@ -192,11 +196,15 @@ public class TimingManager {
         }
         System.out.printf(MessageGenerator.formatString("Critical path delay (ps):", (int)(arr - criticalEdges.get(0).getDelay() - clkskew)));
         System.out.printf(MessageGenerator.formatString("Slack (ps):", (int)(timingRequirement - maxDelay)));
-        System.out.printf(MessageGenerator.formatString("With timing closure guarantee:"));
-        int adjusted = (int) (pessimismA * (arr - criticalEdges.get(0).getDelay() - clkskew) + pessimismB);
-        System.out.printf(MessageGenerator.formatString("Critical path delay (ps):", adjusted));
-        System.out.printf(MessageGenerator.formatString("Slack (ps):", (int)(timingRequirement - adjusted)));
-        
+        // The margin turns an estimate into a bound. A signoff model is not an
+        // estimate, so padding it would only misreport the slack.
+        if (fidelity.needsPessimism()) {
+            System.out.printf(MessageGenerator.formatString("With timing closure guarantee:"));
+            int adjusted = (int) (pessimismA * (arr - criticalEdges.get(0).getDelay() - clkskew) + pessimismB);
+            System.out.printf(MessageGenerator.formatString("Critical path delay (ps):", adjusted));
+            System.out.printf(MessageGenerator.formatString("Slack (ps):", (int)(timingRequirement - adjusted)));
+        }
+
         printPathDelayBreakDown(arr, criticalEdges, timingGraph.getTimingEdgeConnectionMap(), useRoutable, routingGraph);
     }
     
@@ -357,6 +365,15 @@ public class TimingManager {
      * Gets the TimingGraph object.
      * @return TimingGraph
      */
+    /**
+     * What the model backing this manager promises about its numbers. Callers
+     * that present a critical path as a timing closure bound should consult
+     * {@link TimingFidelity#needsPessimism()} before padding it.
+     */
+    public TimingFidelity getFidelity() {
+        return fidelity;
+    }
+
     public TimingGraph getTimingGraph() {
         return timingGraph;
     }
