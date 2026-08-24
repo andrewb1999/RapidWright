@@ -150,6 +150,14 @@ public class VersalClockNodeModel implements ClockDelayModel {
     /** Feature name for armed SSIT delay stations crossed by the route. */
     public static final String ARMED_STATION_TERM = "ARMED_STATIONS";
 
+    /** Programmed leaf deskew taps at a slice, or 0 when the design carries no attributes. */
+    public static int leafTaps(com.xilinx.rapidwright.design.Design design, Site site) {
+        if (design == null || design.getBELAttrs() == null || !site.getName().startsWith("SLICE")) {
+            return 0;
+        }
+        return com.xilinx.rapidwright.router.VersalClockDeskew.getLeafClockDelay(design, site);
+    }
+
     /** Whether a route node passes through an SSIT programmable delay station. */
     public static boolean isDelayStationNode(Node n) {
         return n.getWireName().contains("PD_OPT_DELAY");
@@ -161,6 +169,9 @@ public class VersalClockNodeModel implements ClockDelayModel {
      * delay no route topology reveals, so it is a fitted per-crossing term.
      */
     public static boolean hasArmedStations(com.xilinx.rapidwright.design.Design design) {
+        if (design == null || design.getBELAttrs() == null) {
+            return false;
+        }
         for (Map.Entry<com.xilinx.rapidwright.device.Site, com.xilinx.rapidwright.design.SiteConfig> e
                 : design.getBELAttrs().entrySet()) {
             if (e.getKey().getSiteTypeEnum().name().contains("GCLK_DELAY")) {
@@ -208,8 +219,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
         }
         // Programmed state the checkpoint carries: leaf deskew taps at the
         // sink slice, and armed SSIT delay stations crossed by the route.
-        if (design != null && site.getName().startsWith("SLICE")) {
-            int taps = com.xilinx.rapidwright.router.VersalClockDeskew.getLeafClockDelay(design, site);
+        {
+            int taps = leafTaps(design, site);
             if (taps > 0) {
                 double[] term = byType.get(LEAF_TAPS_TERM);
                 t += taps * (term != null ? term[ci] : 68.0);
