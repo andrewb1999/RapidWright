@@ -410,6 +410,31 @@ public class VersalClockNodeModel implements ClockDelayModel {
         return (float) (setup ? spread : -spread);
     }
 
+    /** Whether the table has an exact arrival term for this route node. */
+    public boolean hasArrivalTerm(Node n) {
+        return arrival.containsKey(arrivalKey(n));
+    }
+
+    /** The arrival term of one route node (exact, template fallback, or 0 if unknown). */
+    public double nodeTermPs(Node n, Corner corner) {
+        double[] term = arrival.get(arrivalKey(n));
+        if (term == null) {
+            term = typeFallback.get(n.getWireName().replaceAll("\\d+", "#"));
+        }
+        return term == null ? 0 : term[corner == Corner.SLOW_MIN ? 1 : 0];
+    }
+
+    /** The buffer constant the arrival starts from. */
+    public double bufgPs(Corner corner) {
+        return corner == Corner.SLOW_MIN ? bufgMinPs : bufgMaxPs;
+    }
+
+    /** A fitted pessimism-section term ({@code [max, min]}), or null if absent. */
+    public double[] getTerm(String name) {
+        double[] t = byType.get(name);
+        return t == null ? null : t.clone();
+    }
+
     /** Whether the model has an arrival for this site's clock pin. */
     public boolean covers(Site site) {
         return siteRoute.containsKey(site);
