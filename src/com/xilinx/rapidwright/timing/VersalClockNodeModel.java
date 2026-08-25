@@ -79,6 +79,19 @@ public class VersalClockNodeModel implements ClockDelayModel {
      */
     public static final String DESKEW_HEADER = "clock_deskew";
     private boolean deskew;
+    /**
+     * Grid form: the balanced vertical trunk is a measured term per spine
+     * column and top row ({@code TARGET:<tileX>:<tileY>}), shared by every
+     * tree with that geometry, and a sink's arrival is its origin-to-spine
+     * hops + that term + its route below the row anchor.
+     */
+    public static final String TARGET_PREFIX = "TARGET:";
+    private boolean targetGrid;
+    /** Spine column tile X -> top row tile Y -> target term. */
+    private final Map<Integer, java.util.TreeMap<Integer, double[]>> targets = new HashMap<>();
+    /** Per route: index of the first vertical trunk node, or -1. */
+    private final Map<List<Node>, Integer> spineIndex = new java.util.IdentityHashMap<>();
+    private int treeTopY = -1;
     /** Per route: index of the first node after the last vertical trunk node, or -1. */
     private final Map<List<Node>, Integer> anchorIndex = new java.util.IdentityHashMap<>();
     /** The tree's balanced arrival at the row anchors: the slowest row's undelayed trunk. */
@@ -165,6 +178,17 @@ public class VersalClockNodeModel implements ClockDelayModel {
         if (!deskew || !armed) {
             return;
         }
+        if (targetGrid) {
+            for (List<Node> route : pinRoute.values()) {
+                int a = anchorOf(route);
+                anchorIndex.put(route, a);
+                spineIndex.put(route, spineOf(route));
+                if (a > 0) {
+                    treeTopY = Math.max(treeTopY, route.get(a - 1).getTile().getTileYCoordinate());
+                }
+            }
+            return;
+        }
         // The slowest row is the topmost one (the buffers sit in the bottom
         // HSR). Its undelayed trunk is the target; a trunk priced through a
         // fallback term is only used when no exactly priced one exists.
@@ -206,6 +230,42 @@ public class VersalClockNodeModel implements ClockDelayModel {
         }
     }
 
+    /** Index of the first vertical trunk node (the spine column) of a route, or -1. */
+    public static int spineOf(List<Node> route) {
+        for (int i = 0; i < route.size(); i++) {
+            if (route.get(i).getIntentCode().toString().contains("VROUTE")) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Grid target for a spine column and top row: the measured term, or a
+     * linear interpolation between the measured heights of that column.
+     */
+    private double[] gridTarget(int spineX, int topY) {
+        java.util.TreeMap<Integer, double[]> col = targets.get(spineX);
+        if (col == null || col.isEmpty()) {
+            return null;
+        }
+        double[] exact = col.get(topY);
+        if (exact != null) {
+            return exact;
+        }
+        Map.Entry<Integer, double[]> lo = col.floorEntry(topY);
+        Map.Entry<Integer, double[]> hi = col.ceilingEntry(topY);
+        if (lo == null) {
+            return hi.getValue();
+        }
+        if (hi == null) {
+            return lo.getValue();
+        }
+        double w = (topY - lo.getKey()) / (double) (hi.getKey() - lo.getKey());
+        return new double[] { lo.getValue()[0] + w * (hi.getValue()[0] - lo.getValue()[0]),
+                lo.getValue()[1] + w * (hi.getValue()[1] - lo.getValue()[1]) };
+    }
+
     /** Index after the last vertical trunk node of a route, or -1 if none or nothing follows. */
     public static int anchorOf(List<Node> route) {
         int a = -1;
@@ -221,6 +281,17 @@ public class VersalClockNodeModel implements ClockDelayModel {
     /** The balanced-tree target arrival at the row anchors, or null when the tree is not balanced. */
     public Double getTargetPs(Corner corner) {
         return deskew && armed && targetRoute != null ? target[corner == Corner.SLOW_MIN ? 1 : 0] : null;
+    }
+
+    /** Grid form: the tree's top anchor row, or -1. */
+    public int getTreeTopY() {
+        return treeTopY;
+    }
+
+    /** Grid form: the measured target for a spine column at the tree's top row, or null. */
+    public Double getGridTargetPs(int spineX, Corner corner) {
+        double[] tg = targetGrid ? gridTarget(spineX, treeTopY) : null;
+        return tg == null ? null : tg[corner == Corner.SLOW_MIN ? 1 : 0];
     }
 
     /** The route whose undelayed trunk sets the target, for diagnostics. */
@@ -438,6 +509,27 @@ public class VersalClockNodeModel implements ClockDelayModel {
         return arrival(site, route != null ? route : siteRoute.get(site), corner);
     }
 
+    /** A node's arrival term at a corner index, exact or by wire-template fallback (0 if unknown). */
+    private double priced(Node n, int ci) {
+        double[] term = arrival.get(arrivalKey(n));
+        if (term != null) {
+            termsPriced++;
+        } else {
+            // A trunk instance the fit never saw: fall back to the mean
+            // of fitted instance terms of the same wire template — an
+            // arrival-scale value. The pessimism coefficients are
+            // whole-route distributors and must never be summed here.
+            term = typeFallback.get(n.getWireName().replaceAll("\\d+", "#"));
+            if (term != null) {
+                termsFallback++;
+            } else {
+                termsUnknown++;
+                return 0;
+            }
+        }
+        return term[ci];
+    }
+
     private Float arrival(Site site, List<Node> route, Corner corner) {
         if (route == null) {
             return null;
@@ -445,7 +537,22 @@ public class VersalClockNodeModel implements ClockDelayModel {
         int ci = corner == Corner.SLOW_MIN ? 1 : 0;
         double t = corner == Corner.SLOW_MIN ? bufgMinPs : bufgMaxPs;
         int from = 0;
-        Integer anchor = deskew && armed && targetRoute != null ? anchorIndex.get(route) : null;
+        if (deskew && armed && targetGrid) {
+            Integer anchor = anchorIndex.get(route);
+            Integer spine = spineIndex.get(route);
+            double[] tg = anchor != null && anchor >= 0 && spine != null && spine >= 0
+                    ? gridTarget(route.get(spine).getTile().getTileXCoordinate(), treeTopY) : null;
+            if (tg != null) {
+                // Origin-to-spine hops, then the measured vertical target,
+                // then the route below the row anchor.
+                for (int ri = 0; ri < spine; ri++) {
+                    t += priced(route.get(ri), ci);
+                }
+                t += tg[ci];
+                from = anchor;
+            }
+        }
+        Integer anchor = deskew && armed && !targetGrid && targetRoute != null ? anchorIndex.get(route) : null;
         if (anchor != null && anchor >= 0) {
             // Balanced tree: the row anchor arrives at the target; only the
             // route below it is priced, stations included as ordinary nodes.
@@ -453,24 +560,7 @@ public class VersalClockNodeModel implements ClockDelayModel {
             from = anchor;
         }
         for (int ri = from; ri < route.size(); ri++) {
-            Node n = route.get(ri);
-            double[] term = arrival.get(arrivalKey(n));
-            if (term != null) {
-                termsPriced++;
-            } else {
-                // A trunk instance the fit never saw: fall back to the mean
-                // of fitted instance terms of the same wire template — an
-                // arrival-scale value. The pessimism coefficients are
-                // whole-route distributors and must never be summed here.
-                term = typeFallback.get(n.getWireName().replaceAll("\\d+", "#"));
-                if (term != null) {
-                    termsFallback++;
-                } else {
-                    termsUnknown++;
-                    continue;
-                }
-            }
-            t += term[ci];
+            t += priced(route.get(ri), ci);
         }
         // Programmed state the checkpoint carries: leaf deskew taps at the
         // sink slice, and armed SSIT delay stations crossed by the route.
@@ -598,6 +688,7 @@ public class VersalClockNodeModel implements ClockDelayModel {
             }
             if (t.startsWith(DESKEW_HEADER)) {
                 deskew = true;
+                targetGrid = t.contains("grid");
                 continue;
             }
             String[] f = t.split("\\s+");
@@ -605,6 +696,12 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 continue;
             }
             double[] v = new double[] { Double.parseDouble(f[1]), Double.parseDouble(f[2]) };
+            if (section.equals("clock_node_delay") && f[0].startsWith(TARGET_PREFIX)) {
+                String[] xy = f[0].substring(TARGET_PREFIX.length()).split(":");
+                targets.computeIfAbsent(Integer.parseInt(xy[0]), k -> new java.util.TreeMap<>())
+                        .put(Integer.parseInt(xy[1]), v);
+                continue;
+            }
             if (section.equals("clock_node_delay")) {
                 arrival.put(f[0], v);
                 // Programmed-state features are fitted alongside the arrival
