@@ -87,8 +87,13 @@ public class VersalClockNodeModel implements ClockDelayModel {
      */
     public static final String TARGET_PREFIX = "TARGET:";
     private boolean targetGrid;
+    /** Extent form: terms keyed by spine column, bottom and top loaded rows ({@code TARGET:<x>:<ya>:<yb>}). */
+    private boolean targetExtent;
     /** Spine column tile X -> top row tile Y -> target term. */
     private final Map<Integer, java.util.TreeMap<Integer, double[]>> targets = new HashMap<>();
+    /** Extent form: spine X -> bottom row Y -> top row Y -> target term. */
+    private final Map<Integer, java.util.TreeMap<Integer, java.util.TreeMap<Integer, double[]>>> extentTargets = new HashMap<>();
+    private int treeBottomY = Integer.MAX_VALUE;
     /** Per route: index of the first vertical trunk node, or -1. */
     private final Map<List<Node>, Integer> spineIndex = new java.util.IdentityHashMap<>();
     private int treeTopY = -1;
@@ -184,7 +189,9 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 anchorIndex.put(route, a);
                 spineIndex.put(route, spineOf(route));
                 if (a > 0) {
-                    treeTopY = Math.max(treeTopY, route.get(a - 1).getTile().getTileYCoordinate());
+                    int y = route.get(a - 1).getTile().getTileYCoordinate();
+                    treeTopY = Math.max(treeTopY, y);
+                    treeBottomY = Math.min(treeBottomY, y);
                 }
             }
             return;
@@ -246,6 +253,21 @@ public class VersalClockNodeModel implements ClockDelayModel {
      */
     private double[] gridTarget(int spineX, int topY) {
         java.util.TreeMap<Integer, double[]> col = targets.get(spineX);
+        if (targetExtent) {
+            // Exact extent, else the nearest measured bottom row of this
+            // spine at the same top row (the top row's SLR is the larger
+            // step), else the height interpolation of that bottom row.
+            java.util.TreeMap<Integer, java.util.TreeMap<Integer, double[]>> byBottom = extentTargets.get(spineX);
+            if (byBottom == null || byBottom.isEmpty()) {
+                return null;
+            }
+            Map.Entry<Integer, java.util.TreeMap<Integer, double[]>> lo = byBottom.floorEntry(treeBottomY);
+            Map.Entry<Integer, java.util.TreeMap<Integer, double[]>> hi = byBottom.ceilingEntry(treeBottomY);
+            Map.Entry<Integer, java.util.TreeMap<Integer, double[]>> pick = lo == null ? hi
+                    : hi == null ? lo
+                    : (treeBottomY - lo.getKey() <= hi.getKey() - treeBottomY ? lo : hi);
+            col = pick.getValue();
+        }
         if (col == null || col.isEmpty()) {
             return null;
         }
@@ -688,7 +710,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
             }
             if (t.startsWith(DESKEW_HEADER)) {
                 deskew = true;
-                targetGrid = t.contains("grid");
+                targetGrid = t.contains("grid") || t.contains("extent");
+                targetExtent = t.contains("extent");
                 continue;
             }
             String[] f = t.split("\\s+");
@@ -698,8 +721,14 @@ public class VersalClockNodeModel implements ClockDelayModel {
             double[] v = new double[] { Double.parseDouble(f[1]), Double.parseDouble(f[2]) };
             if (section.equals("clock_node_delay") && f[0].startsWith(TARGET_PREFIX)) {
                 String[] xy = f[0].substring(TARGET_PREFIX.length()).split(":");
-                targets.computeIfAbsent(Integer.parseInt(xy[0]), k -> new java.util.TreeMap<>())
-                        .put(Integer.parseInt(xy[1]), v);
+                if (xy.length == 3) {
+                    extentTargets.computeIfAbsent(Integer.parseInt(xy[0]), k -> new java.util.TreeMap<>())
+                            .computeIfAbsent(Integer.parseInt(xy[1]), k -> new java.util.TreeMap<>())
+                            .put(Integer.parseInt(xy[2]), v);
+                } else {
+                    targets.computeIfAbsent(Integer.parseInt(xy[0]), k -> new java.util.TreeMap<>())
+                            .put(Integer.parseInt(xy[1]), v);
+                }
                 continue;
             }
             if (section.equals("clock_node_delay")) {
