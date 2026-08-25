@@ -71,6 +71,20 @@ public class VersalClockNodeModel implements ClockDelayModel {
     private final int bufgMaxPs;
     private final int bufgMinPs;
 
+    /**
+     * Table header that switches on Vivado's balanced-tree semantics: the
+     * fit was made with the vertical distribution of every row padded to the
+     * slowest row (the SSIT delay stations' optimized delay), so a sink's
+     * arrival is the tree's target plus its route below the row anchor.
+     */
+    public static final String DESKEW_HEADER = "clock_deskew";
+    private boolean deskew;
+    /** Per route: index of the first node after the last vertical trunk node, or -1. */
+    private final Map<List<Node>, Integer> anchorIndex = new java.util.IdentityHashMap<>();
+    /** The tree's balanced arrival at the row anchors: the slowest row's undelayed trunk. */
+    private final double[] target = new double[2];
+    private List<Node> targetRoute;
+
     private final Map<Site, List<Node>> siteRoute = new HashMap<>();
     /** Route per clock site pin, keyed "site/pin": a block RAM's two clocks differ. */
     private final Map<String, List<Node>> pinRoute = new HashMap<>();
@@ -136,9 +150,88 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 }
             }
         }
+        computeTarget();
     }
 
     private int sitesFromSitePin;
+
+    /**
+     * Balanced-tree target: every row's vertical distribution is padded to
+     * the slowest row's arrival, so the target is the maximum over all
+     * routes of the undelayed trunk sum to the row anchor. Only trees that
+     * cross armed stations are balanced.
+     */
+    private void computeTarget() {
+        if (!deskew || !armed) {
+            return;
+        }
+        // The slowest row is the topmost one (the buffers sit in the bottom
+        // HSR). Its undelayed trunk is the target; a trunk priced through a
+        // fallback term is only used when no exactly priced one exists.
+        int bestY = Integer.MIN_VALUE;
+        boolean bestExact = false;
+        for (List<Node> route : pinRoute.values()) {
+            int a = anchorOf(route);
+            anchorIndex.put(route, a);
+            if (a < 0) {
+                continue;
+            }
+            double[] up = new double[2];
+            boolean exact = true;
+            for (int ci = 0; ci < 2; ci++) {
+                up[ci] = ci == 1 ? bufgMinPs : bufgMaxPs;
+                for (int i = 0; i < a; i++) {
+                    up[ci] += nodeTermPs(route.get(i), ci == 1 ? Corner.SLOW_MIN : Corner.SLOW_MAX);
+                    exact &= hasArrivalTerm(route.get(i));
+                }
+            }
+            int y = route.get(a - 1).getTile().getTileYCoordinate();
+            boolean better;
+            if (targetRoute == null) {
+                better = true;
+            } else if (exact != bestExact) {
+                better = exact;
+            } else if (y != bestY) {
+                better = y > bestY;
+            } else {
+                better = up[0] > target[0];
+            }
+            if (better) {
+                target[0] = up[0];
+                target[1] = up[1];
+                targetRoute = route;
+                bestY = y;
+                bestExact = exact;
+            }
+        }
+    }
+
+    /** Index after the last vertical trunk node of a route, or -1 if none or nothing follows. */
+    public static int anchorOf(List<Node> route) {
+        int a = -1;
+        for (int i = 0; i < route.size(); i++) {
+            String ic = route.get(i).getIntentCode().toString();
+            if (ic.contains("VDISTR") || ic.contains("VROUTE")) {
+                a = i + 1;
+            }
+        }
+        return a >= route.size() ? -1 : a;
+    }
+
+    /** The balanced-tree target arrival at the row anchors, or null when the tree is not balanced. */
+    public Double getTargetPs(Corner corner) {
+        return deskew && armed && targetRoute != null ? target[corner == Corner.SLOW_MIN ? 1 : 0] : null;
+    }
+
+    /** The route whose undelayed trunk sets the target, for diagnostics. */
+    public List<Node> getTargetRoute() {
+        return targetRoute;
+    }
+
+    /** Whether the table carries balanced-tree semantics. */
+    public boolean isDeskew() {
+        return deskew;
+    }
 
     /** Whether any cell in the site has its CLK driven, through any hierarchy, by this net. */
     private static boolean clockedBy(com.xilinx.rapidwright.design.SiteInst si, Net clk) {
@@ -203,9 +296,29 @@ public class VersalClockNodeModel implements ClockDelayModel {
         // tile no sweep crossed still gets an exact term.
         String wire = n.getWireName();
         if (wire.startsWith("CLK_CMT_MUX")) {
-            return n.getTile().getTileTypeEnum() + "/" + wire;
+            return n.getTile().getTileTypeEnum() + "/" + wire.replaceAll("\\d+", "#");
         }
-        return n.toString();
+        // The number in a trunk wire is its track (HROUTE18, VROUTE18,
+        // BUFGCE_52): the 24 tracks are identical wires. Keyed with the
+        // track, every tree's trunk is a node set no other tree shares and
+        // the fit gains a free per-tree offset that a new tree cannot
+        // inherit consistently (fft_3slr held out: -2.1 ns). Keyed by tile
+        // and wire template, trees on different tracks share terms and the
+        // offsets are pinned. Leaf-site indices place the leaf within the
+        // tile and stay.
+        if (wire.startsWith("CLK_LEAF_SITES")) {
+            return n.toString();
+        }
+        return n.getTile().getName() + "/" + maskTrack(wire);
+    }
+
+    /**
+     * Masks the trailing track number of a trunk wire only: in
+     * {@code CLK_HROUTE_1_18} the 18 is the track and the 1 the segment
+     * (merging segments offset a whole tree by 289 ps).
+     */
+    public static String maskTrack(String wire) {
+        return wire.replaceAll("(\\d+)(?!.*\\d)", "#");
     }
 
     /** The pessimism (and fallback) term key: type by tile type. */
@@ -331,7 +444,16 @@ public class VersalClockNodeModel implements ClockDelayModel {
         }
         int ci = corner == Corner.SLOW_MIN ? 1 : 0;
         double t = corner == Corner.SLOW_MIN ? bufgMinPs : bufgMaxPs;
-        for (Node n : route) {
+        int from = 0;
+        Integer anchor = deskew && armed && targetRoute != null ? anchorIndex.get(route) : null;
+        if (anchor != null && anchor >= 0) {
+            // Balanced tree: the row anchor arrives at the target; only the
+            // route below it is priced, stations included as ordinary nodes.
+            t = target[ci];
+            from = anchor;
+        }
+        for (int ri = from; ri < route.size(); ri++) {
+            Node n = route.get(ri);
             double[] term = arrival.get(arrivalKey(n));
             if (term != null) {
                 termsPriced++;
@@ -367,7 +489,7 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 t += iri * (term != null ? term[ci] : 68.0);
             }
         }
-        if (armed) {
+        if (armed && !deskew) {
             int stations = 0;
             for (Node n : route) {
                 if (isDelayStationNode(n)) {
@@ -474,8 +596,12 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 section = t.split("\\s+")[0];
                 continue;
             }
+            if (t.startsWith(DESKEW_HEADER)) {
+                deskew = true;
+                continue;
+            }
             String[] f = t.split("\\s+");
-            if (section == null || f.length < 3) {
+            if (section == null || f.length < 3 || f[0].startsWith("TREE:")) {
                 continue;
             }
             double[] v = new double[] { Double.parseDouble(f[1]), Double.parseDouble(f[2]) };
