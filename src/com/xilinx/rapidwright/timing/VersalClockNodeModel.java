@@ -194,7 +194,18 @@ public class VersalClockNodeModel implements ClockDelayModel {
      * difference is programmed leaf state the fit cannot see, not topology.)
      */
     public static String arrivalKey(Node n) {
-        return isTrunk(n) ? n.toString() : n.getIntentCode().toString();
+        if (!isTrunk(n)) {
+            return n.getIntentCode().toString();
+        }
+        // The clock muxes inside the SSIT rebuffer tiles are physically
+        // identical across tiles (per-instance fits scatter around zero), so
+        // they are keyed by tile type and wire: a tree through a rebuffer
+        // tile no sweep crossed still gets an exact term.
+        String wire = n.getWireName();
+        if (wire.startsWith("CLK_CMT_MUX")) {
+            return n.getTile().getTileTypeEnum() + "/" + wire;
+        }
+        return n.toString();
     }
 
     /** The pessimism (and fallback) term key: type by tile type. */
@@ -470,8 +481,21 @@ public class VersalClockNodeModel implements ClockDelayModel {
             double[] v = new double[] { Double.parseDouble(f[1]), Double.parseDouble(f[2]) };
             if (section.equals("clock_node_delay")) {
                 arrival.put(f[0], v);
+                // Programmed-state features are fitted alongside the arrival
+                // terms but consumed as feature coefficients: seen in either
+                // section, they must reach the same map or the model silently
+                // uses defaults (0 per station, 68 ps per tap).
+                if (f[0].equals(ARMED_STATION_TERM) || f[0].equals(LEAF_TAPS_TERM)
+                        || f[0].equals(IRI_TAPS_TERM) || f[0].equals(BRANCH_TERM)) {
+                    byType.putIfAbsent(f[0], v);
+                }
             } else if (section.equals("clock_type_fallback")) {
                 typeFallback.put(f[0], v);
+            } else if (f[0].equals(ARMED_STATION_TERM) || f[0].equals(LEAF_TAPS_TERM)
+                    || f[0].equals(IRI_TAPS_TERM)) {
+                // The pessimism variant fits its own copy of these; the
+                // arrival variant's is the one arrival must use.
+                byType.putIfAbsent(f[0], v);
             } else {
                 byType.put(f[0], v);
             }
