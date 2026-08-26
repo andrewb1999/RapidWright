@@ -261,6 +261,44 @@ public class VersalClockNodeModel implements ClockDelayModel {
             if (byBottom == null || byBottom.isEmpty()) {
                 return null;
             }
+            double[] exactExtent = byBottom.containsKey(treeBottomY) ? byBottom.get(treeBottomY).get(topY) : null;
+            if (exactExtent != null) {
+                return exactExtent;
+            }
+            // The extent is measured at another spine: the spine
+            // dependence is close to a constant (X81 - X53 = -150 +- 60 ps
+            // over every Y1_Yb), so use that spine's term plus the mean
+            // offset between the two spines over their shared extents.
+            for (Map.Entry<Integer, java.util.TreeMap<Integer, java.util.TreeMap<Integer, double[]>>> o
+                    : extentTargets.entrySet()) {
+                if (o.getKey() == spineX) {
+                    continue;
+                }
+                java.util.TreeMap<Integer, double[]> top = o.getValue().get(treeBottomY);
+                double[] other = top == null ? null : top.get(topY);
+                if (other == null) {
+                    continue;
+                }
+                double[] off = new double[2];
+                int n = 0;
+                for (Map.Entry<Integer, java.util.TreeMap<Integer, double[]>> b : byBottom.entrySet()) {
+                    java.util.TreeMap<Integer, double[]> ob = o.getValue().get(b.getKey());
+                    if (ob == null) {
+                        continue;
+                    }
+                    for (Map.Entry<Integer, double[]> t : b.getValue().entrySet()) {
+                        double[] ov = ob.get(t.getKey());
+                        if (ov != null) {
+                            off[0] += t.getValue()[0] - ov[0];
+                            off[1] += t.getValue()[1] - ov[1];
+                            n++;
+                        }
+                    }
+                }
+                if (n > 0) {
+                    return new double[] { other[0] + off[0] / n, other[1] + off[1] / n };
+                }
+            }
             Map.Entry<Integer, java.util.TreeMap<Integer, double[]>> lo = byBottom.floorEntry(treeBottomY);
             Map.Entry<Integer, java.util.TreeMap<Integer, double[]>> hi = byBottom.ceilingEntry(treeBottomY);
             Map.Entry<Integer, java.util.TreeMap<Integer, double[]>> pick = lo == null ? hi
