@@ -97,6 +97,14 @@ public class VersalClockNodeModel implements ClockDelayModel {
     private boolean targetGrid;
     /** Extent form: terms keyed by spine column, bottom and top loaded rows ({@code TARGET:<x>:<ya>:<yb>}). */
     private boolean targetExtent;
+    /**
+     * Row-max form (Vivado's "smax" V-tree): each row's delay line
+     * equalizes the row's slowest loaded sink to the tree target, so a sink
+     * arrives at target − rowMax(anchor) + its own delay below the anchor;
+     * the target is the top row's undelayed trunk plus its rowMax.
+     */
+    private boolean targetRowMax;
+    private final Map<Node, double[]> rowMax = new HashMap<>();
     /** Spine column tile X -> top row tile Y -> target term. */
     private final Map<Integer, java.util.TreeMap<Integer, double[]>> targets = new HashMap<>();
     /** Extent form: spine X -> bottom row Y -> top row Y -> target term. */
@@ -204,6 +212,27 @@ public class VersalClockNodeModel implements ClockDelayModel {
             }
             return;
         }
+        if (targetRowMax) {
+            // Each row's slowest sink below its anchor, at both corners.
+            for (List<Node> route : pinRoute.values()) {
+                int a = anchorOf(route);
+                anchorIndex.put(route, a);
+                if (a < 0) {
+                    continue;
+                }
+                Node anchor = route.get(a - 1);
+                double[] below = new double[2];
+                for (int ci = 0; ci < 2; ci++) {
+                    for (int i = a; i < route.size(); i++) {
+                        below[ci] += nodeTermPs(route.get(i), ci == 1 ? Corner.SLOW_MIN : Corner.SLOW_MAX);
+                    }
+                }
+                double[] cur = rowMax.get(anchor);
+                if (cur == null || below[0] > cur[0]) {
+                    rowMax.put(anchor, below);
+                }
+            }
+        }
         // The slowest row is the topmost one (the buffers sit in the bottom
         // HSR). Its undelayed trunk is the target; a trunk priced through a
         // fallback term is only used when no exactly priced one exists.
@@ -241,6 +270,14 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 targetRoute = route;
                 bestY = y;
                 bestExact = exact;
+            }
+        }
+        if (targetRowMax && targetRoute != null) {
+            // The top row's slowest sink arrives at the target exactly.
+            double[] rm = rowMax.get(targetRoute.get(anchorOf(targetRoute) - 1));
+            if (rm != null) {
+                target[0] += rm[0];
+                target[1] += rm[1];
             }
         }
     }
@@ -365,6 +402,11 @@ public class VersalClockNodeModel implements ClockDelayModel {
     /** The route whose undelayed trunk sets the target, for diagnostics. */
     public List<Node> getTargetRoute() {
         return targetRoute;
+    }
+
+    /** The design this model prices, or null. */
+    public com.xilinx.rapidwright.design.Design getDesign() {
+        return design;
     }
 
     /** Whether the table carries balanced-tree semantics. */
@@ -621,7 +663,11 @@ public class VersalClockNodeModel implements ClockDelayModel {
             }
         }
         Integer anchor = deskew && armed && !targetGrid && targetRoute != null ? anchorIndex.get(route) : null;
-        if (anchor != null && anchor >= 0) {
+        if (anchor != null && anchor >= 0 && targetRowMax) {
+            double[] rm = rowMax.get(route.get(anchor - 1));
+            t = target[ci] - (rm == null ? 0 : rm[ci]);
+            from = anchor;
+        } else if (anchor != null && anchor >= 0) {
             // Balanced tree: the row anchor arrives at the target; only the
             // route below it is priced, stations included as ordinary nodes.
             t = target[ci];
@@ -855,6 +901,7 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 deskew = true;
                 targetGrid = t.contains("grid") || t.contains("extent");
                 targetExtent = t.contains("extent");
+                targetRowMax = t.contains("rowmax");
                 continue;
             }
             String[] f = t.split("\\s+");
