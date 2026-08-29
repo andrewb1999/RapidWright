@@ -404,12 +404,19 @@ public class SignoffTimingAnalysis {
             hops.add(netDelay);
 
             if (isRegister(cell)) {
-                if (!isClockPin(logicalPin)) {
-                    finishPath(launch, launchClock, clockToQ, cell, logicalPin, belPin, netHere,
-                            logicSoFar, depth, pins, hops, sink, setup, worst);
+                if (isClockPin(logicalPin)) {
+                    hops.remove(hops.size() - 1);
+                    continue;
                 }
-                hops.remove(hops.size() - 1);
-                continue;
+                // A clocked cell whose library has no check for this pin does
+                // not register it: a DSP58's OPMODE with OPMODEREG=0 passes
+                // through DSP_ALUREG combinationally (Vivado's path runs
+                // OPMODE -> OPMODE_DATA -> ALUMUX -> ALUADD -> OUTPUT).
+                if (finishPath(launch, launchClock, clockToQ, cell, logicalPin, belPin, netHere,
+                        logicSoFar, depth, pins, hops, sink, setup, worst)) {
+                    hops.remove(hops.size() - 1);
+                    continue;
+                }
             }
             if (depth + 1 > maxLogicDepth) {
                 coverage.depthExceeded++;
@@ -475,14 +482,15 @@ public class SignoffTimingAnalysis {
         return 0;
     }
 
-    private void finishPath(Cell launch, float launchClock, float clockToQ, Cell capture,
-                            String dataLogicalPin, String dataBel, float netPs, float logicPs,
-                            int depth, List<String> pins, List<Float> hops, EDIFHierPortInst endPin,
-                            boolean setup, Map<String, PathResult> worst) {
+    /** Prices a path ending at a register's data pin; false when the library has no check for that pin. */
+    private boolean finishPath(Cell launch, float launchClock, float clockToQ, Cell capture,
+                               String dataLogicalPin, String dataBel, float netPs, float logicPs,
+                               int depth, List<String> pins, List<Float> hops, EDIFHierPortInst endPin,
+                               boolean setup, Map<String, PathResult> worst) {
         if (!isOnClock(capture)) {
             // A path into another clock domain is not this analysis's to price.
             coverage.otherClock++;
-            return;
+            return true;
         }
         Corner captureCorner = setup ? Corner.SLOW_MIN : Corner.SLOW_MAX;
         // The requirement is a library value at the slow corner's worst case,
@@ -500,7 +508,7 @@ public class SignoffTimingAnalysis {
         }
         if (check == null) {
             coverage.unpricedCheck++;
-            return;
+            return false;
         }
         // The arrival at the clock pin that performs the check.
         Float captureClock = clockModel.getArrivalPs(capture.getSite(), captureSitePin, captureCorner);
@@ -510,7 +518,7 @@ public class SignoffTimingAnalysis {
         if (captureClock == null) {
             coverage.unpricedClock++;
             coverage.uncoveredClockSiteTypes.merge(capture.getSiteInst().getSiteTypeEnum().name(), 1, Integer::sum);
-            return;
+            return true;
         }
         float cpr = clockModel.getPessimismRemovalPs(launch.getSite(), launchSitePin, capture.getSite(),
                 captureSitePin, setup);
@@ -541,6 +549,7 @@ public class SignoffTimingAnalysis {
         if (prev == null || r.slackPs < prev.slackPs) {
             worst.put(endpoint, r);
         }
+        return true;
     }
 
     /**
