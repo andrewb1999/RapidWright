@@ -702,6 +702,34 @@ public class VersalClockNodeModel implements ClockDelayModel {
     }
 
     @Override
+    public float getProgrammedDelayPs(Site site, String sitePin, Corner corner) {
+        List<Node> route = sitePin == null ? null : pinRoute.get(site.getName() + "/" + sitePin);
+        if (route == null) {
+            route = siteRoute.get(site);
+        }
+        return (float) programmedPs(site, route, corner == Corner.SLOW_MIN ? 1 : 0);
+    }
+
+    /** Leaf and interface tap delay of a sink, as the arrival adds it. */
+    private double programmedPs(Site site, List<Node> route, int ci) {
+        double t = 0;
+        int taps = leafTaps(design, site);
+        if (taps > 0) {
+            double[] term = byType.get(LEAF_TAPS_TERM);
+            t += taps * (term != null ? term[ci] : 68.0);
+        }
+        int iri = route == null ? 0 : iriTaps(design, route);
+        if (iri > 0) {
+            double[] term = byType.get(IRI_TAPS_TERM);
+            if (term == null) {
+                term = byType.get(LEAF_TAPS_TERM);
+            }
+            t += iri * (term != null ? term[ci] : 68.0);
+        }
+        return t;
+    }
+
+    @Override
     public Float getCommonClockDelayPs(Site launch, String launchPin, Site capture, String capturePin,
                                        Corner corner) {
         List<Node> a = launchPin == null ? null : pinRoute.get(launch.getName() + "/" + launchPin);

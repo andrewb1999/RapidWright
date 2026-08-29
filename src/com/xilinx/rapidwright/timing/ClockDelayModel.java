@@ -79,4 +79,14 @@ public interface ClockDelayModel {
                                         Corner corner) {
         return null;
     }
+
+    /**
+     * The programmed (deskew tap) part of a sink's clock arrival — leaf
+     * or interface delay taps Vivado inserted — at the given corner, or 0.
+     * Vivado's inter-SLR compensation derates the destination clock delay
+     * without it.
+     */
+    default float getProgrammedDelayPs(Site site, String sitePin, Corner corner) {
+        return 0;
+    }
 }
