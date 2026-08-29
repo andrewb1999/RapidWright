@@ -298,6 +298,57 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         return (float) t;
     }
 
+    /** The priced route to a sink, one line per node with each term, for dissecting a mismatch. */
+    public String explainNetDelay(Net net, SitePinInst sink, Corner corner) {
+        StringBuilder sb = new StringBuilder();
+        if (net.getSource() == null || sink == null) {
+            return "no source or sink";
+        }
+        Routing routing = routingCache.computeIfAbsent(net, Routing::new);
+        Node end = sink.getConnectedNode();
+        if (end == null || !routing.parent.containsKey(end)) {
+            return "sink not in routing";
+        }
+        int ci = corner == Corner.SLOW_MIN ? 1 : 0;
+        double total = 0;
+        List<Node> path = new ArrayList<>();
+        for (Node n = end; n != null; n = routing.parent.get(n)) {
+            path.add(n);
+        }
+        Collections.reverse(path);
+        for (Node n : path) {
+            String cls = wireClass(n);
+            double[] drc = rc[ci].get(cls);
+            double r = drc == null ? 0 : drc[0];
+            double c = drc == null ? 0 : drc[1] * routing.subtreeC.get(n)[ci];
+            double span = 0;
+            for (Map.Entry<String, Integer> e : colSpanByType(n).entrySet()) {
+                double[] sp = rc[ci].get(cls + "|COL@" + e.getKey());
+                if (sp != null) {
+                    span += e.getValue() * sp[0];
+                }
+            }
+            int rows = rowSpan(n);
+            if (rows > 0) {
+                double[] sp = rc[ci].get(cls + "|ROWS");
+                if (sp != null) {
+                    span += rows * sp[0];
+                }
+            }
+            double corr = 0;
+            if (isSpanWire(n)) {
+                double[] cv = hwireCorr.get(spanKey(n));
+                if (cv != null) {
+                    corr = cv[ci];
+                }
+            }
+            total += r + c + span + corr;
+            sb.append(String.format("   %7.1f  r %6.1f  c %6.1f (C=%.2f)  span %6.1f  corr %6.1f  sum %7.1f  %-14s %s%n",
+                    r + c + span + corr, r, c, routing.subtreeC.get(n)[ci], span, corr, total, cls, n));
+        }
+        return sb.toString();
+    }
+
     /** Forgets cached routing for a net; call after rerouting it. */
     public void invalidate(Net net) {
         routingCache.remove(net);
