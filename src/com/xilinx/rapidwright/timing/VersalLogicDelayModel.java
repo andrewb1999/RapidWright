@@ -303,6 +303,12 @@ public class VersalLogicDelayModel implements LogicDelayModel {
     }
 
     @Override
+    public Float getBelArcPs(String qualifiedBel, String fromBelPin, String toBelPin, Corner corner) {
+        float[] d = arcs.get(key(qualifiedBel, fromBelPin, toBelPin, KIND_PROP));
+        return d == null ? null : d[corner == Corner.SLOW_MIN ? 1 : 0];
+    }
+
+    @Override
     public Float getSetupPs(Cell cell, String clockBelPin, String dataBelPin, Corner corner) {
         return lookup(cell, clockBelPin, dataBelPin, KIND_SETUP, corner);
     }

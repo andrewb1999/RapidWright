@@ -70,4 +70,14 @@ public interface LogicDelayModel {
      * @return the delay in picoseconds, or null if unknown.
      */
     Float getIntraSiteDelayPs(SiteTypeEnum siteType, String fromBelPin, String toBelPin, Corner corner);
+
+    /**
+     * A propagation arc of a BEL by name (site type dot BEL, e.g.
+     * {@code DSP58.SRCMXINV}) rather than through a placed cell — for the
+     * site-internal clock path a clock crosses before it reaches a
+     * register's BEL, which is no cell of the design's own.
+     */
+    default Float getBelArcPs(String qualifiedBel, String fromBelPin, String toBelPin, Corner corner) {
+        return null;
+    }
 }

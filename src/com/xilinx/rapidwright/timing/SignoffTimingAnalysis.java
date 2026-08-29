@@ -274,6 +274,9 @@ public class SignoffTimingAnalysis {
             coverage.launchRegisters++;
             Corner launchCorner = setup ? Corner.SLOW_MAX : Corner.SLOW_MIN;
             Float launchClock = clockModel.getArrivalPs(launch.getSite(), launchCorner);
+            if (launchClock != null) {
+                launchClock += siteClockPathPs(launch, launchCorner);
+            }
             if (launchClock == null) {
                 coverage.unpricedClock++;
                 coverage.uncoveredClockSiteTypes.merge(launch.getSiteInst().getSiteTypeEnum().name(), 1, Integer::sum);
@@ -310,7 +313,7 @@ public class SignoffTimingAnalysis {
                     // The arrival at the pin this output launches from.
                     Float atPin = clockModel.getArrivalPs(launch.getSite(), launchSitePin, launchCorner);
                     if (atPin != null) {
-                        launchClock = atPin;
+                        launchClock = atPin + siteClockPathPs(launch, launchCorner);
                     }
                 }
                 if (clockToQ == null) {
@@ -455,6 +458,23 @@ public class SignoffTimingAnalysis {
      */
     public static final float INTER_SLR_FACTOR = 0.10f;
 
+    /**
+     * The clock's site-internal path from the site pin to a register's BEL:
+     * a DSP58 clock passes the {@code SRCMXINV} source mux (Vivado's
+     * {@code Prop_SRCMXINV_DSP58_CLK_IN_CLK}, 63/59 ps) before any of its
+     * register stages; a slice or block RAM clock goes straight in.
+     */
+    private float siteClockPathPs(Cell cell, Corner corner) {
+        String siteType = cell.getSiteInst().getSiteTypeEnum().name();
+        if (siteType.startsWith("DSP")) {
+            Float d = logicModel.getBelArcPs(siteType + ".SRCMXINV", "CLK_NAT", "CLK", corner);
+            if (d != null) {
+                return d;
+            }
+        }
+        return 0;
+    }
+
     private void finishPath(Cell launch, float launchClock, float clockToQ, Cell capture,
                             String dataLogicalPin, String dataBel, float netPs, float logicPs,
                             int depth, List<String> pins, List<Float> hops, EDIFHierPortInst endPin,
@@ -484,6 +504,9 @@ public class SignoffTimingAnalysis {
         }
         // The arrival at the clock pin that performs the check.
         Float captureClock = clockModel.getArrivalPs(capture.getSite(), captureSitePin, captureCorner);
+        if (captureClock != null) {
+            captureClock += siteClockPathPs(capture, captureCorner);
+        }
         if (captureClock == null) {
             coverage.unpricedClock++;
             coverage.uncoveredClockSiteTypes.merge(capture.getSiteInst().getSiteTypeEnum().name(), 1, Integer::sum);
