@@ -213,14 +213,30 @@ public class VersalClockNodeModel implements ClockDelayModel {
             return;
         }
         if (targetRowMax) {
-            // Each row's slowest sink below its anchor, at both corners.
+            // Each row balances at its most-loaded station; the reference is
+            // that station's slowest sink below the anchor, at both corners.
+            Map<Node, Map<String, Integer>> load = new HashMap<>();
             for (List<Node> route : pinRoute.values()) {
                 int a = anchorOf(route);
                 anchorIndex.put(route, a);
+                if (a > 0) {
+                    load.computeIfAbsent(route.get(a - 1), k -> new HashMap<>()).merge(stationOf(route), 1, Integer::sum);
+                }
+            }
+            Map<Node, String> rowStation = new HashMap<>();
+            for (Map.Entry<Node, Map<String, Integer>> e : load.entrySet()) {
+                rowStation.put(e.getKey(), java.util.Collections.max(e.getValue().entrySet(),
+                        Map.Entry.comparingByValue()).getKey());
+            }
+            for (List<Node> route : pinRoute.values()) {
+                int a = anchorOf(route);
                 if (a < 0) {
                     continue;
                 }
                 Node anchor = route.get(a - 1);
+                if (!rowStation.get(anchor).equals(stationOf(route))) {
+                    continue;
+                }
                 double[] below = new double[2];
                 Site site = sitesOf(route);
                 for (int ci = 0; ci < 2; ci++) {
@@ -283,6 +299,17 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 target[1] += rm[1];
             }
         }
+    }
+
+    /** The row station a route ends through: the tile of its last delay-station node, else "-". */
+    public static String stationOf(List<Node> route) {
+        String st = "-";
+        for (Node n : route) {
+            if (isDelayStationNode(n)) {
+                st = n.getTile().getName();
+            }
+        }
+        return st;
     }
 
     /** Index of the first vertical trunk node (the spine column) of a route, or -1. */
