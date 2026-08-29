@@ -94,6 +94,13 @@ public class SignoffTimingAnalysis {
         public final float logicPs;
         /** The setup or hold requirement at the capturing register. */
         public final float checkPs;
+        /**
+         * Vivado's inter-SLR compensation on a path whose registers sit in
+         * different SLRs: {@code (capture clock − common clock delay) × 0.10},
+         * taken off the setup requirement and added to the hold one. Zero
+         * within an SLR.
+         */
+        public final float interSlrPs;
         public final int logicLevels;
         public final float slackPs;
         /** The cell pins along the data path, for tracing a disagreement. */
@@ -106,7 +113,7 @@ public class SignoffTimingAnalysis {
         PathResult(Cell launch, Cell capture, String startpoint, String endpoint, boolean setup,
                    float requirementPs, float launchClockPs, float captureClockPs,
                    float pessimismRemovalPs, float uncertaintyPs, float clockToQPs, float netPs,
-                   float logicPs, float checkPs, int logicLevels, List<String> pins,
+                   float logicPs, float checkPs, float interSlrPs, int logicLevels, List<String> pins,
                    List<Float> hopNetPs, List<Float> hopLogicPs) {
             this.launch = launch;
             this.capture = capture;
@@ -122,6 +129,7 @@ public class SignoffTimingAnalysis {
             this.netPs = netPs;
             this.logicPs = logicPs;
             this.checkPs = checkPs;
+            this.interSlrPs = interSlrPs;
             this.logicLevels = logicLevels;
             this.pins = pins;
             this.hopNetPs = hopNetPs;
@@ -129,13 +137,13 @@ public class SignoffTimingAnalysis {
             if (setup) {
                 float arrival = launchClockPs + clockToQPs + netPs + logicPs;
                 float required = requirementPs + captureClockPs + pessimismRemovalPs
-                        - uncertaintyPs - checkPs;
+                        - uncertaintyPs - checkPs - interSlrPs;
                 this.slackPs = required - arrival;
             } else {
                 // Hold pessimism removal is signed the way Vivado reports it,
                 // negative, so it is added here as it is for setup.
                 float arrival = launchClockPs + clockToQPs + netPs + logicPs;
-                float required = captureClockPs + pessimismRemovalPs + uncertaintyPs + checkPs;
+                float required = captureClockPs + pessimismRemovalPs + uncertaintyPs + checkPs + interSlrPs;
                 this.slackPs = arrival - required;
             }
         }
@@ -439,6 +447,14 @@ public class SignoffTimingAnalysis {
         }
     }
 
+    /**
+     * Vivado's inter-SLR process factor (PF for setup, DF for hold): the
+     * fraction of the destination clock delay beyond the common point that
+     * is charged against a path crossing SLRs. 0.10 on xcv80 -2MHP
+     * (measured: 0.210/2.099, 0.138/1.381, 0.116/1.161, 0.170/1.704).
+     */
+    public static final float INTER_SLR_FACTOR = 0.10f;
+
     private void finishPath(Cell launch, float launchClock, float clockToQ, Cell capture,
                             String dataLogicalPin, String dataBel, float netPs, float logicPs,
                             int depth, List<String> pins, List<Float> hops, EDIFHierPortInst endPin,
@@ -475,6 +491,17 @@ public class SignoffTimingAnalysis {
         }
         float cpr = clockModel.getPessimismRemovalPs(launch.getSite(), launchSitePin, capture.getSite(),
                 captureSitePin, setup);
+        // Vivado's inter-SLR compensation: the destination clock's delay past
+        // the point the two clock paths share, derated by a process factor,
+        // on paths whose registers sit in different SLRs.
+        float interSlr = 0;
+        if (launch.getSite().getTile().getSLR() != capture.getSite().getTile().getSLR()) {
+            Float common = clockModel.getCommonClockDelayPs(launch.getSite(), launchSitePin, capture.getSite(),
+                    captureSitePin, captureCorner);
+            if (common != null) {
+                interSlr = (captureClock - common) * INTER_SLR_FACTOR;
+            }
+        }
 
         List<String> pathPins = new ArrayList<>(pins);
         pathPins.add(pinName(endPin));
@@ -484,7 +511,7 @@ public class SignoffTimingAnalysis {
                 + dataLogicalPin;
         PathResult r = new PathResult(launch, capture, startpoint, endpoint, setup, periodPs,
                 launchClock, captureClock, cpr, setup ? uncertaintyPs : holdUncertaintyPs,
-                clockToQ, netPs, logicPs, check, depth, pathPins, new ArrayList<>(hops),
+                clockToQ, netPs, logicPs, check, interSlr, depth, pathPins, new ArrayList<>(hops),
                 new ArrayList<>(logicStack));
         coverage.pathsPriced++;
         PathResult prev = worst.get(endpoint);

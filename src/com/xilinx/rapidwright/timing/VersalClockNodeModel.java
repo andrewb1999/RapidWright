@@ -86,6 +86,14 @@ public class VersalClockNodeModel implements ClockDelayModel {
      * hops + that term + its route below the row anchor.
      */
     public static final String TARGET_PREFIX = "TARGET:";
+    /**
+     * Table section of the common clock delay: the physical (undeskewed)
+     * arrival per trunk instance, fitted to Vivado's inter-SLR compensation
+     * (CcdFit), with a {@code BUFG} constant. A balanced tree's arrival
+     * terms cannot give the arrival partway up the vertical trunk.
+     */
+    public static final String COMMON_SECTION = "clock_common_delay";
+    private final Map<String, double[]> common = new HashMap<>();
     private boolean targetGrid;
     /** Extent form: terms keyed by spine column, bottom and top loaded rows ({@code TARGET:<x>:<ya>:<yb>}). */
     private boolean targetExtent;
@@ -693,6 +701,75 @@ public class VersalClockNodeModel implements ClockDelayModel {
         return (float) (setup ? spread : -spread);
     }
 
+    @Override
+    public Float getCommonClockDelayPs(Site launch, String launchPin, Site capture, String capturePin,
+                                       Corner corner) {
+        List<Node> a = launchPin == null ? null : pinRoute.get(launch.getName() + "/" + launchPin);
+        List<Node> b = capturePin == null ? null : pinRoute.get(capture.getName() + "/" + capturePin);
+        if (a == null) {
+            a = siteRoute.get(launch);
+        }
+        if (b == null) {
+            b = siteRoute.get(capture);
+        }
+        if (a == null || b == null) {
+            return null;
+        }
+        int shared = 0;
+        int n = Math.min(a.size(), b.size());
+        while (shared < n && a.get(shared).equals(b.get(shared))) {
+            shared++;
+        }
+        int ci = corner == Corner.SLOW_MIN ? 1 : 0;
+        // The fitted common delay when every shared node is in it.
+        double[] bufg = common.get("BUFG");
+        if (bufg != null) {
+            double t = bufg[ci];
+            boolean complete = true;
+            for (int i = 0; i < shared && complete; i++) {
+                double[] term = common.get(arrivalKey(b.get(i)));
+                if (term == null) {
+                    complete = false;
+                } else {
+                    t += term[ci];
+                }
+            }
+            if (complete) {
+                return (float) t;
+            }
+        }
+        return (float) prefixArrival(b, shared, ci);
+    }
+
+    /** Arrival at the end of the first {@code k} nodes of a route, with the balanced-tree target pro rata. */
+    private double prefixArrival(List<Node> route, int k, int ci) {
+        double t = ci == 1 ? bufgMinPs : bufgMaxPs;
+        if (deskew && armed && targetGrid) {
+            Integer anchor = anchorIndex.get(route);
+            Integer spine = spineIndex.get(route);
+            double[] tg = anchor != null && anchor >= 0 && spine != null && spine >= 0
+                    ? gridTarget(route.get(spine).getTile().getTileXCoordinate(), treeTopY) : null;
+            if (tg != null) {
+                for (int i = 0; i < Math.min(k, spine); i++) {
+                    t += priced(route.get(i), ci);
+                }
+                if (k > spine) {
+                    int vertical = Math.max(1, anchor - spine);
+                    int sharedVertical = Math.min(k, anchor) - spine;
+                    t += tg[ci] * sharedVertical / (double) vertical;
+                }
+                for (int i = anchor; i < k; i++) {
+                    t += priced(route.get(i), ci);
+                }
+                return t;
+            }
+        }
+        for (int i = 0; i < k; i++) {
+            t += priced(route.get(i), ci);
+        }
+        return t;
+    }
+
     /** Whether the table has an exact arrival term for this route node. */
     public boolean hasArrivalTerm(Node n) {
         return arrival.containsKey(arrivalKey(n));
@@ -742,7 +819,7 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 continue;
             }
             if (t.startsWith("clock_node_delay") || t.startsWith("clock_pessimism_delay")
-                    || t.startsWith("clock_type_fallback")) {
+                    || t.startsWith("clock_type_fallback") || t.startsWith(COMMON_SECTION)) {
                 section = t.split("\\s+")[0];
                 continue;
             }
@@ -757,6 +834,10 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 continue;
             }
             double[] v = new double[] { Double.parseDouble(f[1]), Double.parseDouble(f[2]) };
+            if (section.equals(COMMON_SECTION)) {
+                common.put(f[0], v);
+                continue;
+            }
             if (section.equals("clock_node_delay") && f[0].startsWith(TARGET_PREFIX)) {
                 String[] xy = f[0].substring(TARGET_PREFIX.length()).split(":");
                 if (xy.length == 3) {

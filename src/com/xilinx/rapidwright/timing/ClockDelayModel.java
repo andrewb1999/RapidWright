@@ -67,4 +67,16 @@ public interface ClockDelayModel {
                                         boolean setup) {
         return getPessimismRemovalPs(launch, capture, setup);
     }
+
+    /**
+     * The clock arrival at the last node the two sinks' clock routes share
+     * (Vivado's "common clock delay"), at the given corner, or null when
+     * the model cannot tell. Vivado's inter-SLR compensation is
+     * {@code (capture clock − common clock delay) × 0.10} on paths that
+     * cross SLRs.
+     */
+    default Float getCommonClockDelayPs(Site launch, String launchPin, Site capture, String capturePin,
+                                        Corner corner) {
+        return null;
+    }
 }
