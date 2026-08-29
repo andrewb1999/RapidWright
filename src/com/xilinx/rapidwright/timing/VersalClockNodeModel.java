@@ -222,10 +222,13 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 }
                 Node anchor = route.get(a - 1);
                 double[] below = new double[2];
+                Site site = sitesOf(route);
                 for (int ci = 0; ci < 2; ci++) {
                     for (int i = a; i < route.size(); i++) {
                         below[ci] += nodeTermPs(route.get(i), ci == 1 ? Corner.SLOW_MIN : Corner.SLOW_MAX);
                     }
+                    // The row is balanced on the full net delay, taps included.
+                    below[ci] += programmedPs(site, route, ci);
                 }
                 double[] cur = rowMax.get(anchor);
                 if (cur == null || below[0] > cur[0]) {
@@ -403,6 +406,19 @@ public class VersalClockNodeModel implements ClockDelayModel {
     public List<Node> getTargetRoute() {
         return targetRoute;
     }
+
+    /** The site a route ends at (by its site pin key), or null. */
+    private Site sitesOf(List<Node> route) {
+        if (routeSite.isEmpty()) {
+            for (Map.Entry<String, List<Node>> e : pinRoute.entrySet()) {
+                String site = e.getKey().substring(0, e.getKey().indexOf('/'));
+                routeSite.putIfAbsent(e.getValue(), design == null ? null : design.getDevice().getSite(site));
+            }
+        }
+        return routeSite.get(route);
+    }
+
+    private final Map<List<Node>, Site> routeSite = new java.util.IdentityHashMap<>();
 
     /** The design this model prices, or null. */
     public com.xilinx.rapidwright.design.Design getDesign() {
