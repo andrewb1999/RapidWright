@@ -237,14 +237,14 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 if (!rowStation.get(anchor).equals(stationOf(route))) {
                     continue;
                 }
+                // The balance point is the station's output: the shared nodes
+                // from the anchor through the last station node.
+                int end = stationEnd(route);
                 double[] below = new double[2];
-                Site site = sitesOf(route);
                 for (int ci = 0; ci < 2; ci++) {
-                    for (int i = a; i < route.size(); i++) {
+                    for (int i = a; i <= end; i++) {
                         below[ci] += nodeTermPs(route.get(i), ci == 1 ? Corner.SLOW_MIN : Corner.SLOW_MAX);
                     }
-                    // The row is balanced on the full net delay, taps included.
-                    below[ci] += programmedPs(site, route, ci);
                 }
                 double[] cur = rowMax.get(anchor);
                 if (cur == null || below[0] > cur[0]) {
@@ -299,6 +299,17 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 target[1] += rm[1];
             }
         }
+    }
+
+    /** Index of the last delay-station node of a route, or -1. */
+    public static int stationEnd(List<Node> route) {
+        int end = -1;
+        for (int i = 0; i < route.size(); i++) {
+            if (isDelayStationNode(route.get(i))) {
+                end = i;
+            }
+        }
+        return end;
     }
 
     /** The row station a route ends through: the tile of its last delay-station node, else "-". */
