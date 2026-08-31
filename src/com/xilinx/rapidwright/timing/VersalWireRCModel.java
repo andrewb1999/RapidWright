@@ -299,6 +299,65 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         return v == null ? 0 : v[which];
     }
 
+    /** Whether the loaded tables carry edge terms (NodeRCSolve --edge). */
+    private boolean edgeTables;
+
+    private static String baseOf(String ctxCls) {
+        int bar = ctxCls.indexOf('|');
+        return bar < 0 ? ctxCls : ctxCls.substring(0, bar);
+    }
+
+    /**
+     * Delay charged on the pip from prev into n (edge tables): keyed by the
+     * two context classes plus the class of n's first child, falling back to
+     * the pair, then to the base-class pair. Zero when unknown.
+     */
+    private double edgeD(int corner, String prevCls, String cls, Node next) {
+        Map<String, double[]> t = rc[corner];
+        String child = next == null ? "-" : wireClass(next);
+        String pair = prevCls + ">" + cls;
+        double[] v = t.get(pair);
+        if (v == null) {
+            pair = baseOf(prevCls) + ">" + baseOf(cls);
+            v = t.get(pair);
+        }
+        if (v == null) {
+            edgesUnknown++;
+            return 0;
+        }
+        double d = v[0];
+        double[] fine = t.get(pair + ">" + child);
+        if (fine != null) {
+            d += fine[0];
+        }
+        return d;
+    }
+
+    private double tailD(int corner, String cls, Net net) {
+        double d = 0;
+        double[] v = rc[corner].get(cls + ">TAIL");
+        if (v == null) {
+            v = rc[corner].get(baseOf(cls) + ">TAIL");
+        }
+        if (v != null) {
+            d += v[0];
+        }
+        double[] sv = rc[corner].get("SRC:" + net.getSource().getName());
+        if (sv != null) {
+            d += sv[0];
+        }
+        String sourceKey = sourceKey(net);
+        if (sourceKey != null) {
+            sv = rc[corner].get("SRC:" + sourceKey);
+            if (sv != null) {
+                d += sv[0];
+            }
+        }
+        return d;
+    }
+
+    private long edgesUnknown;
+
     /** Class parameters for a context class, falling back to the base class. */
     private double[] rcCtx(int corner, String ctxCls, Node n) {
         double[] v = rc[corner].get(ctxCls);
@@ -332,6 +391,7 @@ public class VersalWireRCModel implements InterconnectDelayModel {
             path.add(n);
         }
         Collections.reverse(path);
+        String prevCls = null;
         for (int pi = 0; pi < path.size(); pi++) {
             Node n = path.get(pi);
             Node prevN = pi > 0 ? path.get(pi - 1) : null;
@@ -345,6 +405,15 @@ public class VersalWireRCModel implements InterconnectDelayModel {
                 nodesPriced++;
                 t += drc[0] + drc[1] * routing.subtreeC.get(n)[ci];
             }
+            if (edgeTables) {
+                if (prevCls != null) {
+                    t += edgeD(ci, prevCls, cls, nextN);
+                }
+                if (pi == path.size() - 1) {
+                    t += tailD(ci, cls, net);
+                }
+            }
+            prevCls = cls;
             String base = wireClass(n);
             {
             for (Map.Entry<String, Integer> e : colSpanByType(n).entrySet()) {
@@ -424,6 +493,117 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         return sb.toString();
     }
 
+    /** One priced node of a routing tree: see {@link #explainNodes}. */
+    public static final class NodeTerm {
+        public final Node node;
+        public final Node parent;
+        public final String cls;
+        /** Delay charged to this node (R/C term + span terms + hwire correction). */
+        public final double incPs;
+        /** Cumulative arrival at this node from the source. */
+        public final double arrivalPs;
+        public final double subtreeC;
+
+        NodeTerm(Node node, Node parent, String cls, double incPs, double arrivalPs, double subtreeC) {
+            this.node = node;
+            this.parent = parent;
+            this.cls = cls;
+            this.incPs = incPs;
+            this.arrivalPs = arrivalPs;
+            this.subtreeC = subtreeC;
+        }
+    }
+
+    /**
+     * Prices every node of the net's routing tree (pre-order from the roots)
+     * with the same terms as {@link #getNetDelayPs}, reporting per-node
+     * increments and cumulative arrivals; used to compare against per-node
+     * ground truth such as Vivado's {@code report_route_status -node_delay}.
+     * Branch context uses the lexicographically first child, so a node on a
+     * fanout may be classed slightly differently than on a specific sink path.
+     */
+    public List<NodeTerm> explainNodes(Net net, Corner corner) {
+        List<NodeTerm> out = new ArrayList<>();
+        if (net.getSource() == null) {
+            return out;
+        }
+        Routing routing = routingCache.computeIfAbsent(net, Routing::new);
+        int ci = corner == Corner.SLOW_MIN ? 1 : 0;
+        Map<Node, Double> arrival = new HashMap<>();
+        Deque<Node> stack = new ArrayDeque<>();
+        for (Map.Entry<Node, Node> e : routing.parent.entrySet()) {
+            if (e.getValue() == null) {
+                stack.push(e.getKey());
+            }
+        }
+        while (!stack.isEmpty()) {
+            Node n = stack.pop();
+            Node prevN = routing.parent.get(n);
+            Node nextN = firstChild(routing.children, n);
+            String cls = wireClassCtx(prevN, n, nextN);
+            double[] drc = rcCtx(ci, cls, n);
+            double[] sc = routing.subtreeC.get(n);
+            double inc = drc == null ? 0 : drc[0] + drc[1] * sc[ci];
+            String base = wireClass(n);
+            for (Map.Entry<String, Integer> e : colSpanByType(n).entrySet()) {
+                double[] sp = rc[ci].get(base + "|COL@" + e.getKey());
+                if (sp != null) {
+                    inc += e.getValue() * sp[0];
+                }
+            }
+            int rows = rowSpan(n);
+            if (rows > 0) {
+                double[] sp = rc[ci].get(base + "|ROWS");
+                if (sp != null) {
+                    inc += rows * sp[0];
+                }
+            }
+            if (isSpanWire(n)) {
+                double[] corr = hwireCorr.get(spanKey(n));
+                if (corr != null) {
+                    inc += corr[ci];
+                }
+            }
+            if (edgeTables && prevN != null) {
+                inc += edgeD(ci, wireClassCtx(routing.parent.get(prevN), prevN, firstChild(routing.children, prevN)),
+                        cls, nextN);
+            }
+            double arr = (prevN == null ? 0 : arrival.get(prevN)) + inc;
+            arrival.put(n, arr);
+            out.add(new NodeTerm(n, prevN, cls, inc, arr, sc[ci]));
+            for (Node ch : routing.children.getOrDefault(n, Collections.emptyList())) {
+                stack.push(ch);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Context of a net's driver for the source-side intrasite delay: the
+     * driving BEL pin and the site pin it leaves through (a LUT O5 that exits
+     * through the flop's Q pin passes an extra output mux). Null when the
+     * driver cannot be resolved.
+     */
+    public static String sourceKey(Net net) {
+        SitePinInst src = net.getSource();
+        if (src == null || net.getLogicalHierNet() == null) {
+            return null;
+        }
+        com.xilinx.rapidwright.design.Design design = src.getSiteInst().getDesign();
+        for (com.xilinx.rapidwright.edif.EDIFHierPortInst pi : net.getLogicalHierNet().getSourcePortInsts(true)) {
+            com.xilinx.rapidwright.design.Cell cell = design.getCell(pi.getFullHierarchicalInstName());
+            if (cell == null || cell.getSiteInst() != src.getSiteInst()) {
+                continue;
+            }
+            String belPin = cell.getPhysicalPinMapping(pi.getPortInst().getName());
+            if (belPin == null) {
+                continue;
+            }
+            return cell.getBELName() + "/" + belPin + ">" + src.getName();
+        }
+        return null;
+    }
+
     /** Forgets cached routing for a net; call after rerouting it. */
     public void invalidate(Net net) {
         routingCache.remove(net);
@@ -435,8 +615,8 @@ public class VersalWireRCModel implements InterconnectDelayModel {
 
     /** What fraction of priced nodes had table entries, for reporting. */
     public String getCoverageSummary() {
-        return String.format("nodes priced %d, unknown %d (%.1f%%); hwire corrections %d of %d (%.0f%%)",
-                nodesPriced, nodesUnknown,
+        return String.format("nodes priced %d, unknown %d (%.1f%%); edges unknown %d; hwire corrections %d of %d (%.0f%%)",
+                nodesPriced, nodesUnknown, edgesUnknown,
                 100.0 * nodesUnknown / Math.max(1, nodesPriced + nodesUnknown),
                 hwireCovered, hwireNodes, 100.0 * hwireCovered / Math.max(1, hwireNodes));
     }
@@ -445,7 +625,7 @@ public class VersalWireRCModel implements InterconnectDelayModel {
     // Loading and tree construction.
     // ------------------------------------------------------------------
 
-    private static void readRC(Path table, Map<String, double[]> into) throws IOException {
+    private void readRC(Path table, Map<String, double[]> into) throws IOException {
         String section = null;
         for (String line : Files.readAllLines(table, StandardCharsets.UTF_8)) {
             String t = line.trim();
@@ -462,6 +642,9 @@ public class VersalWireRCModel implements InterconnectDelayModel {
             }
             into.put(f[0], new double[] { Double.parseDouble(f[1]), Double.parseDouble(f[2]),
                     Double.parseDouble(f[3]) });
+        }
+        if (into.keySet().stream().anyMatch(k -> k.contains(">"))) {
+            edgeTables = true;
         }
     }
 
@@ -489,7 +672,7 @@ public class VersalWireRCModel implements InterconnectDelayModel {
     }
 
     /** Forward BFS over the net's PIPs; see {@link VersalClockTimingModel#buildParents}. */
-    private static Map<Node, Node> buildParents(Net net) {
+    public static Map<Node, Node> buildParents(Net net) {
         Map<Node, List<Node>> downhill = new HashMap<>();
         for (PIP p : net.getPIPs()) {
             downhill.computeIfAbsent(p.getStartNode(), k -> new ArrayList<>()).add(p.getEndNode());
