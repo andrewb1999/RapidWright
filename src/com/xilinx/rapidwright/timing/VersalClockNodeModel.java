@@ -578,6 +578,16 @@ public class VersalClockNodeModel implements ClockDelayModel {
     public static final String IRI_TAPS_TERM = "IRI_TAPS";
 
     /**
+     * Fixed insertion delay of an armed leaf delay line: the line is affine
+     * (base + taps x step), not linear — slr_ring's taps-1 sinks sit 75 ps
+     * above a pure per-tap fit and its taps-8 sinks 215 ps below it.
+     */
+    public static final String LEAF_TAPS_BASE_TERM = "LEAF_TAPS_BASE";
+
+    /** Fixed insertion delay of an armed interface (IRI) delay line. */
+    public static final String IRI_TAPS_BASE_TERM = "IRI_TAPS_BASE";
+
+    /**
      * Programmed delay taps on the interface leaf a route ends through.
      * Block RAM, DSP and other non-slice sinks take their clock from an
      * {@code IRI_QUAD} site whose {@code IRI_FF_CLK_MOD} can select a
@@ -737,6 +747,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
             if (taps > 0) {
                 double[] term = byType.get(LEAF_TAPS_TERM);
                 t += taps * (term != null ? term[ci] : 68.0);
+                double[] base = byType.get(LEAF_TAPS_BASE_TERM);
+                t += base != null ? base[ci] : 0;
             }
             int iri = iriTaps(design, route);
             if (iri > 0) {
@@ -745,6 +757,11 @@ public class VersalClockNodeModel implements ClockDelayModel {
                     term = byType.get(LEAF_TAPS_TERM);
                 }
                 t += iri * (term != null ? term[ci] : 68.0);
+                double[] base = byType.get(IRI_TAPS_BASE_TERM);
+                if (base == null) {
+                    base = byType.get(LEAF_TAPS_BASE_TERM);
+                }
+                t += base != null ? base[ci] : 0;
             }
         }
         if (armed && !deskew) {
@@ -817,6 +834,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
         if (taps > 0) {
             double[] term = byType.get(LEAF_TAPS_TERM);
             t += taps * (term != null ? term[ci] : 68.0);
+            double[] base = byType.get(LEAF_TAPS_BASE_TERM);
+            t += base != null ? base[ci] : 0;
         }
         int iri = route == null ? 0 : iriTaps(design, route);
         if (iri > 0) {
@@ -825,6 +844,11 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 term = byType.get(LEAF_TAPS_TERM);
             }
             t += iri * (term != null ? term[ci] : 68.0);
+            double[] base = byType.get(IRI_TAPS_BASE_TERM);
+            if (base == null) {
+                base = byType.get(LEAF_TAPS_BASE_TERM);
+            }
+            t += base != null ? base[ci] : 0;
         }
         return t;
     }
@@ -986,13 +1010,15 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 // section, they must reach the same map or the model silently
                 // uses defaults (0 per station, 68 ps per tap).
                 if (f[0].equals(ARMED_STATION_TERM) || f[0].equals(LEAF_TAPS_TERM)
-                        || f[0].equals(IRI_TAPS_TERM) || f[0].equals(BRANCH_TERM)) {
+                        || f[0].equals(IRI_TAPS_TERM) || f[0].equals(BRANCH_TERM)
+                        || f[0].equals(LEAF_TAPS_BASE_TERM) || f[0].equals(IRI_TAPS_BASE_TERM)) {
                     byType.putIfAbsent(f[0], v);
                 }
             } else if (section.equals("clock_type_fallback")) {
                 typeFallback.put(f[0], v);
             } else if (f[0].equals(ARMED_STATION_TERM) || f[0].equals(LEAF_TAPS_TERM)
-                    || f[0].equals(IRI_TAPS_TERM)) {
+                    || f[0].equals(IRI_TAPS_TERM) || f[0].equals(LEAF_TAPS_BASE_TERM)
+                    || f[0].equals(IRI_TAPS_BASE_TERM)) {
                 // The pessimism variant fits its own copy of these; the
                 // arrival variant's is the one arrival must use.
                 byType.putIfAbsent(f[0], v);
