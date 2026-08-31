@@ -595,6 +595,60 @@ public class VersalClockNodeModel implements ClockDelayModel {
      * taps — Vivado's deskew for those pins, which made a block RAM's two
      * clocks arrive 700 ps apart. Zero when nothing is programmed.
      */
+    /**
+     * Whether the sink slice's leaf delay line is armed at all: Vivado can
+     * select the delayed clock with zero taps ({@code CLK_DLY_VAL=0}), which
+     * still costs the line's insertion delay.
+     */
+    public static boolean leafArmed(com.xilinx.rapidwright.design.Design design, Site site) {
+        if (design == null || design.getBELAttrs() == null || !site.getName().startsWith("SLICE")) {
+            return false;
+        }
+        com.xilinx.rapidwright.design.SiteConfig sc = design.getBELAttrs().get(site);
+        if (sc == null) {
+            return false;
+        }
+        com.xilinx.rapidwright.device.BEL bel = site.getBEL("FF_CLK_MOD");
+        if (bel == null) {
+            return false;
+        }
+        com.xilinx.rapidwright.design.BELAttr en = sc.getBELAttribute(bel, "FF_CLK_EN");
+        com.xilinx.rapidwright.design.BELAttr mode = sc.getBELAttribute(bel, "IMUX_CLK_MODE");
+        return (en != null && en.getValue().contains("TRUE"))
+                || (mode != null && mode.getValue().contains("DELAY"));
+    }
+
+    /**
+     * Whether the interface (IRI) delay line on the route is armed
+     * ({@code CLK_SEL=DLYD_CLK}), regardless of the tap count: dsp_chain's
+     * bottom-row DSP and slr_ring's Y142 DSPs are armed with zero taps and
+     * arrive ~130-160 ps late — the line's insertion delay.
+     */
+    public static boolean iriArmed(com.xilinx.rapidwright.design.Design design, List<Node> route) {
+        if (design == null || design.getBELAttrs() == null || route == null) {
+            return false;
+        }
+        for (Node n : route) {
+            com.xilinx.rapidwright.device.SitePin sp = n.getSitePin();
+            if (sp == null || !sp.getSite().getSiteTypeEnum().name().startsWith("IRI_QUAD")) {
+                continue;
+            }
+            com.xilinx.rapidwright.design.SiteConfig sc = design.getBELAttrs().get(sp.getSite());
+            if (sc == null) {
+                continue;
+            }
+            for (Map.Entry<com.xilinx.rapidwright.device.BEL, Map<String, com.xilinx.rapidwright.design.BELAttr>> e
+                    : sc.getBELAttributes().entrySet()) {
+                if (!e.getKey().getName().equals("IRI_FF_CLK_MOD")) {
+                    continue;
+                }
+                com.xilinx.rapidwright.design.BELAttr sel = e.getValue().get("CLK_SEL");
+                return sel != null && sel.getValue().contains("DLYD");
+            }
+        }
+        return false;
+    }
+
     public static int iriTaps(com.xilinx.rapidwright.design.Design design, List<Node> route) {
         if (design == null || design.getBELAttrs() == null) {
             return 0;
@@ -747,6 +801,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
             if (taps > 0) {
                 double[] term = byType.get(LEAF_TAPS_TERM);
                 t += taps * (term != null ? term[ci] : 68.0);
+            }
+            if (taps > 0 || leafArmed(design, site)) {
                 double[] base = byType.get(LEAF_TAPS_BASE_TERM);
                 t += base != null ? base[ci] : 0;
             }
@@ -757,6 +813,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
                     term = byType.get(LEAF_TAPS_TERM);
                 }
                 t += iri * (term != null ? term[ci] : 68.0);
+            }
+            if (iri > 0 || iriArmed(design, route)) {
                 double[] base = byType.get(IRI_TAPS_BASE_TERM);
                 if (base == null) {
                     base = byType.get(LEAF_TAPS_BASE_TERM);
@@ -834,6 +892,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
         if (taps > 0) {
             double[] term = byType.get(LEAF_TAPS_TERM);
             t += taps * (term != null ? term[ci] : 68.0);
+        }
+        if (taps > 0 || leafArmed(design, site)) {
             double[] base = byType.get(LEAF_TAPS_BASE_TERM);
             t += base != null ? base[ci] : 0;
         }
@@ -844,6 +904,8 @@ public class VersalClockNodeModel implements ClockDelayModel {
                 term = byType.get(LEAF_TAPS_TERM);
             }
             t += iri * (term != null ? term[ci] : 68.0);
+        }
+        if (iri > 0 || (route != null && iriArmed(design, route))) {
             double[] base = byType.get(IRI_TAPS_BASE_TERM);
             if (base == null) {
                 base = byType.get(LEAF_TAPS_BASE_TERM);
