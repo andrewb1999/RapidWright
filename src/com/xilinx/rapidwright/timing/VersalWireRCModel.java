@@ -233,6 +233,13 @@ public class VersalWireRCModel implements InterconnectDelayModel {
                     c[1] += cc[1];
                 }
                 subtreeC.put(n, c);
+                // An SLL crossing is actively buffered (LAG TX -> UBUMP ->
+                // LAG RX): capacitance beyond the transmitter does not load
+                // the upstream chain. Without the barrier a cross-SLR BRAM
+                // net priced +223 ps (slr_ring's worst path).
+                if (n.getIntentCode() == com.xilinx.rapidwright.device.IntentCode.NODE_SLL_DATA) {
+                    subtreeC.put(n, new double[] { param(0, cls, 2), param(1, cls, 2) });
+                }
             }
         }
     }
