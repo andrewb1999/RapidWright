@@ -187,17 +187,33 @@ public class SignoffTimingAnalysis {
         public final Map<String, Integer> uncoveredClockSiteTypes = new TreeMap<>();
         /** Why net delays could not be priced, with counts. */
         public final Map<String, Integer> unpricedNetReasons = new TreeMap<>();
+        /** Combinational arcs the library has no entry for, with counts. */
+        public final Map<String, Integer> unpricedLogicArcs = new TreeMap<>();
+        /** A few concrete (net, sink) examples the net model could not price. */
+        public final List<String> unpricedNetSamples = new ArrayList<>();
+
+        private static String top(Map<String, Integer> m, int n) {
+            StringBuilder b = new StringBuilder("{");
+            m.entrySet().stream().sorted((a, c) -> c.getValue() - a.getValue()).limit(n)
+                    .forEach(e -> b.append(b.length() > 1 ? ", " : "").append(e.getKey()).append('=')
+                            .append(e.getValue()));
+            if (m.size() > n) {
+                b.append(", ... ").append(m.size() - n).append(" more");
+            }
+            return b.append('}').toString();
+        }
 
         @Override
         public String toString() {
             return "launch registers " + launchRegisters + ", paths " + pathsPriced
                     + ", endpoints " + endpointsPriced + "; dropped: clock " + unpricedClock
                     + " " + uncoveredClockSiteTypes + ", net " + unpricedNet + " "
-                    + unpricedNetReasons + ", logic " + unpricedLogic + ", check "
+                    + top(unpricedNetReasons, 20) + ", logic " + unpricedLogic + " "
+                    + top(unpricedLogicArcs, 20) + ", check "
                     + unpricedCheck + ", depth " + depthExceeded + ", other clock " + otherClock
                     + "; intra-site hops "
                     + intraSiteHops + " (" + intraSiteUnknown + " unknown: "
-                    + intraSiteUnknownPairs + ")";
+                    + top(intraSiteUnknownPairs, 40) + "); net-drop samples " + unpricedNetSamples;
         }
     }
 
@@ -386,6 +402,12 @@ public class SignoffTimingAnalysis {
             Float netDelay = netDelay(net, cell, belPin, fromBelPin, dataCorner);
             if (netDelay == null) {
                 coverage.unpricedNet++;
+                coverage.unpricedNetReasons.merge(
+                        "model " + (fromBelPin == null ? "?" : fromBelPin) + " -> " + cell.getBELName() + "/" + belPin,
+                        1, Integer::sum);
+                if (coverage.unpricedNetSamples.size() < 12) {
+                    coverage.unpricedNetSamples.add(net.getName() + " sink " + cell.getName() + "/" + belPin);
+                }
                 continue;
             }
             float netHere = netSoFar + netDelay;
@@ -441,6 +463,8 @@ public class SignoffTimingAnalysis {
                 Float prop = logicModel.getPropagationDelayPs(cell, belPin, outBel, dataCorner);
                 if (prop == null) {
                     // No arc between these pins; this output is not on the path.
+                    coverage.unpricedLogicArcs.merge(cell.getEDIFCellInst().getCellType().getName() + " "
+                            + cell.getBELName() + " " + belPin + " -> " + outBel, 1, Integer::sum);
                     continue;
                 }
                 pins.add(pinName(sink));
@@ -654,8 +678,11 @@ public class SignoffTimingAnalysis {
         return bels;
     }
 
+    // The U/L variants are RAMB36E5's split-half clock pins: a RAMB36 cell
+    // exposes only those, so omitting them made every RAMB36 combinational
+    // (no launches, no checks) — slr_ring lost 1110 endpoints that way.
     private static final String[] CLOCK_PIN_NAMES = { "C", "CLK", "WCLK", "CLKARDCLK", "CLKBWRCLK",
-            "CLKA", "CLKB" };
+            "CLKARDCLKU", "CLKARDCLKL", "CLKBWRCLKU", "CLKBWRCLKL", "CLKA", "CLKB" };
 
     private static String clockLogicalPin(Cell cell) {
         for (String candidate : CLOCK_PIN_NAMES) {

@@ -202,20 +202,20 @@ public class VersalWireRCModel implements InterconnectDelayModel {
             parent = buildParents(net);
             // Children, then post-order subtree capacitance at both corners.
             Map<Node, List<Node>> children = new HashMap<>();
-            Node root = null;
+            List<Node> roots = new ArrayList<>();
             for (Map.Entry<Node, Node> e : parent.entrySet()) {
                 if (e.getValue() == null) {
-                    root = e.getKey();
+                    roots.add(e.getKey());
                 } else {
                     children.computeIfAbsent(e.getValue(), k -> new ArrayList<>()).add(e.getKey());
                 }
             }
-            if (root == null) {
+            if (roots.isEmpty()) {
                 return;
             }
             Deque<Node> stack = new ArrayDeque<>();
             Deque<Node> order = new ArrayDeque<>();
-            stack.push(root);
+            roots.forEach(stack::push);
             while (!stack.isEmpty()) {
                 Node n = stack.pop();
                 order.push(n);
@@ -429,6 +429,18 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         parent.put(source, null);
         Set<Node> seen = new HashSet<>();
         seen.add(source);
+        // A net can leave its site through several pins (a flip-flop's Q,
+        // the slice's mux output, the second FF's Q2); branches routed from
+        // an alternate pin are unreachable from the primary one and every
+        // sink on them would price null (slr_ring dropped 49k path
+        // segments that way).
+        for (SitePinInst alt : net.getAlternateSources()) {
+            Node altNode = alt == null ? null : alt.getConnectedNode();
+            if (altNode != null && seen.add(altNode)) {
+                parent.put(altNode, null);
+                queue.add(altNode);
+            }
+        }
         while (!queue.isEmpty()) {
             Node n = queue.poll();
             for (Node c : downhill.getOrDefault(n, Collections.emptyList())) {

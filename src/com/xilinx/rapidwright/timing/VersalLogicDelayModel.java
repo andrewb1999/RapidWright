@@ -221,6 +221,14 @@ public class VersalLogicDelayModel implements LogicDelayModel {
         int size = type.charAt(3) - '0';
         long value = com.xilinx.rapidwright.design.tools.LUTTools.getInitValue(init.getValue());
         int rows = 1 << size;
+        // A constant INIT is a placeholder, not a function: LUT6_2 macro
+        // children carry INIT=0 while the real value sits on the macro, and
+        // a genuinely constant LUT is never on a timed path anyway — so
+        // only trust the sensitivity analysis for a non-constant INIT.
+        long mask = rows >= 64 ? -1L : (1L << rows) - 1;
+        if ((value & mask) == 0 || (value & mask) == mask) {
+            return true;
+        }
         for (int x = 0; x < rows; x++) {
             if (((value >>> x) & 1) != ((value >>> (x ^ (1 << bit))) & 1)) {
                 return true;
