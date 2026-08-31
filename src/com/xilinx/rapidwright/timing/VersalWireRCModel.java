@@ -133,6 +133,53 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         return n.getIntentCode() + ":" + n.getWireName().replaceAll("\\d+", "#");
     }
 
+    /**
+     * Context-aware wire class: the base class plus qualifiers only the
+     * route can supply. An SLL crossing is direction-dependent (up-crossings
+     * measured ~20 ps slower than down); a span wire driven against its
+     * nominal direction is different silicon usage; and an ordinary node
+     * inside an SLL tile is not the same wire as its namesake in the fabric.
+     * {@code prev} is the node's parent on the route, {@code next} the child
+     * the signal continues through (either may be null at the route ends).
+     */
+    public static String wireClassCtx(Node prev, Node n, Node next) {
+        String base = wireClass(n);
+        IntentCode ic = n.getIntentCode();
+        if (n.getTile().getName().startsWith("SLL") && ic != IntentCode.NODE_SLL_DATA
+                && ic != IntentCode.NODE_SLL_INPUT && ic != IntentCode.NODE_SLL_OUTPUT) {
+            base += "|SLLT";
+        }
+        if (ic == IntentCode.NODE_SLL_DATA && prev != null && next != null) {
+            base += next.getTile().getTileYCoordinate() >= prev.getTile().getTileYCoordinate()
+                    ? "|UP" : "|DN";
+        } else if (isSpanWire(n) && prev != null && next != null) {
+            String w = n.getWireName();
+            int wantY = w.contains("NN") ? 1 : w.contains("SS") ? -1 : 0;
+            int wantX = w.contains("EE") ? 1 : w.contains("WW") ? -1 : 0;
+            int dy = next.getTile().getTileYCoordinate() - prev.getTile().getTileYCoordinate();
+            int dx = next.getTile().getTileXCoordinate() - prev.getTile().getTileXCoordinate();
+            if ((wantY != 0 && dy * wantY < 0) || (wantX != 0 && dx * wantX < 0)) {
+                base += "|REV";
+            }
+        }
+        return base;
+    }
+
+    /** The deterministic representative child of a node in a routed tree. */
+    public static Node firstChild(Map<Node, java.util.List<Node>> children, Node n) {
+        java.util.List<Node> c = children.get(n);
+        if (c == null || c.isEmpty()) {
+            return null;
+        }
+        Node best = c.get(0);
+        for (Node x : c) {
+            if (x.toString().compareTo(best.toString()) < 0) {
+                best = x;
+            }
+        }
+        return best;
+    }
+
     /** Whether a node is a span wire — one that travels — rather than a mux or tap. */
     public static boolean isSpanWire(Node n) {
         IntentCode ic = n.getIntentCode();
@@ -198,10 +245,11 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         final Map<Node, Node> parent;
         final Map<Node, double[]> subtreeC = new HashMap<>();
 
+        final Map<Node, List<Node>> children = new HashMap<>();
+
         Routing(Net net) {
             parent = buildParents(net);
             // Children, then post-order subtree capacitance at both corners.
-            Map<Node, List<Node>> children = new HashMap<>();
             List<Node> roots = new ArrayList<>();
             for (Map.Entry<Node, Node> e : parent.entrySet()) {
                 if (e.getValue() == null) {
@@ -225,8 +273,10 @@ public class VersalWireRCModel implements InterconnectDelayModel {
             }
             while (!order.isEmpty()) {
                 Node n = order.pop();
-                String cls = wireClass(n);
-                double[] c = new double[] { param(0, cls, 2), param(1, cls, 2) };
+                String cls = wireClassCtx(parent.get(n), n, firstChild(children, n));
+                double[] p0 = rcCtx(0, cls, n);
+                double[] p1 = rcCtx(1, cls, n);
+                double[] c = new double[] { p0 == null ? 0 : p0[2], p1 == null ? 0 : p1[2] };
                 for (Node ch : children.getOrDefault(n, Collections.emptyList())) {
                     double[] cc = subtreeC.get(ch);
                     c[0] += cc[0];
@@ -247,6 +297,12 @@ public class VersalWireRCModel implements InterconnectDelayModel {
     private double param(int corner, String cls, int which) {
         double[] v = rc[corner].get(cls);
         return v == null ? 0 : v[which];
+    }
+
+    /** Class parameters for a context class, falling back to the base class. */
+    private double[] rcCtx(int corner, String ctxCls, Node n) {
+        double[] v = rc[corner].get(ctxCls);
+        return v != null ? v : rc[corner].get(wireClass(n));
     }
 
     @Override
@@ -271,24 +327,35 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         }
         int ci = corner == Corner.SLOW_MIN ? 1 : 0;
         double t = 0;
+        List<Node> path = new ArrayList<>();
         for (Node n = end; n != null; n = routing.parent.get(n)) {
-            String cls = wireClass(n);
-            double[] drc = rc[ci].get(cls);
+            path.add(n);
+        }
+        Collections.reverse(path);
+        for (int pi = 0; pi < path.size(); pi++) {
+            Node n = path.get(pi);
+            Node prevN = pi > 0 ? path.get(pi - 1) : null;
+            Node nextN = pi + 1 < path.size() ? path.get(pi + 1)
+                    : firstChild(routing.children, n);
+            String cls = wireClassCtx(prevN, n, nextN);
+            double[] drc = rcCtx(ci, cls, n);
             if (drc == null) {
                 nodesUnknown++;
             } else {
                 nodesPriced++;
                 t += drc[0] + drc[1] * routing.subtreeC.get(n)[ci];
             }
+            String base = wireClass(n);
+            {
             for (Map.Entry<String, Integer> e : colSpanByType(n).entrySet()) {
-                double[] sp = rc[ci].get(cls + "|COL@" + e.getKey());
+                double[] sp = rc[ci].get(base + "|COL@" + e.getKey());
                 if (sp != null) {
                     t += e.getValue() * sp[0];
                 }
             }
             int rows = rowSpan(n);
             if (rows > 0) {
-                double[] sp = rc[ci].get(cls + "|ROWS");
+                double[] sp = rc[ci].get(base + "|ROWS");
                 if (sp != null) {
                     t += rows * sp[0];
                 }
@@ -300,6 +367,7 @@ public class VersalWireRCModel implements InterconnectDelayModel {
                     hwireCovered++;
                     t += corr[ci];
                 }
+            }
             }
         }
         return (float) t;
