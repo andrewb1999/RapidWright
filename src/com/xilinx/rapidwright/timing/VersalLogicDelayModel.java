@@ -342,7 +342,13 @@ public class VersalLogicDelayModel implements LogicDelayModel {
         if (d != null) {
             return d[corner == Corner.SLOW_MIN ? 1 : 0];
         }
-        float[] acc = intraSiteNorm.get(siteType.name() + " " + letterless(fromBelPin) + " " + letterless(toBelPin));
+        String nk = letterless(fromBelPin) + " " + letterless(toBelPin);
+        float[] acc = intraSiteNorm.get(siteType.name() + " " + nk);
+        if (acc == null) {
+            // Same connection in the sibling slice type (SLICEL <-> SLICEM).
+            acc = intraSiteNorm.get(siteType == SiteTypeEnum.SLICEL ? "SLICEM " + nk
+                    : siteType == SiteTypeEnum.SLICEM ? "SLICEL " + nk : "");
+        }
         if (acc == null) {
             return null;
         }
