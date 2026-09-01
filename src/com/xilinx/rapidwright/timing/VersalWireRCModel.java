@@ -244,6 +244,7 @@ public class VersalWireRCModel implements InterconnectDelayModel {
     private class Routing {
         final Map<Node, Node> parent;
         final Map<Node, double[]> subtreeC = new HashMap<>();
+        final Map<Node, double[]> ownC = new HashMap<>();
 
         final Map<Node, List<Node>> children = new HashMap<>();
 
@@ -278,10 +279,12 @@ public class VersalWireRCModel implements InterconnectDelayModel {
                 double[] p1 = rcCtx(1, cls, n);
                 double[] c = new double[] { p0 == null ? 0 : p0[2], p1 == null ? 0 : p1[2] };
                 for (Node ch : children.getOrDefault(n, Collections.emptyList())) {
-                    double[] cc = subtreeC.get(ch);
+                    // A buffered child contributes only its own capacitance.
+                    double[] cc = loadBarrier && isLoadBarrier(ch) ? ownC.get(ch) : subtreeC.get(ch);
                     c[0] += cc[0];
                     c[1] += cc[1];
                 }
+                ownC.put(n, new double[] { p0 == null ? 0 : p0[2], p1 == null ? 0 : p1[2] });
                 subtreeC.put(n, c);
                 // An SLL crossing is actively buffered (LAG TX -> UBUMP ->
                 // LAG RX): capacitance beyond the transmitter does not load
@@ -301,6 +304,30 @@ public class VersalWireRCModel implements InterconnectDelayModel {
 
     /** Whether the loaded tables carry edge terms (NodeRCSolve --edge). */
     private boolean edgeTables;
+    /** Whether buffered mux nodes isolate downstream load (table key LOAD_BARRIER). */
+    private boolean loadBarrier;
+
+    /**
+     * Buffered nodes: the interconnect muxes (SDQ/IMUX atoms, BNODE/CNODE,
+     * IRI) and SLL transmitters re-drive the signal, so the wire feeding
+     * them sees only the mux input, not the tree beyond. Vivado's per-pip
+     * increments scale with immediate fanout, not subtree size.
+     */
+    public static boolean isLoadBarrier(Node n) {
+        switch (n.getIntentCode()) {
+            case NODE_SDQNODE:
+            case NODE_INODE:
+            case NODE_CLE_BNODE:
+            case NODE_CLE_CNODE:
+            case NODE_INTF_BNODE:
+            case NODE_INTF_CNODE:
+            case NODE_IRI:
+            case NODE_SLL_DATA:
+                return true;
+            default:
+                return false;
+        }
+    }
 
     private static String baseOf(String ctxCls) {
         int bar = ctxCls.indexOf('|');
@@ -312,9 +339,10 @@ public class VersalWireRCModel implements InterconnectDelayModel {
      * two context classes plus the class of n's first child, falling back to
      * the pair, then to the base-class pair. Zero when unknown.
      */
-    private double edgeD(int corner, String prevCls, String cls, Node next) {
+    private double edgeD(int corner, String gpCls, String prevCls, String cls, Node next, Node prev, Node n,
+                         boolean branch) {
         Map<String, double[]> t = rc[corner];
-        String child = next == null ? "-" : wireClass(next);
+        String child = (next == null ? "-" : wireClass(next)) + (branch ? ">B" : "");
         String pair = prevCls + ">" + cls;
         double[] v = t.get(pair);
         if (v == null) {
@@ -327,6 +355,21 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         }
         double d = v[0];
         double[] fine = t.get(pair + ">" + child);
+        if (fine != null) {
+            d += fine[0];
+        }
+        if (gpCls != null) {
+            fine = t.get("GP:" + baseOf(gpCls) + ">" + baseOf(prevCls) + ">" + baseOf(cls));
+            if (fine != null) {
+                d += fine[0];
+            }
+        }
+        String pk = pipKey(prev, n);
+        fine = t.get("PIP:" + pk);
+        if (fine != null) {
+            d += fine[0];
+        }
+        fine = t.get("PIPX:" + n.getTile().getColumn() + ":" + pk);
         if (fine != null) {
             d += fine[0];
         }
@@ -392,11 +435,14 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         }
         Collections.reverse(path);
         String prevCls = null;
+        String gpCls = null;
         for (int pi = 0; pi < path.size(); pi++) {
             Node n = path.get(pi);
             Node prevN = pi > 0 ? path.get(pi - 1) : null;
-            Node nextN = pi + 1 < path.size() ? path.get(pi + 1)
-                    : firstChild(routing.children, n);
+            // Edge tables were fitted with every node classed by its first
+            // child (the same convention as the subtree capacitance), so a
+            // branching node prices identically on every sink path.
+            Node nextN = edgeTables || pi + 1 >= path.size() ? firstChild(routing.children, n) : path.get(pi + 1);
             String cls = wireClassCtx(prevN, n, nextN);
             double[] drc = rcCtx(ci, cls, n);
             if (drc == null) {
@@ -407,12 +453,14 @@ public class VersalWireRCModel implements InterconnectDelayModel {
             }
             if (edgeTables) {
                 if (prevCls != null) {
-                    t += edgeD(ci, prevCls, cls, nextN);
+                    t += edgeD(ci, gpCls, prevCls, cls, nextN, prevN, n,
+                            routing.children.getOrDefault(n, Collections.emptyList()).size() > 1);
                 }
                 if (pi == path.size() - 1) {
                     t += tailD(ci, cls, net);
                 }
             }
+            gpCls = prevCls;
             prevCls = cls;
             String base = wireClass(n);
             {
@@ -565,8 +613,11 @@ public class VersalWireRCModel implements InterconnectDelayModel {
                 }
             }
             if (edgeTables && prevN != null) {
-                inc += edgeD(ci, wireClassCtx(routing.parent.get(prevN), prevN, firstChild(routing.children, prevN)),
-                        cls, nextN);
+                Node gp = routing.parent.get(prevN);
+                String gpCls = gp == null ? null
+                        : wireClassCtx(routing.parent.get(gp), gp, firstChild(routing.children, gp));
+                inc += edgeD(ci, gpCls, wireClassCtx(gp, prevN, firstChild(routing.children, prevN)), cls, nextN,
+                        prevN, n, routing.children.getOrDefault(n, Collections.emptyList()).size() > 1);
             }
             double arr = (prevN == null ? 0 : arrival.get(prevN)) + inc;
             arrival.put(n, arr);
@@ -602,6 +653,39 @@ public class VersalWireRCModel implements InterconnectDelayModel {
             return cell.getBELName() + "/" + belPin + ">" + src.getName();
         }
         return null;
+    }
+
+    /**
+     * Column signature of a tile: the types of the nearest non-empty tiles
+     * to its west and east in the same row. The same pip template runs
+     * slower in an INT column beside an interface/DSP tile than beside a
+     * plain CLE column, so per-wire terms are keyed with this.
+     */
+    public static String colSig(com.xilinx.rapidwright.device.Tile t) {
+        com.xilinx.rapidwright.device.Device dev = t.getDevice();
+        String w = "-";
+        String e = "-";
+        for (int c = t.getColumn() - 1; c >= 0; c--) {
+            com.xilinx.rapidwright.device.Tile x = dev.getTile(t.getRow(), c);
+            if (x != null && x.getTileTypeEnum() != com.xilinx.rapidwright.device.TileTypeEnum.NULL) {
+                w = x.getTileTypeEnum().name();
+                break;
+            }
+        }
+        for (int c = t.getColumn() + 1; c < dev.getColumns(); c++) {
+            com.xilinx.rapidwright.device.Tile x = dev.getTile(t.getRow(), c);
+            if (x != null && x.getTileTypeEnum() != com.xilinx.rapidwright.device.TileTypeEnum.NULL) {
+                e = x.getTileTypeEnum().name();
+                break;
+            }
+        }
+        return w + "|" + e;
+    }
+
+    /** Per-wire key of the pip from prev into n: tile type, both wire names, column signature. */
+    public static String pipKey(Node prev, Node n) {
+        return n.getTile().getTileTypeEnum().name() + ":" + prev.getWireName() + ">" + n.getWireName() + "@"
+                + colSig(n.getTile());
     }
 
     /** Forgets cached routing for a net; call after rerouting it. */
@@ -645,6 +729,9 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         }
         if (into.keySet().stream().anyMatch(k -> k.contains(">"))) {
             edgeTables = true;
+        }
+        if (into.containsKey("LOAD_BARRIER")) {
+            loadBarrier = true;
         }
     }
 
