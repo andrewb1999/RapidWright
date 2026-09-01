@@ -76,6 +76,8 @@ public class VersalLogicDelayModel implements LogicDelayModel {
 
     private final Map<String, float[]> arcs = new HashMap<>();
     private final Map<String, float[]> intraSite = new HashMap<>();
+    /** Letter-normalized sums (max, min, count) for pairs the table lacks. */
+    private final Map<String, float[]> intraSiteNorm = new HashMap<>();
 
     /**
      * Reads one or more table files. Each may hold a {@code logic_delay}
@@ -137,8 +139,15 @@ public class VersalLogicDelayModel implements LogicDelayModel {
                 if (f.length < 5) {
                     continue;
                 }
-                intraSite.put(f[0] + " " + f[1] + " " + f[2],
-                        new float[] { Float.parseFloat(f[3]), Float.parseFloat(f[4]) });
+                float[] v = new float[] { Float.parseFloat(f[3]), Float.parseFloat(f[4]) };
+                intraSite.put(f[0] + " " + f[1] + " " + f[2], v);
+                // Letter-normalized copy: the same connection on another
+                // LUT/FF letter is a fair stand-in for an unmeasured pair.
+                String nk = f[0] + " " + letterless(f[1]) + " " + letterless(f[2]);
+                float[] acc = intraSiteNorm.computeIfAbsent(nk, k -> new float[3]);
+                acc[0] += v[0];
+                acc[1] += v[1];
+                acc[2] += 1;
             }
         }
     }
@@ -330,6 +339,22 @@ public class VersalLogicDelayModel implements LogicDelayModel {
     public Float getIntraSiteDelayPs(SiteTypeEnum siteType, String fromBelPin, String toBelPin,
                                      Corner corner) {
         float[] d = intraSite.get(siteType.name() + " " + fromBelPin + " " + toBelPin);
-        return d == null ? null : d[corner == Corner.SLOW_MIN ? 1 : 0];
+        if (d != null) {
+            return d[corner == Corner.SLOW_MIN ? 1 : 0];
+        }
+        float[] acc = intraSiteNorm.get(siteType.name() + " " + letterless(fromBelPin) + " " + letterless(toBelPin));
+        if (acc == null) {
+            return null;
+        }
+        return acc[corner == Corner.SLOW_MIN ? 1 : 0] / acc[2];
+    }
+
+    /** "B6LUT/O6" -> "?6LUT/O6", "HFF2/D" -> "?FF2/D": the BEL letter dropped. */
+    private static String letterless(String belPin) {
+        if (belPin.length() > 1 && belPin.charAt(0) >= 'A' && belPin.charAt(0) <= 'H'
+                && (belPin.startsWith("LUT", 2) || belPin.startsWith("FF", 1) || belPin.startsWith("LUT", 1))) {
+            return "?" + belPin.substring(1);
+        }
+        return belPin;
     }
 }
