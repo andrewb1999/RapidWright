@@ -340,9 +340,10 @@ public class VersalWireRCModel implements InterconnectDelayModel {
      * the pair, then to the base-class pair. Zero when unknown.
      */
     private double edgeD(int corner, String gpCls, String prevCls, String cls, Node next, Node prev, Node n,
-                         boolean branch) {
+                         Map<Node, List<Node>> children, String rootKey) {
         Map<String, double[]> t = rc[corner];
-        String child = (next == null ? "-" : wireClass(next)) + (branch ? ">B" : "");
+        String child = (next == null ? "-" : wireClass(next)) + (chargedAtEntry(children, n) ? ">E" : "")
+                + (chargedAtEntry(children, prev) ? ">PE" : "");
         String pair = prevCls + ">" + cls;
         double[] v = t.get(pair);
         if (v == null) {
@@ -363,13 +364,18 @@ public class VersalWireRCModel implements InterconnectDelayModel {
             if (fine != null) {
                 d += fine[0];
             }
+        } else if (rootKey != null) {
+            fine = t.get(rootKey);
+            if (fine != null) {
+                d += fine[0];
+            }
         }
-        String pk = pipKey(prev, n);
-        fine = t.get("PIP:" + pk);
+        fine = t.get("PIP:" + pipKey(prev, n));
         if (fine != null) {
             d += fine[0];
         }
-        fine = t.get("PIPX:" + n.getTile().getColumn() + ":" + pk);
+        // The column effect is shared by every pip of a class in a column.
+        fine = t.get("CLSX:" + baseOf(prevCls) + ">" + baseOf(cls) + "@" + n.getTile().getColumn());
         if (fine != null) {
             d += fine[0];
         }
@@ -436,6 +442,11 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         Collections.reverse(path);
         String prevCls = null;
         String gpCls = null;
+        String rootKey = null;
+        if (edgeTables) {
+            String sk = sourceKey(net);
+            rootKey = "ROOT:" + (sk == null ? "-" : sk);
+        }
         for (int pi = 0; pi < path.size(); pi++) {
             Node n = path.get(pi);
             Node prevN = pi > 0 ? path.get(pi - 1) : null;
@@ -453,8 +464,7 @@ public class VersalWireRCModel implements InterconnectDelayModel {
             }
             if (edgeTables) {
                 if (prevCls != null) {
-                    t += edgeD(ci, gpCls, prevCls, cls, nextN, prevN, n,
-                            routing.children.getOrDefault(n, Collections.emptyList()).size() > 1);
+                    t += edgeD(ci, gpCls, prevCls, cls, nextN, prevN, n, routing.children, rootKey);
                 }
                 if (pi == path.size() - 1) {
                     t += tailD(ci, cls, net);
@@ -616,8 +626,9 @@ public class VersalWireRCModel implements InterconnectDelayModel {
                 Node gp = routing.parent.get(prevN);
                 String gpCls = gp == null ? null
                         : wireClassCtx(routing.parent.get(gp), gp, firstChild(routing.children, gp));
+                String sk = sourceKey(net);
                 inc += edgeD(ci, gpCls, wireClassCtx(gp, prevN, firstChild(routing.children, prevN)), cls, nextN,
-                        prevN, n, routing.children.getOrDefault(n, Collections.emptyList()).size() > 1);
+                        prevN, n, routing.children, "ROOT:" + (sk == null ? "-" : sk));
             }
             double arr = (prevN == null ? 0 : arrival.get(prevN)) + inc;
             arrival.put(n, arr);
@@ -682,10 +693,28 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         return w + "|" + e;
     }
 
-    /** Per-wire key of the pip from prev into n: tile type, both wire names, column signature. */
+    /** The interconnect muxes for Vivado's charging rule: a wire whose children are all muxes is charged on the mux edges. */
+    public static boolean isChargeMux(Node n) {
+        return n.getIntentCode() == IntentCode.NODE_SDQNODE || n.getIntentCode() == IntentCode.NODE_INODE;
+    }
+
+    /** Whether Vivado charges n's wire delay at n's own entry: any child is not a mux (or n is a leaf). */
+    public static boolean chargedAtEntry(Map<Node, List<Node>> children, Node n) {
+        List<Node> ch = children.get(n);
+        if (ch == null || ch.isEmpty()) {
+            return true;
+        }
+        for (Node c : ch) {
+            if (!isChargeMux(c)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Per-wire key of the pip from prev into n: tile type and both wire names (column-independent). */
     public static String pipKey(Node prev, Node n) {
-        return n.getTile().getTileTypeEnum().name() + ":" + prev.getWireName() + ">" + n.getWireName() + "@"
-                + colSig(n.getTile());
+        return n.getTile().getTileTypeEnum().name() + ":" + prev.getWireName() + ">" + n.getWireName();
     }
 
     /** Forgets cached routing for a net; call after rerouting it. */
