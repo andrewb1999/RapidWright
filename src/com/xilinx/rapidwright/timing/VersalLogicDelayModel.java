@@ -355,11 +355,24 @@ public class VersalLogicDelayModel implements LogicDelayModel {
         return acc[corner == Corner.SLOW_MIN ? 1 : 0] / acc[2];
     }
 
-    /** "B6LUT/O6" -> "?6LUT/O6", "HFF2/D" -> "?FF2/D": the BEL letter dropped. */
+    /**
+     * "B6LUT/O6" -> "?6LUT/O6", "HFF2/D" -> "?FF2/D" (the BEL letter dropped);
+     * "LOOKAHEAD8/CYH" -> "LOOKAHEAD8/CY?" (the carry-chain pin letter);
+     * "DSP_ALUADD/ALU_OUT_52_" -> "DSP_ALUADD/ALU_OUT_#_" (the bus index).
+     */
     private static String letterless(String belPin) {
         if (belPin.length() > 1 && belPin.charAt(0) >= 'A' && belPin.charAt(0) <= 'H'
                 && (belPin.startsWith("LUT", 2) || belPin.startsWith("FF", 1) || belPin.startsWith("LUT", 1))) {
             return "?" + belPin.substring(1);
+        }
+        if (belPin.startsWith("LOOKAHEAD8/")) {
+            char last = belPin.charAt(belPin.length() - 1);
+            if (last >= 'A' && last <= 'H') {
+                return belPin.substring(0, belPin.length() - 1) + "?";
+            }
+        }
+        if (belPin.startsWith("DSP_")) {
+            return belPin.replaceAll("\\d+", "#");
         }
         return belPin;
     }
