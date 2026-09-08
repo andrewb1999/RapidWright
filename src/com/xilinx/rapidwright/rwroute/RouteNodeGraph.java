@@ -54,6 +54,8 @@ import com.xilinx.rapidwright.device.Series;
 import com.xilinx.rapidwright.device.Tile;
 import com.xilinx.rapidwright.device.TileTypeEnum;
 import com.xilinx.rapidwright.router.RouteThruHelper;
+import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
+import com.xilinx.rapidwright.timing.delayestimator.InterconnectInfo;
 import com.xilinx.rapidwright.util.CountUpDownLatch;
 import com.xilinx.rapidwright.util.ParallelismTools;
 import com.xilinx.rapidwright.util.Utils;
@@ -793,7 +795,9 @@ public class RouteNodeGraph {
                 if (childRnode != null) {
                     assert(childRnode.getType().isAnyExclusiveSink() ||
                            childRnode.getType().isLocalLeadingToLaguna() ||
-                           ((lutRoutethru || lutPinSwapping) && childRnode.getType().isAnyLocal()));
+                           ((lutRoutethru || lutPinSwapping) && childRnode.getType().isAnyLocal()) ||
+                           // This is a routethru node used on a now-unpreserved net
+                           (!lutRoutethru && childRnode.getType() == RouteNodeType.INACCESSIBLE));
                 } else if (!lutRoutethru) {
                     // child does not already exist in our routing graph, meaning it's not a used site pin
                     // in our design, but it could be a IMUX that leads to a Laguna
@@ -1242,6 +1246,14 @@ public class RouteNodeGraph {
 
     public float getPresentCongestionCost(int occupancy) {
         return presentCongestionCosts[occupancy];
+    }
+
+    /**
+     * Gets the delay estimator that this graph computes its node delays with.
+     * @return That delay estimator, or null since this graph is not timing driven.
+     */
+    public DelayEstimatorBase<InterconnectInfo> getDelayEstimator() {
+        return null;
     }
 
     /**

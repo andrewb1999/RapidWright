@@ -185,7 +185,8 @@ public class PartialRouter extends RWRoute {
     @Override
     protected TimingManager createTimingManager(ClkRouteTiming clkTiming, Collection<Net> timingNets) {
         final boolean isPartialRouting = true;
-        return new TimingManager(design, routerTimer, config, clkTiming, timingNets, isPartialRouting);
+        return new TimingManager(design, routerTimer, config, clkTiming, timingNets, isPartialRouting,
+                routingGraph.getDelayEstimator());
     }
 
     @Override
@@ -391,7 +392,9 @@ public class PartialRouter extends RWRoute {
 
                     // Do not include arcs that the router wouldn't explore
                     // e.g. those that leave the INT tile, since we project pins to their INT tile
-                    if (RouteNodeGraph.isExcludedTile(end)) {
+                    // Except for routethru PIPs where the start node is not in an excluded tile.
+                    if (RouteNodeGraph.isExcludedTile(end) &&
+                            (!pip.isRouteThru() || RouteNodeGraph.isExcludedTile(start))) {
                         continue;
                     }
 
@@ -407,6 +410,15 @@ public class PartialRouter extends RWRoute {
                     }
                     assert(rend.getPrev() == null);
                     rend.setPrev(rstart);
+
+                    // When lutRoutethru is disabled, RWRoute does not normally explore non-sink PINFEED nodes.
+                    // Here, these nodes exist because they were on a previously-preserved net: mark these as
+                    // INACCESSIBLE such that once this connection gets rerouted, this node can't be used again.
+                    if (!routingGraph.lutRoutethru && pip.isRouteThru()) {
+                        assert(rstart.getIntentCode() == IntentCode.NODE_PINFEED);
+                        assert(rstart.getType() == RouteNodeType.LOCAL_EAST || rstart.getType() == RouteNodeType.LOCAL_WEST);
+                        rstart.setType(RouteNodeType.INACCESSIBLE);
+                    }
                 }
 
                 // Use the prev pointers to attempt to recover routing for all indirect connections
@@ -576,9 +588,11 @@ public class PartialRouter extends RWRoute {
                 Node end = (pip.isReversed()) ? pip.getStartNode() : pip.getEndNode();
 
                 // Do not include arcs that the router wouldn't explore
-                // e.g. those that leave the INT tile, since we project pins to their INT tile
-                if (RouteNodeGraph.isExcludedTile(end))
+                // e.g. those that leave the INT tile, since we project pins to their INT tile.
+                // Except for routethru PIPs.
+                if (RouteNodeGraph.isExcludedTile(end) && !pip.isRouteThru()) {
                     continue;
+                }
 
                 // Skip PIPs that would otherwise get projected away
                 if (isExcludedPip(start, end)) {
@@ -619,8 +633,11 @@ public class PartialRouter extends RWRoute {
 
                 // Do not include arcs that the router wouldn't explore
                 // e.g. those that leave the INT tile, since we project pins to their INT tile
-                if (RouteNodeGraph.isExcludedTile(end))
+                // Except for routethru PIPs where the start node is not in an excluded tile.
+                if (RouteNodeGraph.isExcludedTile(end) &&
+                        (!pip.isRouteThru() || RouteNodeGraph.isExcludedTile(start))) {
                     continue;
+                }
 
                 if (pip.isPIPFixed()) {
                     // Do not unpreserve locked nodes
@@ -647,6 +664,15 @@ public class PartialRouter extends RWRoute {
                 // Also set the prev pointer according to the PIP
                 assert (rend.getPrev() == null);
                 rend.setPrev(rstart);
+
+                // When lutRoutethru is disabled, RWRoute does not normally explore non-sink PINFEED nodes.
+                // Here, these nodes exist because they were on a previously-preserved net: mark these as
+                // INACCESSIBLE such that once this connection gets rerouted, this node can't be used again.
+                if (!routingGraph.lutRoutethru && pip.isRouteThru()) {
+                    assert(rstart.getIntentCode() == IntentCode.NODE_PINFEED);
+                    assert(rstart.getType() == RouteNodeType.LOCAL_EAST || rstart.getType() == RouteNodeType.LOCAL_WEST);
+                    rstart.setType(RouteNodeType.INACCESSIBLE);
+                }
             }
 
             // Try and use prev pointers to recover the routing for each connection
@@ -675,6 +701,10 @@ public class PartialRouter extends RWRoute {
         for (RouteNode rnode : rnodes) {
             // Check already unpreserved above
             assert(!routingGraph.isPreserved(rnode));
+
+            if (rnode.getType() == RouteNodeType.INACCESSIBLE) {
+                continue;
+            }
 
             // Each rnode should be added as a child to all of its parents
             // that already exist
@@ -720,11 +750,28 @@ public class PartialRouter extends RWRoute {
      * @param design The {@link Design} instance to be routed.
      * @param args An array of string arguments, can be null.
      * If null, the design will be routed in the full timing-driven routing mode with default a {@link RWRouteConfig} instance.
+     * The "--softPreserve" argument, if present, is consumed here (and not forwarded to {@link RWRouteConfig})
+     * to allow routed nets to be unrouted and subsequently rerouted in order to improve routability.
      * For more options of the configuration, please refer to the {@link RWRouteConfig} class.
      * @return Routed design.
      */
     public static Design routeDesignWithUserDefinedArguments(Design design, String[] args) {
         boolean softPreserve = false;
+        if (args != null) {
+            // Splice out every occurrence, since RWRouteConfig would not recognize this argument.
+            // No copying occurs when absent (the common case)
+            for (int i = 0; i < args.length; i++) {
+                if (!args[i].equals("--softPreserve")) {
+                    continue;
+                }
+                softPreserve = true;
+                String[] filtered = new String[args.length - 1];
+                System.arraycopy(args, 0, filtered, 0, i);
+                System.arraycopy(args, i + 1, filtered, i, filtered.length - i);
+                args = filtered;
+                i--;
+            }
+        }
         List<SitePinInst> pinsToRoute = null;
 
         // Uses the default configuration if basic usage only.
@@ -847,7 +894,7 @@ public class PartialRouter extends RWRoute {
      */
     public static void main(String[] args) {
         if (args.length < 2) {
-            System.out.println("USAGE: <input.dcp> <output.dcp>");
+            System.out.println("USAGE: <input.dcp> <output.dcp> [--softPreserve]");
             return;
         }
         // Reads the output directory and set the output design checkpoint file name
