@@ -12,3 +12,6 @@
 /designs/
 interchange/schema/capnp/java.capnp
 *.orig
+
+# fitted plain clock table (380 MB); the gzipped copy is tracked
+timing/versal/clock_delay_terms.txt

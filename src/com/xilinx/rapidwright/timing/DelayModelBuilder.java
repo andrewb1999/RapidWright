@@ -37,7 +37,7 @@ import java.util.List;
  * Never construct DelayModel directly. DelayModelBuilder guarantees that there is at most one DelayModel
  * ie., DelayModelBuilder returns the existing model.
  */
-class DelayModelBuilder {
+public class DelayModelBuilder {
 
     // Adding new mode or source requires appending them to the end of valid_mode or valid_source.
     // Never change the order of existing entries.
@@ -62,6 +62,26 @@ class DelayModelBuilder {
         String fileName = TimingModel.TIMING_DATA_DIR + File.separator +series+
                 File.separator + "intrasite_delay_terms.txt";
         return getDelayModel("small", "text", fileName);
+    }
+
+    private static final java.util.Map<String, DelayModel> modelsByFile = new java.util.HashMap<>();
+
+    /**
+     * Gets the delay model of a series for a specific variant of the data file
+     * ({@code timing/<series>/intrasite_delay_terms.<suffix>.txt}), e.g. a timing corner. Models
+     * are cached per file, independently of the default model of {@link #getDelayModel(String)}.
+     */
+    public static DelayModel getDelayModel(String series, String suffix) {
+        String fileName = TimingModel.TIMING_DATA_DIR + File.separator + series +
+                File.separator + "intrasite_delay_terms." + suffix + ".txt";
+        synchronized (modelsByFile) {
+            DelayModel m = modelsByFile.get(fileName);
+            if (m == null) {
+                m = new SmallDelayModel(new DelayModelSourceFromText(fileName));
+                modelsByFile.put(fileName, m);
+            }
+            return m;
+        }
     }
 
     /**
