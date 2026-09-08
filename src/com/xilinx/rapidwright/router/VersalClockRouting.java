@@ -31,7 +31,6 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -565,103 +564,6 @@ public class VersalClockRouting {
         throw new RuntimeException("ERROR: Incremental clock routing not yet supported for Versal devices.");
     }
 
-    /**
-     * Maximum number of nodes to visit per sink pin when enumerating candidate
-     * leaf clock buffers. Leaves sit only a few hops uphill of clock pins, so
-     * this bounds the exhaustive search without affecting reachability; if no
-     * leaf is found within the cap, the search retries uncapped.
-     */
-    private static final int LEAF_CANDIDATE_SEARCH_NODE_LIMIT = 2000;
-
-    /**
-     * Extracts the leaf clock buffer site index N from a NODE_GLOBAL_LEAF node
-     * whose wire is named like {@code CLK_LEAF_SITES_<N>_O}, or -1 if the wire
-     * name does not match that pattern.
-     */
-    private static int getLeafSiteIndex(Node leaf) {
-        String wireName = leaf.getWireName();
-        int start = wireName.indexOf(LEAF_SITE_WIRE_PREFIX);
-        if (start == -1) {
-            return -1;
-        }
-        start += LEAF_SITE_WIRE_PREFIX.length();
-        int end = start;
-        while (end < wireName.length() && Character.isDigit(wireName.charAt(end))) {
-            end++;
-        }
-        if (end == start) {
-            return -1;
-        }
-        return Integer.parseInt(wireName.substring(start, end));
-    }
-
-    private static final String LEAF_SITE_WIRE_PREFIX = "CLK_LEAF_SITES_";
-
-    /**
-     * Enumerates all candidate leaf clock buffer (NODE_GLOBAL_LEAF) nodes
-     * reachable uphill from the given sink pin, mapped to the node path used to
-     * reach each one (ordered leaf-to-sink, as returned by
-     * {@link NodeWithPrev#getPrevPath()}).
-     */
-    private static Map<Node, List<Node>> findLeafCandidates(SitePinInst p,
-                                                            Set<IntentCode> allowedIntentCodes,
-                                                            Predicate<Node> isNodeUnavailable,
-                                                            RouteThruHelper routeThruHelper,
-                                                            int nodeLimit) {
-        NodeWithPrev sink = new NodeWithPrev(p.getConnectedNode());
-        ClockRegion cr = p.getTile().getClockRegion();
-        boolean crossCRSink = Utils.isPS(p.getSiteInst()) || Utils.isNOC(p.getSiteInst());
-        Set<Node> visited = new HashSet<>();
-        Queue<NodeWithPrev> q = new ArrayDeque<>();
-        q.add(sink);
-        Map<Node, List<Node>> leaves = new HashMap<>();
-
-        while (!q.isEmpty() && visited.size() < nodeLimit) {
-            NodeWithPrev curr = q.poll();
-            for (Node uphill : curr.getAllUphillNodes()) {
-                if (!crossCRSink && !uphill.getTile().getClockRegion().equals(cr)) {
-                    continue;
-                }
-                IntentCode uphillIntentCode = uphill.getIntentCode();
-                if (!allowedIntentCodes.contains(uphillIntentCode)) {
-                    continue;
-                }
-                if (!visited.add(uphill)) {
-                    continue;
-                }
-                if (routeThruHelper.isRouteThru(uphill, curr) && curr.getIntentCode() != IntentCode.NODE_IRI) {
-                    continue;
-                }
-                if (isNodeUnavailable.test(uphill)) {
-                    continue;
-                }
-                NodeWithPrev node = new NodeWithPrev(uphill, curr);
-                if (uphillIntentCode == IntentCode.NODE_GLOBAL_LEAF) {
-                    // Record the candidate; don't expand past the leaf level.
-                    if (!leaves.containsKey(uphill)) {
-                        leaves.put(uphill, node.getPrevPath());
-                    }
-                    continue;
-                }
-                q.add(node);
-            }
-        }
-        return leaves;
-    }
-
-    /**
-     * Maps each clock sink pin to a leaf clock buffer (LCB) and routes the
-     * sink-side path to it.
-     *
-     * Rather than committing each sink to the first leaf found (which lights up
-     * an arbitrary mix of leaf site indices and produces uneven leaf-stage
-     * insertion delays), this enumerates all reachable leaves per sink and then
-     * assigns leaves globally, preferring (1) a single canonical leaf site
-     * index used uniformly across the whole net — identical leaf structures in
-     * every column give matched delays by construction — and (2) leaves already
-     * selected for other sinks, minimizing the number of distinct leaf buffers
-     * and maximizing shared (common) clock path.
-     */
     public static Map<Node, List<SitePinInst>> routeLCBsToSinks(Net clk,
                                                                 Function<Node,NodeStatus> getNodeStatus) {
         Map<Node, List<SitePinInst>> lcbMappings = new HashMap<>();
@@ -679,82 +581,54 @@ public class VersalClockRouting {
             IntentCode.NODE_PINFEED,
             IntentCode.NODE_GLOBAL_LEAF
         );
+        Set<Node> visited = new HashSet<>();
+        Queue<NodeWithPrev> q = new ArrayDeque<>();
         Predicate<Node> isNodeUnavailable = (node) -> getNodeStatus.apply(node) == NodeStatus.UNAVAILABLE;
         RouteThruHelper routeThruHelper = new RouteThruHelper(clk.getDesign().getDevice());
 
-        // Pass 1: enumerate all reachable leaf candidates per sink pin.
-        List<SitePinInst> pins = new ArrayList<>();
-        List<Map<Node, List<Node>>> pinLeafCandidates = new ArrayList<>();
-        Map<Integer, Integer> leafIndexPopularity = new HashMap<>();
-        for (SitePinInst p : clk.getPins()) {
+        nextPin: for (SitePinInst p: clk.getPins()) {
             if (p.isOutPin() || p.isRouted() || Utils.isIOB(p.getSiteInst())) {
                 continue;
             }
-            Map<Node, List<Node>> leaves = findLeafCandidates(p, allowedIntentCodes,
-                    isNodeUnavailable, routeThruHelper, LEAF_CANDIDATE_SEARCH_NODE_LIMIT);
-            if (leaves.isEmpty()) {
-                // Retry without the node cap before giving up.
-                leaves = findLeafCandidates(p, allowedIntentCodes, isNodeUnavailable,
-                        routeThruHelper, Integer.MAX_VALUE);
-            }
-            if (leaves.isEmpty()) {
-                throw new RuntimeException("ERROR: Couldn't route pin " + p.getConnectedNode()
-                        + " to any LCB");
-            }
-            pins.add(p);
-            pinLeafCandidates.add(leaves);
-            Set<Integer> seenIndices = new HashSet<>();
-            for (Node leaf : leaves.keySet()) {
-                int idx = getLeafSiteIndex(leaf);
-                if (idx >= 0 && seenIndices.add(idx)) {
-                    leafIndexPopularity.merge(idx, 1, Integer::sum);
+            NodeWithPrev sink = new NodeWithPrev(p.getConnectedNode());
+            ClockRegion cr = p.getTile().getClockRegion();
+            boolean crossCRSink = Utils.isPS(p.getSiteInst()) || Utils.isNOC(p.getSiteInst());
+            q.clear();
+            q.add(sink);
+
+            while (!q.isEmpty()) {
+                NodeWithPrev curr = q.poll();
+                for (Node uphill : curr.getAllUphillNodes()) {
+                    if (!crossCRSink && !uphill.getTile().getClockRegion().equals(cr)) {
+                        continue;
+                    }
+                    IntentCode uphillIntentCode = uphill.getIntentCode();
+                    if (!allowedIntentCodes.contains(uphillIntentCode)) {
+                        continue;
+                    }
+                    if (!visited.add(uphill)) {
+                        continue;
+                    }
+                    if (routeThruHelper.isRouteThru(uphill, curr) && curr.getIntentCode() != IntentCode.NODE_IRI) {
+                        continue;
+                    }
+                    if (isNodeUnavailable.test(uphill)) {
+                        continue;
+                    }
+                    NodeWithPrev node = new NodeWithPrev(uphill, curr);
+                    if (uphillIntentCode == IntentCode.NODE_GLOBAL_LEAF) {
+                        List<Node> path = node.getPrevPath();
+                        boolean srcToSinkOrder = true;
+                        clk.getPIPs().addAll(RouterHelper.getPIPsFromNodes(path, srcToSinkOrder));
+                        lcbMappings.computeIfAbsent(uphill, (k) -> new ArrayList<>()).add(p);
+                        visited.clear();
+                        continue nextPin;
+                    }
+                    q.add(node);
                 }
             }
+            throw new RuntimeException("ERROR: Couldn't route pin " + sink + " to any LCB");
         }
-
-        // Rank leaf site indices: most widely reachable first (ties broken by
-        // lower index for determinism). The top-ranked index becomes the
-        // canonical one used wherever available.
-        Map<Integer, Integer> indexRank = new HashMap<>();
-        List<Entry<Integer, Integer>> rankedIndices = new ArrayList<>(leafIndexPopularity.entrySet());
-        rankedIndices.sort((a, b) -> {
-            int cmp = Integer.compare(b.getValue(), a.getValue());
-            return cmp != 0 ? cmp : Integer.compare(a.getKey(), b.getKey());
-        });
-        for (int i = 0; i < rankedIndices.size(); i++) {
-            indexRank.put(rankedIndices.get(i).getKey(), i);
-        }
-
-        // Pass 2: assign each sink to a leaf, preferring the canonical (highest
-        // ranked) index, then leaves already in use, then name for determinism.
-        Set<Node> usedLeaves = new HashSet<>();
-        Set<PIP> newPIPs = new LinkedHashSet<>();
-        for (int i = 0; i < pins.size(); i++) {
-            SitePinInst p = pins.get(i);
-            Map<Node, List<Node>> leaves = pinLeafCandidates.get(i);
-            Node bestLeaf = null;
-            int bestRank = Integer.MAX_VALUE;
-            boolean bestUsed = false;
-            for (Node leaf : leaves.keySet()) {
-                int idx = getLeafSiteIndex(leaf);
-                int rank = indexRank.getOrDefault(idx, Integer.MAX_VALUE);
-                boolean used = usedLeaves.contains(leaf);
-                if (bestLeaf == null
-                        || rank < bestRank
-                        || (rank == bestRank && used && !bestUsed)
-                        || (rank == bestRank && used == bestUsed
-                                && leaf.toString().compareTo(bestLeaf.toString()) < 0)) {
-                    bestLeaf = leaf;
-                    bestRank = rank;
-                    bestUsed = used;
-                }
-            }
-            usedLeaves.add(bestLeaf);
-            boolean srcToSinkOrder = true;
-            newPIPs.addAll(RouterHelper.getPIPsFromNodes(leaves.get(bestLeaf), srcToSinkOrder));
-            lcbMappings.computeIfAbsent(bestLeaf, (k) -> new ArrayList<>()).add(p);
-        }
-        clk.getPIPs().addAll(newPIPs);
 
         return lcbMappings;
     }
