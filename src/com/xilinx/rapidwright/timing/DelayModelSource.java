@@ -127,10 +127,44 @@ abstract class DelayModelSource {
         return Collections.unmodifiableMap(configCodeMap);
     }
     public Map<String, Short> getBEL2IdxMap() {
-        return Collections.unmodifiableMap(bel2IdxMap);
+        return Collections.unmodifiableMap(bel2IdxMapInst);
     }
     public Map<String, Short> getSite2IdxMap() {
-        return Collections.unmodifiableMap(site2IdxMap);
+        return Collections.unmodifiableMap(site2IdxMapInst);
+    }
+
+    // Per-instance copies of the default maps, extended with names found in the data file so that
+    // device families other than UltraScale+ (e.g. Versal) can be described without code changes.
+    private final Map<String, Short> bel2IdxMapInst = new HashMap<>(bel2IdxMap);
+    private final Map<String, Short> site2IdxMapInst = new HashMap<>(site2IdxMap);
+
+    /**
+     * Registers a group of equivalent BEL names (sharing one delay table). Names already known keep
+     * their index; unknown names get the index of a known member of the group, or a fresh one.
+     * @return the shared index
+     */
+    protected short registerBELs(String[] belNames) {
+        return register(bel2IdxMapInst, belNames);
+    }
+
+    /** Registers a group of equivalent site type names (sharing one intra-site delay table). */
+    protected short registerSites(String[] siteNames) {
+        return register(site2IdxMapInst, siteNames);
+    }
+
+    private static short register(Map<String, Short> map, String[] names) {
+        Short idx = null;
+        for (String n : names) {
+            Short i = map.get(n);
+            if (i != null) { idx = i; break; }
+        }
+        if (idx == null) {
+            short max = -1;
+            for (Short i : map.values()) max = (short) Math.max(max, i);
+            idx = (short) (max + 1);
+        }
+        for (String n : names) map.putIfAbsent(n, idx);
+        return idx;
     }
 }
 

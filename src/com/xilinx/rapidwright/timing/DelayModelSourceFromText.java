@@ -81,6 +81,7 @@ class DelayModelSourceFromText extends DelayModelSource {
         // TODO: get equivalent bel from the line
         String[] belNames   = items.get(1).split(",");
         String belName      = belNames[0];
+        registerBELs(belNames);
         String configName   = null;
         List<String> values = null;
 
@@ -300,7 +301,9 @@ class DelayModelSourceFromText extends DelayModelSource {
                             siteName = null;
                         } else if (matcher.group(1).equalsIgnoreCase("site")) {
                             belName = null;
-                            siteName = matcher.group(2);
+                            String[] siteNames = line.trim().split("\\s+")[1].split(",");
+                            registerSites(siteNames);
+                            siteName = siteNames[0];
                         }
                     } else {
                         if (belName != null) {
