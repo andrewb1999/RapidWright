@@ -382,7 +382,17 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         return d;
     }
 
-    private double tailD(int corner, String cls, Net net) {
+    /**
+     * The fine sink-tail key: the sink node's exact wire with only the
+     * site index normalized, so LUT input pins 1..6 (which differ by up to
+     * 18 ps inside the site) and the FF bypass pins are priced separately.
+     * The table stores it as a residual on top of the class tail.
+     */
+    public static String tailKey(Node n) {
+        return "TAILP:" + n.getIntentCode() + ":" + n.getWireName().replaceAll("_(TOP|BOT)_\\d+_", "_$1_#_");
+    }
+
+    private double tailD(int corner, String cls, Net net, Node sink) {
         double d = 0;
         double[] v = rc[corner].get(cls + ">TAIL");
         if (v == null) {
@@ -390,6 +400,12 @@ public class VersalWireRCModel implements InterconnectDelayModel {
         }
         if (v != null) {
             d += v[0];
+        }
+        if (sink != null) {
+            double[] tv = rc[corner].get(tailKey(sink));
+            if (tv != null) {
+                d += tv[0];
+            }
         }
         double[] sv = rc[corner].get("SRC:" + net.getSource().getName());
         if (sv != null) {
@@ -467,7 +483,7 @@ public class VersalWireRCModel implements InterconnectDelayModel {
                     t += edgeD(ci, gpCls, prevCls, cls, nextN, prevN, n, routing.children, rootKey);
                 }
                 if (pi == path.size() - 1) {
-                    t += tailD(ci, cls, net);
+                    t += tailD(ci, cls, net, n);
                 }
             }
             gpCls = prevCls;
