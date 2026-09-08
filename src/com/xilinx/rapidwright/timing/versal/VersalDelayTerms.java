@@ -69,6 +69,10 @@ public class VersalDelayTerms {
     public static final int MAX_PARENT_FANOUT_BUCKET = 8;
     /** Grandparent fanout buckets are 1..MAX_GP_FANOUT_BUCKET (the last one means "or more"). */
     public static final int MAX_GP_FANOUT_BUCKET = 8;
+    /** LOAD form: at most this many siblings of one intent are charged (must match fit_versal_model.py). */
+    public static final int MAX_LOAD_SIBLINGS = 7;
+    /** "parent class or intent/node intent/sibling intent" -> ps per sibling of that intent (LOAD lines; empty for bucket-form tables) */
+    private final Map<String, Float> loadTerms = new HashMap<>();
     /** GPFAN: slew effect of a fanned-out driver two levels up: "gp intent/parent intent/node intent/gp fanout bucket" -> ps */
     private final Map<String, Float> gpTerms = new HashMap<>();
     private final Map<IntentCode, Map<IntentCode, Float>> edgeDefault = new EnumMap<>(IntentCode.class);
@@ -139,6 +143,12 @@ public class VersalDelayTerms {
                     case "FANOUT": {
                         IntentCode n = intent(f[1]);
                         if (n != null) fanout.put(n, Float.parseFloat(f[2]));
+                        break;
+                    }
+                    case "LOAD": {
+                        // LOAD <parent class or intent> <node intent> <sibling intent> <ps per sibling> <samples>
+                        if (f.length < 5 || intent(f[1].split(":")[0]) == null || intent(f[2]) == null || intent(f[3]) == null) break;
+                        loadTerms.put(f[1] + "/" + f[2] + "/" + f[3], Float.parseFloat(f[4]));
                         break;
                     }
                     case "GPFAN": {
@@ -270,6 +280,23 @@ public class VersalDelayTerms {
         if (grandparent == null || gpTerms.isEmpty()) return 0f;
         int b = Math.max(1, Math.min(MAX_GP_FANOUT_BUCKET, gpFanout));
         return gpTerms.getOrDefault(grandparent.name() + "/" + parent.name() + "/" + node.name() + "/" + b, 0f);
+    }
+
+    /** Whether this table uses the additive LOAD form (siblings priced per intent, not by an enumerated set). */
+    public boolean hasLoadTerms() {
+        return !loadTerms.isEmpty();
+    }
+
+    /**
+     * LOAD term: ps added to an edge parent -> node (of intent {@code node}) for each of the node's siblings of the given intent
+     * (exact parent class first, then the bare parent intent; 0 if unlisted).
+     */
+    public float loadTerm(String parentClass, IntentCode parent, IntentCode node, IntentCode sibling) {
+        if (loadTerms.isEmpty()) return 0f;
+        String tail = "/" + node.name() + "/" + sibling.name();
+        Float v = loadTerms.get(parentClass + tail);
+        if (v == null && !parentClass.equals(parent.name())) v = loadTerms.get(parent.name() + tail);
+        return v == null ? 0f : v;
     }
 
     public Map<String, String> getMeta() {

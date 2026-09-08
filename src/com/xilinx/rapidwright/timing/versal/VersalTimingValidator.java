@@ -604,7 +604,7 @@ public class VersalTimingValidator {
             if (sd != null && sd.routed && netsDump != null) {
                 com.xilinx.rapidwright.device.Node sn = spi.getConnectedNode();
                 netsDump.add(netName + "," + sinkPin + "," + r[col.get(cornerCol)] + "," + sd.interconnect[ci] + "," + net.getSinkPins().size() + "," + net.getPIPs().size()
-                        + "," + (sn == null ? "" : sn.getIntentCode()) + "," + (net.getSource() == null || net.getSource().getConnectedNode() == null ? "" : net.getSource().getConnectedNode().getTile().getName()) + "," + (sn == null ? "" : sn.getTile().getName()));
+                        + "," + (sn == null ? "" : sn.getIntentCode()) + "," + (net.getSource() == null || net.getSource().getConnectedNode() == null ? "" : net.getSource().getConnectedNode().getTile().getName()) + "," + (sn == null ? "" : sn.getTile().getName()) + "," + (sn == null ? "" : sn.toString()));
             }
             if (sd == null || !sd.routed) {
                 unrouted++;
@@ -649,7 +649,7 @@ public class VersalTimingValidator {
         }
         if (netsDump != null) {
             try (java.io.PrintWriter pw = new java.io.PrintWriter(System.getenv("NETS_CSV"))) {
-                pw.println("net,sink,vivado,model,fanout,pips,sink_intent,src_tile,sink_tile");
+                pw.println("net,sink,vivado,model,fanout,pips,sink_intent,src_tile,sink_tile,sink_node");
                 for (String l : netsDump) pw.println(l);
             } catch (java.io.IOException e) { throw new RuntimeException(e); }
         }

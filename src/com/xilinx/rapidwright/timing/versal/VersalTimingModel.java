@@ -41,6 +41,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -280,6 +281,10 @@ public class VersalTimingModel {
                 List<IntentCode> sibIntents = new ArrayList<>(kids.size());
                 for (Node k : kids) sibIntents.add(k.getIntentCode());
                 String sibKey = VersalDelayTerms.childKey(sibIntents);
+                // LOAD form: the parent's children by intent (each child's siblings = these minus itself)
+                Map<IntentCode, Integer> sibCount = null;
+                for (VersalDelayTerms t : terms) if (t.hasLoadTerms()) { sibCount = new EnumMap<>(IntentCode.class); break; }
+                if (sibCount != null) for (IntentCode s : sibIntents) sibCount.merge(s, 1, Integer::sum);
                 Node gp = parentOf.get(p);
                 IntentCode gpi = gp == null ? null : gp.getIntentCode();
                 int gpFanout = gp == null ? 0 : children.get(gp).size();
@@ -297,6 +302,16 @@ public class VersalTimingModel {
                         if (extra > 0) d[i] += terms[i].fanoutTerm(ci) * extra;
                         if (gpi != null) d[i] += terms[i].grandparentTerm(gpi, pi, ci, gpFanout);
                         if (signature != null) d[i] += terms[i].crossingCorrection(pClass, pi, ci, signatureFull, signature);
+                        if (sibCount != null) {
+                            for (Map.Entry<IntentCode, Integer> sc : sibCount.entrySet()) {
+                                int n = sc.getValue() - (sc.getKey() == ci ? 1 : 0);
+                                if (n > 0) {
+                                    float lt = terms[i].loadTerm(pClass, pi, ci, sc.getKey());
+                                    // a negative term marks a hop regime (charged once), a positive one a load per sibling
+                                    d[i] += lt < 0 ? lt : lt * Math.min(VersalDelayTerms.MAX_LOAD_SIBLINGS, n);
+                                }
+                            }
+                        }
                     }
                     arrivals.put(c, d);
                     if (rootOf != null) rootOf.put(c, root);

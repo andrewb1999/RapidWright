@@ -8,6 +8,7 @@
 # edges: 3812537
 # nets: 158827
 # corner: slow_min
+# form: hybrid
 # vivado_version: 2026.1
 # part: xcv80-lsva4737-2MHP-e-S
 # speed_grade: -2MHP
