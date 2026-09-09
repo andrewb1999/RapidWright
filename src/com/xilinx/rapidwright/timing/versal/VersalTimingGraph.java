@@ -73,6 +73,8 @@ public class VersalTimingGraph {
         public boolean endpoint;      // data/control input of a sequential cell
         /** timing check per corner: setup requirement at max corners, hold requirement at min corners (ps) */
         public final float[] check;
+        /** arrivals per launch clock group (see {@link Tagged}); null until reached */
+        public List<Tagged> tags;
 
         Vertex(Cell cell, String pin, int corners) {
             this.cell = cell;
@@ -89,6 +91,27 @@ public class VersalTimingGraph {
         @Override
         public String toString() {
             return getName();
+        }
+    }
+
+    /**
+     * The extreme arrival at a vertex among the launches of one clock group, with its critical
+     * predecessor per corner. The group ("tag") is chosen by the caller of
+     * {@link #seedLaunch(Vertex, float[], Object)}: the slack analysis uses the launch's clock-tree
+     * leaf node, because clock pessimism removal depends on where the launch and capture clock paths
+     * meet, so the launch with the extreme arrival is not always the one with the worst slack. A
+     * launch seeded without a tag is in the default group (tag null); with all launches in one group
+     * the tagged arrivals equal {@link Vertex#arrival}.
+     */
+    public static class Tagged {
+        public final Object tag;
+        public final float[] arrival;
+        public final Edge[] pred;
+
+        Tagged(Object tag, int corners) {
+            this.tag = tag;
+            arrival = new float[corners];
+            pred = new Edge[corners];
         }
     }
 
@@ -686,6 +709,7 @@ public class VersalTimingGraph {
         for (Vertex v : vertices.values()) {
             if (v.launch) continue;
             for (int i = 0; i < nc; i++) { v.arrival[i] = unset(i); v.pred[i] = null; }
+            v.tags = null;
         }
     }
 
@@ -706,12 +730,38 @@ public class VersalTimingGraph {
     /** Removes a launch from the analysis (no clock arrival known): its arrival becomes unset. */
     public void unseedLaunch(Vertex v) {
         for (int i = 0; i < nc; i++) v.arrival[i] = unset(i);
+        v.tags = null;
     }
 
     public void seedLaunch(Vertex v, float[] clockArrival) {
+        seedLaunch(v, clockArrival, null);
+    }
+
+    /** Seeds a launch and puts it in the clock group {@code tag} (see {@link Tagged}). */
+    public void seedLaunch(Vertex v, float[] clockArrival, Object tag) {
         float[] q = clkToQ.get(v);
         if (q == null) return;
         for (int i = 0; i < nc; i++) v.arrival[i] = clockArrival[i] + q[i];
+        v.tags = new ArrayList<>(1);
+        v.tags.add(launchTag(v, tag));
+    }
+
+    private Tagged launchTag(Vertex v, Object tag) {
+        Tagged t = new Tagged(tag, nc);
+        System.arraycopy(v.arrival, 0, t.arrival, 0, nc);
+        return t;
+    }
+
+    /** The arrival group of a vertex with the given tag, or null. */
+    public static Tagged getTag(Vertex v, Object tag) {
+        if (v.tags == null) return null;
+        for (Tagged t : v.tags) if (t.tag == tag || (tag != null && tag.equals(t.tag))) return t;
+        return null;
+    }
+
+    /** All arrival groups of a vertex (empty when unreached). */
+    public static List<Tagged> getTags(Vertex v) {
+        return v.tags == null ? Collections.emptyList() : v.tags;
     }
 
     /**
@@ -725,6 +775,8 @@ public class VersalTimingGraph {
         for (Edge e : edges) indeg.merge(e.dst, 1, Integer::sum);
         Deque<Vertex> queue = new ArrayDeque<>();
         for (Vertex v : vertices.values()) if (!indeg.containsKey(v)) queue.add(v);
+        // launches never seeded through seedLaunch (clock-to-Q only) form the default group
+        for (Vertex v : clkToQ.keySet()) if (v.tags == null && isSet(v.arrival[0])) { v.tags = new ArrayList<>(1); v.tags.add(launchTag(v, null)); }
         int visited = 0;
         while (!queue.isEmpty()) {
             Vertex v = queue.poll();
@@ -735,6 +787,22 @@ public class VersalTimingGraph {
                         if (!isSet(v.arrival[i])) continue;
                         float a = v.arrival[i] + e.delay[i];
                         if (better(i, a, e.dst.arrival[i])) { e.dst.arrival[i] = a; e.dst.pred[i] = e; }
+                    }
+                    if (v.tags != null) {
+                        for (Tagged s : v.tags) {
+                            Tagged d = getTag(e.dst, s.tag);
+                            if (d == null) {
+                                d = new Tagged(s.tag, nc);
+                                for (int i = 0; i < nc; i++) d.arrival[i] = unset(i);
+                                if (e.dst.tags == null) e.dst.tags = new ArrayList<>(1);
+                                e.dst.tags.add(d);
+                            }
+                            for (int i = 0; i < nc; i++) {
+                                if (!isSet(s.arrival[i])) continue;
+                                float a = s.arrival[i] + e.delay[i];
+                                if (better(i, a, d.arrival[i])) { d.arrival[i] = a; d.pred[i] = e; }
+                            }
+                        }
                     }
                 }
                 int d = indeg.merge(e.dst, -1, Integer::sum);
@@ -773,6 +841,19 @@ public class VersalTimingGraph {
     public List<Edge> getPath(Vertex end, int corner) {
         List<Edge> path = new ArrayList<>();
         for (Edge e = end.pred[corner]; e != null; e = e.src.pred[corner]) path.add(e);
+        Collections.reverse(path);
+        return path;
+    }
+
+    /** Path of one arrival group (see {@link Tagged}) into the endpoint at a corner; empty if the group does not reach it. */
+    public List<Edge> getPath(Vertex end, int corner, Object tag) {
+        List<Edge> path = new ArrayList<>();
+        Tagged t = getTag(end, tag);
+        while (t != null && t.pred[corner] != null) {
+            Edge e = t.pred[corner];
+            path.add(e);
+            t = getTag(e.src, tag);
+        }
         Collections.reverse(path);
         return path;
     }
