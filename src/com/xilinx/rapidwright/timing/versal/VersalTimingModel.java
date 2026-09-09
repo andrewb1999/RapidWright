@@ -108,6 +108,8 @@ public class VersalTimingModel {
     private final VersalDelayTerms[] terms;
     private final DelayModel[] delayModels;
     private final Map<Node, float[]> tileTermCache = new HashMap<>();
+    /** DEBUG_NODE=<substring>: print the per-term breakdown of every hop into a matching node (primary corner) */
+    private static final String DEBUG_NODE = System.getenv("DEBUG_NODE");
     private final Map<Node, String> signatureCache = new HashMap<>();
     private final Map<Node, String> signatureCacheFull = new HashMap<>();
     /** tile types treated as plain fabric (not part of a crossing signature); must match fit_versal_model.py */
@@ -297,21 +299,24 @@ public class VersalTimingModel {
                     IntentCode ci = c.getIntentCode();
                     int extra = grand != null && grand.size() > 1 ? Math.min(VersalDelayTerms.MAX_FANOUT_CHILDREN, grand.size() - 1) : 0;
                     float[] d = new float[nc];
+                    boolean dbgNode = DEBUG_NODE != null && c.toString().contains(DEBUG_NODE);
                     for (int i = 0; i < nc; i++) {
-                        d[i] = pArr[i] + tile[i] + terms[i].edgeDelay(pClass, pi, ci, childKey, sibKey, kids.size(), i == 0 ? edgeMisses : null);
-                        if (extra > 0) d[i] += terms[i].fanoutTerm(ci) * extra;
-                        if (gpi != null) d[i] += terms[i].grandparentTerm(gpi, pi, ci, gpFanout);
-                        if (signature != null) d[i] += terms[i].crossingCorrection(pClass, pi, ci, signatureFull, signature);
+                        float edge = terms[i].edgeDelay(pClass, pi, ci, childKey, sibKey, kids.size(), i == 0 ? edgeMisses : null);
+                        float fan = extra > 0 ? terms[i].fanoutTerm(ci) * extra : 0, gpt = gpi != null ? terms[i].grandparentTerm(gpi, pi, ci, gpFanout) : 0;
+                        float ex = signature != null ? terms[i].crossingCorrection(pClass, pi, ci, signatureFull, signature) : 0, load = 0;
                         if (sibCount != null) {
                             for (Map.Entry<IntentCode, Integer> sc : sibCount.entrySet()) {
                                 int n = sc.getValue() - (sc.getKey() == ci ? 1 : 0);
                                 if (n > 0) {
                                     float lt = terms[i].loadTerm(pClass, pi, ci, sc.getKey());
                                     // a negative term marks a hop regime (charged once), a positive one a load per sibling
-                                    d[i] += lt < 0 ? lt : lt * Math.min(VersalDelayTerms.MAX_LOAD_SIBLINGS, n);
+                                    load += lt < 0 ? lt : lt * Math.min(VersalDelayTerms.MAX_LOAD_SIBLINGS, n);
                                 }
                             }
                         }
+                        d[i] = pArr[i] + tile[i] + edge + fan + gpt + ex + load;
+                        if (dbgNode && i == 0) System.out.printf("[debug node] %s <- %s: class %s children %s siblings %s (%d) gp %s x%d sig %s | edge %.1f tile %.1f fanout %.1f gp %.1f edgex %.1f load %.1f = hop %.1f, arrival %.1f%n",
+                                c, p, pClass, childKey, sibKey, kids.size(), gpi, gpFanout, signatureFull, edge, tile[i], fan, gpt, ex, load, d[i] - pArr[i], d[i]);
                     }
                     arrivals.put(c, d);
                     if (rootOf != null) rootOf.put(c, root);
