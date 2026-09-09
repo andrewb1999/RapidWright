@@ -183,6 +183,49 @@ public class VersalSlackAnalysis {
         }
     }
 
+    /**
+     * Slack of one specific launch -> endpoint pair (the model's worst path between the two), for comparing
+     * against a Vivado path with that startpoint; null if the endpoint is not reachable from the launch or
+     * either flop is unclocked. Run {@link #run()} first.
+     */
+    public Result evaluatePair(VersalTimingGraph.Vertex launch, VersalTimingGraph.Vertex v, boolean fast) {
+        SitePinInst cap = clockSitePin(v);
+        float[] capArr = clockArrival(cap, v.cell);
+        SitePinInst lp = clockSitePin(launch);
+        float[] lArr = clockArrival(lp, launch.cell);
+        if (capArr == null || lArr == null) return null;
+        int iMax = fast ? iFastMax : iSlowMax, iMin = fast ? iFastMin : iSlowMin;
+        List<VersalTimingGraph.Edge> path = graph.getPathFrom(launch, v, iMax), hpath = graph.getPathFrom(launch, v, iMin);
+        if (path == null || hpath == null) return null;
+        Result r = new Result();
+        r.endpoint = v; r.launch = launch; r.fast = fast;
+        r.captureClockMax = capArr[iMax]; r.captureClockMin = capArr[iMin];
+        r.setupCheck = v.check[iMax]; r.holdCheck = v.check[iMin];
+        boolean sameNet = lp != null && lp.getNet() == cap.getNet();
+        float[] cpr = sameNet ? clockModel.pessimism(getClockTree(cap.getNet()), lp, cap) : new float[2];
+        float[] hcpr = sameNet ? clockModel.holdPessimism(getClockTree(cap.getNet()), lp, cap) : new float[2];
+        r.launchClockMax = lArr[iMax]; r.launchClockMin = lArr[iMin];
+        r.setupPessimism = cpr[fast ? 1 : 0]; r.holdPessimism = hcpr[fast ? 1 : 0];
+        r.dataMax = graph.pathArrival(path, v, iMax);
+        r.dataMin = graph.pathArrival(hpath, v, iMin);
+        r.setupSlack = periodPs + r.captureClockMin + r.setupPessimism - setupUncertaintyPs - r.setupCheck - r.dataMax;
+        r.holdSlack = r.dataMin - (r.captureClockMax - r.holdPessimism + holdUncertaintyPs + r.holdCheck);
+        return r;
+    }
+
+    /** {@link #describe} for a pair result: the path from that launch rather than the endpoint's worst path. */
+    public String describePair(Result r, boolean setup) {
+        int iMax = r.fast ? iFastMax : iSlowMax, iMin = r.fast ? iFastMin : iSlowMin;
+        List<VersalTimingGraph.Edge> path = graph.getPathFrom(r.launch, r.endpoint, setup ? iMax : iMin);
+        StringBuilder sb = new StringBuilder();
+        if (setup) sb.append(String.format("setup slack %.0f ps (%s process): launch %s clock %.0f + data %.0f = arrival %.0f; required = %.0f + capture %.0f + cpr %.0f - unc %.0f - setup %.0f%n",
+                r.setupSlack, r.fast ? "fast" : "slow", r.launch, r.launchClockMax, r.dataMax - r.launchClockMax, r.dataMax, periodPs, r.captureClockMin, r.setupPessimism, setupUncertaintyPs, r.setupCheck));
+        else sb.append(String.format("hold slack %.0f ps (%s process): launch clock %.0f + data %.0f = arrival %.0f; required = capture %.0f - cpr %.0f + unc %.0f + hold %.0f%n",
+                r.holdSlack, r.fast ? "fast" : "slow", r.launchClockMin, r.dataMin - r.launchClockMin, r.dataMin, r.captureClockMax, r.holdPessimism, holdUncertaintyPs, r.holdCheck));
+        sb.append(graph.formatPath(path, r.endpoint, setup ? iMax : iMin));
+        return sb.toString();
+    }
+
     public List<Result> getResults() {
         return results;
     }

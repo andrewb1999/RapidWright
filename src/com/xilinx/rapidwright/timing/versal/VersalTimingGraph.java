@@ -193,11 +193,23 @@ public class VersalTimingGraph {
     }
 
     /**
-     * INIT value of a LUT cell, or -1 if it cannot be parsed. The LUTCY1/LUTCY2 leaves of a LUT6CY
-     * macro carry a placeholder INIT; theirs are the low / high 32 bits of the macro's INIT.
+     * INIT value of a LUT cell, or -1 if it cannot be parsed (no pruning then). The LUTCY1/LUTCY2 leaves
+     * of a LUT6CY macro and the LUT6/LUT5 leaves of a LUT6_2 macro carry a placeholder INIT; theirs come
+     * from the macro's INIT (LUT6CY: low / high 32 bits; LUT6_2: all 64 bits / the low 32).
      */
     static long lutInitValue(Cell c) {
         String type = c.getType();
+        if (type != null && (type.equals("LUT6") || type.equals("LUT5"))) {
+            // the LUT6 / LUT5 leaves of a LUT6_2 macro carry a placeholder INIT of 0 (which would prune every
+            // input): the macro's 64-bit INIT is the LUT6 leaf's, its low 32 bits the LUT5 leaf's
+            EDIFHierCellInst h = c.getEDIFHierCellInst();
+            EDIFHierCellInst parent = h == null ? null : h.getParent();
+            if (parent != null && parent.getInst() != null && "LUT6_2".equals(parent.getCellType().getName())) {
+                Long full = parseInit(parent.getInst().getProperty("INIT"));
+                if (full == null) return -1;
+                return type.equals("LUT5") ? (full & 0xFFFFFFFFL) : (full < 0 ? -1 : full);
+            }
+        }
         if (type != null && type.startsWith("LUTCY")) {
             EDIFHierCellInst h = c.getEDIFHierCellInst();
             EDIFHierCellInst parent = h == null ? null : h.getParent();
@@ -769,9 +781,67 @@ public class VersalTimingGraph {
         return formatPath(end, 0);
     }
 
+    /**
+     * The worst (max corners: longest; min corners: shortest) path from one launch to an endpoint through
+     * the built graph, or null if the endpoint is not reachable from that launch. Unlike {@link #getPath},
+     * which follows the globally worst predecessor into the endpoint, this restricts the search to the
+     * given start, for comparing a specific Vivado path.
+     */
+    public List<Edge> getPathFrom(Vertex launch, Vertex end, int corner) {
+        boolean max = model.isMax(corner);
+        // reachable subgraph from the launch (endpoints are not traversed through)
+        Set<Vertex> reach = new HashSet<>();
+        Deque<Vertex> stack = new ArrayDeque<>();
+        reach.add(launch); stack.push(launch);
+        while (!stack.isEmpty()) {
+            Vertex v = stack.pop();
+            if (v != launch && v.endpoint) continue;
+            for (Edge e : v.outs) if (reach.add(e.dst)) stack.push(e.dst);
+        }
+        if (!reach.contains(end)) return null;
+        // topological order of the reachable subgraph (Kahn), then relax
+        Map<Vertex, Integer> indeg = new HashMap<>();
+        for (Vertex v : reach) if (v == launch || !v.endpoint) for (Edge e : v.outs) if (reach.contains(e.dst)) indeg.merge(e.dst, 1, Integer::sum);
+        Deque<Vertex> q = new ArrayDeque<>();
+        for (Vertex v : reach) if (indeg.getOrDefault(v, 0) == 0) q.add(v);
+        Map<Vertex, Float> dist = new HashMap<>();
+        Map<Vertex, Edge> back = new HashMap<>();
+        dist.put(launch, launch.arrival[corner]);
+        while (!q.isEmpty()) {
+            Vertex v = q.poll();
+            Float dv = dist.get(v);
+            if (v == launch || !v.endpoint) for (Edge e : v.outs) {
+                if (!reach.contains(e.dst)) continue;
+                if (dv != null) {
+                    float cand = dv + e.delay[corner];
+                    Float cur = dist.get(e.dst);
+                    if (cur == null || (max ? cand > cur : cand < cur)) { dist.put(e.dst, cand); back.put(e.dst, e); }
+                }
+                if (indeg.merge(e.dst, -1, Integer::sum) == 0) q.add(e.dst);
+            }
+        }
+        if (!dist.containsKey(end)) return null;
+        List<Edge> path = new ArrayList<>();
+        for (Edge e = back.get(end); e != null; e = back.get(e.src)) path.add(e);
+        Collections.reverse(path);
+        return path;
+    }
+
+    /** Arrival at the end of a path (launch clock-to-Q plus the edges), at a corner. */
+    public float pathArrival(List<Edge> path, Vertex end, int corner) {
+        Vertex start = path.isEmpty() ? end : path.get(0).src;
+        float acc = start.arrival[corner];
+        for (Edge e : path) acc += e.delay[corner];
+        return acc;
+    }
+
     public String formatPath(Vertex end, int corner) {
+        return formatPath(getPath(end, corner), end, corner);
+    }
+
+    /** Formats an explicit path (see {@link #getPathFrom}) the way {@link #formatPath(Vertex, int)} does. */
+    public String formatPath(List<Edge> path, Vertex end, int corner) {
         StringBuilder sb = new StringBuilder();
-        List<Edge> path = getPath(end, corner);
         Vertex start = path.isEmpty() ? end : path.get(0).src;
         float logic = start.launch ? start.arrival[corner] : 0, netd = 0;
         sb.append(String.format("  [%s] %-9s %8.0f  %s (%s clk-to-Q)%n", model.getCorner(corner).getSuffix(), "launch", start.arrival[corner], start, start.cell.getType()));
@@ -782,7 +852,7 @@ public class VersalTimingGraph {
             sb.append(String.format("  %-9s %8.0f  %8.0f  %s%s%n", e.kind, e.delay[corner], acc, e.dst,
                     e.net != null ? "  [" + e.net.getName() + "]" : "  (" + e.dst.cell.getType() + ")"));
         }
-        sb.append(String.format("  data path %.0f ps (logic %.0f, net %.0f), %s %.0f ps%n", end.arrival[corner], logic, netd,
+        sb.append(String.format("  data path %.0f ps (logic %.0f, net %.0f), %s %.0f ps%n", acc, logic, netd,
                 model.isMax(corner) ? "setup" : "hold", end.check[corner]));
         return sb.toString();
     }

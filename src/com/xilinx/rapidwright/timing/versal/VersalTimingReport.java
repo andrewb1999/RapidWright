@@ -74,6 +74,16 @@ public class VersalTimingReport {
         return first;
     }
 
+    /** Graph vertex of "cell/logicalPin" (the pin is mapped to the physical BEL pin), or null. */
+    static VersalTimingGraph.Vertex vertexOf(Design design, VersalTimingGraph g, String cellPin) {
+        int slash = cellPin.lastIndexOf('/');
+        if (slash < 0) return null;
+        com.xilinx.rapidwright.design.Cell cell = design.getCell(cellPin.substring(0, slash));
+        if (cell == null) return null;
+        String phys = cell.getPhysicalPinMapping(cellPin.substring(slash + 1));
+        return phys == null ? g.getVertex(cell, cellPin.substring(slash + 1)) : g.getVertex(cell, phys);
+    }
+
     public static void main(String[] args) throws IOException {
         if (args.length < 1 || args[0].startsWith("--")) {
             System.out.println("Usage: VersalTimingReport design.dcp [design.edf] [--period ns] [--setup-uncertainty ps] [--hold-uncertainty ps] [--top N] [--csv slack.csv] [--leaf-delays csv]");
@@ -84,6 +94,7 @@ public class VersalTimingReport {
         float periodPs = 0, setupUnc = 0, holdUnc = 0;
         int top = 10;
         String csv = null, leafCsv = null;
+        List<String> pairs = new ArrayList<>();
         int i = 1;
         if (i < args.length && !args[i].startsWith("--")) edf = args[i++];
         for (; i < args.length; i++) {
@@ -94,6 +105,7 @@ public class VersalTimingReport {
                 case "--top": top = Integer.parseInt(args[++i]); break;
                 case "--csv": csv = args[++i]; break;
                 case "--leaf-delays": leafCsv = args[++i]; break;
+                case "--pair": pairs.add(args[++i]); break;   // "launchcell/Q->endcell/D": the model's slack for that specific path
                 default: throw new IllegalArgumentException("unknown option " + args[i]);
             }
         }
@@ -167,6 +179,20 @@ public class VersalTimingReport {
             float skew = r.captureClockMax - r.launchClockMin - r.holdPessimism;
             System.out.printf("%8.0f %6s %8.0f %8.0f %6.0f %6.0f %8.0f %6.0f  %s <- %s%n", r.holdSlack, r.fast ? "fast" : "slow", r.launchClockMin, r.captureClockMax,
                     r.holdPessimism, skew, r.dataMin - r.launchClockMin, r.holdCheck, r.endpoint, r.launch);
+        }
+
+        for (String pr : pairs) {
+            String[] pp = pr.split("->");
+            VersalTimingGraph.Vertex l = vertexOf(design, g, pp[0]), e = vertexOf(design, g, pp[1]);
+            System.out.println();
+            System.out.println("pair " + pr + ":");
+            if (l == null || e == null) { System.out.println("  not in graph: " + (l == null ? pp[0] : pp[1])); continue; }
+            for (boolean fast : new boolean[] {false, true}) {
+                VersalSlackAnalysis.Result r = sa.evaluatePair(l, e, fast);
+                if (r == null) { System.out.println("  no path from " + l + " to " + e + " (" + (fast ? "fast" : "slow") + ")"); continue; }
+                System.out.print(sa.describePair(r, true));
+                System.out.print(sa.describePair(r, false));
+            }
         }
 
         if (csv != null) {
