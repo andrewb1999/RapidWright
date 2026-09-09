@@ -31,6 +31,7 @@ import com.xilinx.rapidwright.device.IntentCode;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Tile;
+import com.xilinx.rapidwright.device.TileTypeEnum;
 import com.xilinx.rapidwright.device.Wire;
 import com.xilinx.rapidwright.edif.EDIFHierNet;
 import com.xilinx.rapidwright.edif.EDIFHierPortInst;
@@ -151,24 +152,68 @@ public class VersalTimingModel {
         return sig;
     }
 
+    /** Rows a tile type must occupy in a device column to name that column's NULL tiles. */
+    private static final int COLUMN_CLASS_MIN_ROWS = 5;
+    private static final Map<String, String[]> COLUMN_CLASS_CACHE = new HashMap<>();
+
     /**
-     * Tile types strictly between a wire's driver-end tile and its far tile, in order from the driver.
-     * (forEachTileBetween walks by ascending index and does not know the direction.)
+     * Per device column, the tile type that occupies most of its rows besides NULL (null when no type
+     * reaches COLUMN_CLASS_MIN_ROWS rows). A NULL tile in an ordered crossing is named "NULL:" + this
+     * class, because the NULL placeholders of different hard-block columns hide very different wire
+     * lengths: a WW2 double crossing an interface column costs 90 ps at a DSP column, 122-133 at a BRAM
+     * column and 141-164 at a vertical NoC column, all with the same tile types on the row of the wire
+     * (the block occupies other rows, or none). The cache is keyed by device name.
+     */
+    static synchronized String[] columnClasses(Device device) {
+        String[] cls = COLUMN_CLASS_CACHE.get(device.getName());
+        if (cls != null) return cls;
+        Tile[][] tiles = device.getTiles();
+        int cols = tiles.length == 0 ? 0 : tiles[0].length;
+        cls = new String[cols];
+        for (int c = 0; c < cols; c++) {
+            Map<String, Integer> hist = new HashMap<>();
+            for (Tile[] row : tiles) {
+                Tile t = c < row.length ? row[c] : null;
+                if (t == null || t.getTileTypeEnum() == TileTypeEnum.NULL) continue;
+                hist.merge(t.getTileTypeEnum().name(), 1, Integer::sum);
+            }
+            String best = null;
+            int bestN = COLUMN_CLASS_MIN_ROWS - 1;
+            for (Map.Entry<String, Integer> e : hist.entrySet())
+                if (e.getValue() > bestN || (e.getValue() == bestN && best != null && e.getKey().compareTo(best) < 0)) { best = e.getKey(); bestN = e.getValue(); }
+            cls[c] = best;
+        }
+        COLUMN_CLASS_CACHE.put(device.getName(), cls);
+        return cls;
+    }
+
+    /** The tile's type name for the ordered crossing: NULL tiles carry their column class ("NULL:NOC_NPS_VNOC_TOP"). */
+    private static String crossingTileName(Device device, Tile t) {
+        if (t.getTileTypeEnum() != TileTypeEnum.NULL) return t.getTileTypeEnum().name();
+        String[] cls = columnClasses(device);
+        String c = t.getColumn() < cls.length ? cls[t.getColumn()] : null;
+        return c == null ? "NULL" : "NULL:" + c;
+    }
+
+    /**
+     * Tile types strictly between a wire's driver-end tile and its far tile, in order from the driver,
+     * NULL tiles named by their column class (see columnClasses). (forEachTileBetween walks by ascending
+     * index and does not know the direction.)
      */
     public static List<String> orderedTilesBetween(Device device, Tile a, Tile b) {
         List<String> out = new ArrayList<>();
         if (a == b || (a.getRow() == b.getRow() && a.getColumn() == b.getColumn())) return out;
         if (a.getRow() == b.getRow()) {
             int step = b.getColumn() > a.getColumn() ? 1 : -1;
-            for (int col = a.getColumn() + step; col != b.getColumn(); col += step) { Tile t = device.getTile(a.getRow(), col); if (t != null) out.add(t.getTileTypeEnum().name()); }
+            for (int col = a.getColumn() + step; col != b.getColumn(); col += step) { Tile t = device.getTile(a.getRow(), col); if (t != null) out.add(crossingTileName(device, t)); }
         } else if (a.getColumn() == b.getColumn()) {
             int step = b.getRow() > a.getRow() ? 1 : -1;
-            for (int row = a.getRow() + step; row != b.getRow(); row += step) { Tile t = device.getTile(row, a.getColumn()); if (t != null) out.add(t.getTileTypeEnum().name()); }
+            for (int row = a.getRow() + step; row != b.getRow(); row += step) { Tile t = device.getTile(row, a.getColumn()); if (t != null) out.add(crossingTileName(device, t)); }
         } else {
             Tile corner = device.getTile(a.getRow(), b.getColumn());
             if (corner == null) return out;
             out.addAll(orderedTilesBetween(device, a, corner));
-            out.add(corner.getTileTypeEnum().name());
+            out.add(crossingTileName(device, corner));
             out.addAll(orderedTilesBetween(device, corner, b));
         }
         return out;
@@ -177,7 +222,9 @@ public class VersalTimingModel {
     /**
      * The ordered crossing signature: the wire's span split into gaps at INT tiles, from the driver
      * outward; each gap lists its non-fabric tile types (with the NULL count when the gap holds one), or
-     * "-" when it is fabric only; gaps joined by '>'. Where along a wire a hard-block column sits changes
+     * "-" when it is fabric only; gaps joined by '>'. Plain NULL tiles are counted ("+NULLx2"); NULL tiles
+     * with a column class ("NULL:BRAM_ROCF_TR_TILE") count as a tile type of their own, so a crossing of a
+     * BRAM, NoC or DSP column is keyed apart even on rows where the column holds no block tile. Where along a wire a hard-block column sits changes
      * a quad hop by 15-60 ps (a BRAM+URAM column in the far gap 193 ps, in the near gap 135), which the
      * unordered histogram could not see. Must match crossing_signature() in fit_versal_model.py.
      */
@@ -188,7 +235,7 @@ public class VersalTimingModel {
         List<String> gaps = new ArrayList<>();
         for (String tt : tiles) {
             if (tt.equals("INT")) { gaps.add(gapString(gap, nulls)); gap.clear(); nulls = 0; continue; }
-            if (tt.equals("NULL")) nulls++;
+            if (tt.equals("NULL") || (tt.startsWith("NULL:") && isFabricTile(tt.substring(5)))) nulls++;   // a NULL in a fabric column (CPIPE, CBRK) is a plain NULL
             else if (!isFabricTile(tt)) gap.merge(tt, 1, Integer::sum);
         }
         gaps.add(gapString(gap, nulls));

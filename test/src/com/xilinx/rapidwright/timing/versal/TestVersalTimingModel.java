@@ -54,6 +54,24 @@ public class TestVersalTimingModel {
     }
 
     @Test
+    public void testOrderedSignatureColumnClasses() {
+        // a NULL tile named by its column class is a crossing type of its own; a NULL in a fabric column is a plain NULL
+        Assertions.assertEquals("INTF_ROCF_BL_TILEx1+INTF_ROCF_BR_TILEx1+NULL:MISR_TILEx1+NULL:NOC_NPS_VNOC_TOPx1",
+                VersalTimingModel.orderedSignature(Arrays.asList("INTF_ROCF_BL_TILE", "NULL:NOC_NPS_VNOC_TOP", "NULL:MISR_TILE", "INTF_ROCF_BR_TILE")));
+        Assertions.assertEquals("BRAM_ROCF_TR_TILEx1+NULLx2",
+                VersalTimingModel.orderedSignature(Arrays.asList("BRAM_ROCF_TR_TILE", "NULL:CPIPE_TOP_TILE", "NULL")));
+        Assertions.assertEquals("-", VersalTimingModel.orderedSignature(Arrays.asList("NULL", "NULL")));
+        // xcv80: the vertical NoC column beside INT column 555/560 and the DSP column beside 172/177
+        com.xilinx.rapidwright.device.Device d = com.xilinx.rapidwright.device.Device.getDevice("xcv80");
+        String[] cls = VersalTimingModel.columnClasses(d);
+        Assertions.assertEquals("NOC_NPS_VNOC_TOP", cls[557]);
+        Assertions.assertEquals("MISR_TILE", cls[558]);
+        Assertions.assertEquals("DSP_ROCF_T_TILE", cls[174]);
+        Assertions.assertNull(cls[175], "a spacer column with no recurring tile type stays NULL");
+        Assertions.assertEquals("INT", cls[555]);
+    }
+
+    @Test
     public void testIntersiteTerms() {
         VersalDelayTerms t = new VersalDelayTerms();
         Assertions.assertTrue(t.getEdgeEntryCount() > 500, "expected a populated EDGE table");
