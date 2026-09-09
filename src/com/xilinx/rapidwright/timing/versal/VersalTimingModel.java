@@ -131,19 +131,76 @@ public class VersalTimingModel {
         Map<Node, String> cache = full ? signatureCacheFull : signatureCache;
         String cached = cache.get(n);
         if (cached != null) return cached;
-        java.util.TreeMap<String, Integer> hist = new java.util.TreeMap<>();
-        forEachTileBetween(device, n.getTile(), farthestTile(n), t -> {
-            String tt = t.getTileTypeEnum().name();
-            if (full || !isFabricTile(tt)) hist.merge(tt, 1, Integer::sum);
-        });
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, Integer> e : hist.entrySet()) {
-            if (sb.length() > 0) sb.append('+');
-            sb.append(e.getKey()).append('x').append(e.getValue());
+        String sig;
+        if (full) {
+            sig = orderedSignature(orderedTilesBetween(device, n.getTile(), farthestTile(n)));
+        } else {
+            java.util.TreeMap<String, Integer> hist = new java.util.TreeMap<>();
+            forEachTileBetween(device, n.getTile(), farthestTile(n), t -> {
+                String tt = t.getTileTypeEnum().name();
+                if (!isFabricTile(tt)) hist.merge(tt, 1, Integer::sum);
+            });
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, Integer> e : hist.entrySet()) {
+                if (sb.length() > 0) sb.append('+');
+                sb.append(e.getKey()).append('x').append(e.getValue());
+            }
+            sig = sb.length() == 0 ? "-" : sb.toString();
         }
-        String sig = sb.length() == 0 ? "-" : sb.toString();
         cache.put(n, sig);
         return sig;
+    }
+
+    /**
+     * Tile types strictly between a wire's driver-end tile and its far tile, in order from the driver.
+     * (forEachTileBetween walks by ascending index and does not know the direction.)
+     */
+    public static List<String> orderedTilesBetween(Device device, Tile a, Tile b) {
+        List<String> out = new ArrayList<>();
+        if (a == b || (a.getRow() == b.getRow() && a.getColumn() == b.getColumn())) return out;
+        if (a.getRow() == b.getRow()) {
+            int step = b.getColumn() > a.getColumn() ? 1 : -1;
+            for (int col = a.getColumn() + step; col != b.getColumn(); col += step) { Tile t = device.getTile(a.getRow(), col); if (t != null) out.add(t.getTileTypeEnum().name()); }
+        } else if (a.getColumn() == b.getColumn()) {
+            int step = b.getRow() > a.getRow() ? 1 : -1;
+            for (int row = a.getRow() + step; row != b.getRow(); row += step) { Tile t = device.getTile(row, a.getColumn()); if (t != null) out.add(t.getTileTypeEnum().name()); }
+        } else {
+            Tile corner = device.getTile(a.getRow(), b.getColumn());
+            if (corner == null) return out;
+            out.addAll(orderedTilesBetween(device, a, corner));
+            out.add(corner.getTileTypeEnum().name());
+            out.addAll(orderedTilesBetween(device, corner, b));
+        }
+        return out;
+    }
+
+    /**
+     * The ordered crossing signature: the wire's span split into gaps at INT tiles, from the driver
+     * outward; each gap lists its non-fabric tile types (with the NULL count when the gap holds one), or
+     * "-" when it is fabric only; gaps joined by '>'. Where along a wire a hard-block column sits changes
+     * a quad hop by 15-60 ps (a BRAM+URAM column in the far gap 193 ps, in the near gap 135), which the
+     * unordered histogram could not see. Must match crossing_signature() in fit_versal_model.py.
+     */
+    public static String orderedSignature(List<String> tiles) {
+        StringBuilder sb = new StringBuilder();
+        java.util.TreeMap<String, Integer> gap = new java.util.TreeMap<>();
+        int nulls = 0;
+        List<String> gaps = new ArrayList<>();
+        for (String tt : tiles) {
+            if (tt.equals("INT")) { gaps.add(gapString(gap, nulls)); gap.clear(); nulls = 0; continue; }
+            if (tt.equals("NULL")) nulls++;
+            else if (!isFabricTile(tt)) gap.merge(tt, 1, Integer::sum);
+        }
+        gaps.add(gapString(gap, nulls));
+        return String.join(">", gaps);
+    }
+
+    private static String gapString(java.util.TreeMap<String, Integer> gap, int nulls) {
+        if (gap.isEmpty()) return "-";
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Integer> e : gap.entrySet()) { if (sb.length() > 0) sb.append('+'); sb.append(e.getKey()).append('x').append(e.getValue()); }
+        if (nulls > 0) sb.append("+NULLx").append(nulls);
+        return sb.toString();
     }
     private final int[] edgeMisses = new int[1];
     private int intraSiteMisses = 0;
