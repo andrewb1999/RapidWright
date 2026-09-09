@@ -63,8 +63,8 @@ public class VersalDelayTerms {
 
     /** parent class (intent name, optionally ":family") -> node intent -> "children/siblings/fanout" -> ps */
     private final Map<String, Map<IntentCode, Map<String, Float>>> edge = new HashMap<>();
-    /** EDGEX: correction per (parent class or intent, node intent, crossing signature of the parent wire) */
-    private final Map<String, Map<IntentCode, Map<String, Float>>> edgeX = new HashMap<>();
+    /** EDGEX: correction per (parent class or intent, node class (intent[:OUT]), crossing signature of the parent wire) */
+    private final Map<String, Map<String, Map<String, Float>>> edgeX = new HashMap<>();
     /** Parent fanout buckets are 1..MAX_PARENT_FANOUT_BUCKET (the last one means "or more"). */
     public static final int MAX_PARENT_FANOUT_BUCKET = 8;
     /** Grandparent fanout buckets are 1..MAX_GP_FANOUT_BUCKET (the last one means "or more"). */
@@ -119,11 +119,10 @@ public class VersalDelayTerms {
                         break;
                     }
                     case "EDGEX": {
-                        // EDGEX <parent class or intent> <node intent> <crossing signature> <correction> <samples>
-                        IntentCode n = intent(f[2]);
-                        if (n == null || intent(f[1].split(":")[0]) == null || f.length < 5) break;
-                        edgeX.computeIfAbsent(f[1], k -> new EnumMap<>(IntentCode.class))
-                             .computeIfAbsent(n, k -> new HashMap<>()).put(f[3], Float.parseFloat(f[4]));
+                        // EDGEX <parent class or intent> <node intent[:OUT]> <crossing signature> <correction> <samples>
+                        if (intent(f[2].split(":")[0]) == null || intent(f[1].split(":")[0]) == null || f.length < 5) break;
+                        edgeX.computeIfAbsent(f[1], k -> new HashMap<>())
+                             .computeIfAbsent(f[2], k -> new HashMap<>()).put(f[3], Float.parseFloat(f[4]));
                         break;
                     }
                     case "EDGE_DEFAULT": {
@@ -233,15 +232,26 @@ public class VersalDelayTerms {
      * VersalTimingModel.crossingSignature): exact parent class first, then the bare parent intent; 0 if none.
      */
     public float crossingCorrection(String parentClass, IntentCode parent, IntentCode node, String fullSignature, String signature) {
+        return crossingCorrection(parentClass, parent, node.name(), node, fullSignature, signature);
+    }
+
+    /**
+     * As above with the node class (VersalTimingModel.nodeClass: the intent, ":OUT" appended for the
+     * OUT_[NSEW]NODE bounce nodes): ordered signature before the plain one, node class before node
+     * intent, parent class before parent intent. Must match signature_correction() in fit_versal_model.py.
+     */
+    public float crossingCorrection(String parentClass, IntentCode parent, String nodeClass, IntentCode node, String fullSignature, String signature) {
         if (edgeX.isEmpty()) return 0f;
         for (String sig : fullSignature.equals(signature) ? new String[] {signature} : new String[] {fullSignature, signature}) {
-            for (String pc : parentClass.equals(parent.name()) ? new String[] {parentClass} : new String[] {parentClass, parent.name()}) {
-                Map<IntentCode, Map<String, Float>> byNode = edgeX.get(pc);
-                if (byNode == null) continue;
-                Map<String, Float> byKey = byNode.get(node);
-                if (byKey == null) continue;
-                Float v = byKey.get(sig);
-                if (v != null) return v;
+            for (String ncl : nodeClass.equals(node.name()) ? new String[] {nodeClass} : new String[] {nodeClass, node.name()}) {
+                for (String pc : parentClass.equals(parent.name()) ? new String[] {parentClass} : new String[] {parentClass, parent.name()}) {
+                    Map<String, Map<String, Float>> byNode = edgeX.get(pc);
+                    if (byNode == null) continue;
+                    Map<String, Float> byKey = byNode.get(ncl);
+                    if (byKey == null) continue;
+                    Float v = byKey.get(sig);
+                    if (v != null) return v;
+                }
             }
         }
         return 0f;
@@ -249,7 +259,7 @@ public class VersalDelayTerms {
 
     public int getEdgeXEntryCount() {
         int n = 0;
-        for (Map<IntentCode, Map<String, Float>> a : edgeX.values()) for (Map<String, Float> b : a.values()) n += b.size();
+        for (Map<String, Map<String, Float>> a : edgeX.values()) for (Map<String, Float> b : a.values()) n += b.size();
         return n;
     }
 

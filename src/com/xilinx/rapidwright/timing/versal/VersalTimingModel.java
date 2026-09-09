@@ -404,10 +404,11 @@ public class VersalTimingModel {
                     int extra = grand != null && grand.size() > 1 ? Math.min(VersalDelayTerms.MAX_FANOUT_CHILDREN, grand.size() - 1) : 0;
                     float[] d = new float[nc];
                     boolean dbgNode = DEBUG_NODE != null && c.toString().contains(DEBUG_NODE);
+                    String cClass = nodeClass(c);
                     for (int i = 0; i < nc; i++) {
                         float edge = terms[i].edgeDelay(pClass, pi, ci, childKey, sibKey, kids.size(), i == 0 ? edgeMisses : null);
                         float fan = extra > 0 ? terms[i].fanoutTerm(ci) * extra : 0, gpt = gpi != null ? terms[i].grandparentTerm(gpi, pi, ci, gpFanout) : 0;
-                        float ex = signature != null ? terms[i].crossingCorrection(pClass, pi, ci, signatureFull, signature) : 0, load = 0;
+                        float ex = signature != null ? terms[i].crossingCorrection(pClass, pi, cClass, ci, signatureFull, signature) : 0, load = 0;
                         if (sibCount != null) {
                             for (Map.Entry<IntentCode, Integer> sc : sibCount.entrySet()) {
                                 int n = sc.getValue() - (sc.getKey() == ci ? 1 : 0);
@@ -432,6 +433,18 @@ public class VersalTimingModel {
     }
 
     private static final Pattern H_WIRE = Pattern.compile("^(?:OUT|IN)_([EW]{2})\\d+(?:_([EW]))?");
+    private static final Pattern OUT_NODE = Pattern.compile("^OUT_[NSEW]NODE_");
+
+    /**
+     * Node class for the crossing correction (EDGEX): the intent, plus ":OUT" for the OUT_[NSEW]NODE
+     * bounce nodes of an INT tile. A vertical wire ending in the tile just past an RCLK row and exiting
+     * into one of those costs ~150 ps where the exit into an INT_NODE_SDQ_ATOM costs ~85. Must match
+     * node_class() in fit_versal_model.py.
+     */
+    public static String nodeClass(Node n) {
+        String name = n.getIntentCode().name();
+        return OUT_NODE.matcher(n.getWireName()).find() ? name + ":OUT" : name;
+    }
 
     /**
      * Wire family of a horizontal wire node: direction and INT-tile half (EE_E, WW, RED, ...), or ""
