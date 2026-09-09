@@ -413,7 +413,7 @@ public class VersalClockModel {
         float[] arc = null;
         short[] belIdx = new short[dm.getCornerCount()];
         for (int i = 0; i < belIdx.length; i++) {
-            try { belIdx[i] = dm.getDelayModel(i).getBELIndex(driver.getBELName()); } catch (RuntimeException e) { belIdx[i] = -1; }
+            belIdx[i] = VersalTimingGraph.belIndex(dm.getDelayModel(i), driver);
         }
         if (belIdx[0] < 0) return state;
         // candidate inputs: the cell's mapped input pins, then (for pads) every input pin of the BEL

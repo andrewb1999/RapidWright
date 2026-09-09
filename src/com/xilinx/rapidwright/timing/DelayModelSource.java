@@ -139,6 +139,17 @@ abstract class DelayModelSource {
     private final Map<String, Short> site2IdxMapInst = new HashMap<>(site2IdxMap);
 
     /**
+     * Forgets the default (UltraScale+) name-to-index maps so that every BEL and site name the data file
+     * registers gets its own index. A Versal file lists all the types it describes; with the defaults,
+     * SLICEL and SLICEM (and all flop / LUT letters) would share one index and their sections collide.
+     * Triggered by a "# index: per_name" header line.
+     */
+    protected void resetIndexMaps() {
+        bel2IdxMapInst.clear();
+        site2IdxMapInst.clear();
+    }
+
+    /**
      * Registers a group of equivalent BEL names (sharing one delay table). Names already known keep
      * their index; unknown names get the index of a known member of the group, or a fresh one.
      * @return the shared index

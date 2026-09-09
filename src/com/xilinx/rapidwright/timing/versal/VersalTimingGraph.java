@@ -374,21 +374,40 @@ public class VersalTimingGraph {
     private short[] belIndices(Cell c) {
         short[] idx = new short[nc];
         for (int i = 0; i < nc; i++) {
-            DelayModel dm = delayModelAt(i);
-            short v;
-            try {
-                v = dm.getBELIndex(belKeyFor(c));
-            } catch (RuntimeException e1) {
-                try {
-                    v = dm.getBELIndex(c.getBELName());
-                } catch (RuntimeException e) {
-                    if (i == 0) return null;
-                    v = -1;
-                }
-            }
-            idx[i] = v;
+            idx[i] = belIndex(delayModelAt(i), c);
+            if (i == 0 && idx[0] < 0) return null;
         }
         return idx;
+    }
+
+    private static short tryIndex(DelayModel dm, String key) {
+        try { return dm.getBELIndex(key); } catch (RuntimeException e) { return -1; }
+    }
+
+    /**
+     * Index of the BEL section that times a cell, or -1. Sections are written per BEL and site type
+     * ("HFF2@SLICEM", the loader's default index map would otherwise merge every flop letter into one
+     * entry); older tables have plain names. Lookup order: BEL[_family]@site, BEL@site, BEL[_family],
+     * BEL, then the same BEL of another letter (A..H) at this site type, for BELs the training designs
+     * only exercised on some letters.
+     */
+    public static short belIndex(DelayModel dm, Cell c) {
+        String site = c.getSiteInst() == null || c.getSiteInst().getSiteTypeEnum() == null ? null : c.getSiteInst().getSiteTypeEnum().name();
+        String fam = belKeyFor(c), bare = c.getBELName();
+        short v = -1;
+        if (site != null) {
+            v = tryIndex(dm, fam + "@" + site);
+            if (v < 0 && !fam.equals(bare)) v = tryIndex(dm, bare + "@" + site);
+        }
+        if (v < 0) v = tryIndex(dm, fam);
+        if (v < 0 && !fam.equals(bare)) v = tryIndex(dm, bare);
+        if (v < 0 && site != null && bare.length() > 1 && bare.charAt(0) >= 'A' && bare.charAt(0) <= 'H' && "F56".indexOf(bare.charAt(1)) >= 0) {
+            for (char l = 'A'; l <= 'H' && v < 0; l++) {
+                if (l == bare.charAt(0)) continue;
+                v = tryIndex(dm, l + fam.substring(1) + "@" + site);
+            }
+        }
+        return v;
     }
 
     /**

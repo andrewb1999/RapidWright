@@ -91,7 +91,7 @@ public class TestVersalTimingModel {
             float step = t.edgeDelay(IntentCode.NODE_VLONG12, IntentCode.NODE_VLONG12, "VLONG12", "VLONG12", null);
             Assertions.assertTrue(step > 30 && step < 100, c + ": VLONG12 step " + step);
             DelayModel dm = DelayModelBuilder.getDelayModel("versal", c.getSuffix());
-            short clkq = dm.getLogicDelay(dm.getBELIndex("AFF"), "CLK", "Q");
+            short clkq = dm.getLogicDelay(dm.getBELIndex("AFF@SLICEL"), "CLK", "Q");   // BEL sections are per site type
             Assertions.assertTrue(clkq > 40 && clkq < 120, c + ": CLK->Q " + clkq);
             if (c == VersalCorner.SLOW_MAX) prevStep = step;
             // the fast corners are faster than the slow-max corner
@@ -103,14 +103,19 @@ public class TestVersalTimingModel {
     public void testIntrasiteAndLogicDelays() {
         DelayModel dm = DelayModelBuilder.getDelayModel("versal");
         // LUT A1 -> O6 is the slowest LUT input, clock-to-Q of a slice flop about 90 ps
-        short lutIdx = dm.getBELIndex("A6LUT");
+        short lutIdx = dm.getBELIndex("A6LUT@SLICEL");
         short a1 = dm.getLogicDelay(lutIdx, "A1", "O6");
         short a6 = dm.getLogicDelay(lutIdx, "A6", "O6");
         Assertions.assertTrue(a1 > 100 && a1 < 160, "A1->O6 " + a1);
         Assertions.assertTrue(a6 > 15 && a6 < 50 && a6 < a1, "A6->O6 " + a6);
-        short ffIdx = dm.getBELIndex("AFF");
+        short ffIdx = dm.getBELIndex("AFF@SLICEL");
         short clkq = dm.getLogicDelay(ffIdx, "CLK", "Q");
         Assertions.assertTrue(clkq > 70 && clkq < 110, "CLK->Q " + clkq);
+        // per-letter and per-site-type sections: the CE setup check is 87 ps on an A flop, 90 on an H flop
+        short ceA = dm.getLogicDelay(dm.getBELIndex("AFF@SLICEL"), "CLK", "CE");
+        short ceH = dm.getLogicDelay(dm.getBELIndex("HFF2@SLICEM"), "CLK", "CE");
+        Assertions.assertTrue(ceA >= 85 && ceA <= 89 && ceH >= 89 && ceH <= 92, "CE setup A " + ceA + " H " + ceH);
+        Assertions.assertNotNull(dm.getIntraSiteDelay(SiteTypeEnum.SLICEM, "A4", "A6LUT/A4"), "SLICEM has its own site section");
         // site pin to LUT input is a few tens of ps
         Short a4 = dm.getIntraSiteDelay(SiteTypeEnum.SLICEL, "A4", "A6LUT/A4");
         Assertions.assertNotNull(a4);

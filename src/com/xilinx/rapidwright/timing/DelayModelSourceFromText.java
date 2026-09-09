@@ -289,7 +289,7 @@ class DelayModelSourceFromText extends DelayModelSource {
                 boolean lineIsBlank = testLine.isEmpty();
 
                 if (lineIsBlank || line.trim().matches("^#.*")) { // if not a comment line
-//                    System.out.println("skip " + line);
+                    if (line.trim().matches("^#\\s*index:\\s*per_name\\s*$")) resetIndexMaps();
                 } else {
                     // TODO: consider changing this construct so that only the keywords (bel,site)
                     //  are specified in only one place.
