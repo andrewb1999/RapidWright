@@ -67,9 +67,10 @@ public class TestVersalTimingModel {
         // a vertical long line driving another vertical long line books about one long-line step
         float longStep = t.edgeDelay(IntentCode.NODE_VLONG12, IntentCode.NODE_VLONG12, "VLONG12", "VLONG12", miss);
         Assertions.assertTrue(longStep > 60 && longStep < 95, "VLONG12 step " + longStep);
-        // ... and books nothing when it is the last long line before a mux
+        // ... and so does the last long line before a mux: the fitter re-attributes Vivado's per-instance
+        // entry/exit split so that every wire's cost sits on its own exit hops (fit_versal_model.py load_edges)
         float lastLong = t.edgeDelay(IntentCode.NODE_VLONG12, IntentCode.NODE_VLONG12, "SDQNODE", "VLONG12", miss);
-        Assertions.assertTrue(Math.abs(lastLong) < 10, "last VLONG12 " + lastLong);
+        Assertions.assertTrue(lastLong > 60 && lastLong < 95, "last VLONG12 " + lastLong);
         // an unseen sibling set falls back to the child-set entry, not to a miss
         float fallback = t.edgeDelay(IntentCode.NODE_VLONG12, IntentCode.NODE_VLONG12, "VLONG12", "NO_SUCH_SIBLING", miss);
         Assertions.assertTrue(fallback > 60 && fallback < 95, "fallback " + fallback);
