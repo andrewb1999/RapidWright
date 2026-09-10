@@ -688,7 +688,7 @@ public class VersalTimingModel {
                 }
             }
         }
-        return lookupFirst(si, keys, "driver " + src.getName() + " <- " + DesignTools.getConnectedCells(src));
+        return lookupFirst(si, keys, () -> "driver " + src.getName() + " <- " + DesignTools.getConnectedCells(src));
     }
 
     /** Delay from the input site pin to the BEL input pin of the cell it feeds, primary corner. */
@@ -706,7 +706,7 @@ public class VersalTimingModel {
             if (si.getCell(bp.getBEL()) == null) continue;
             keys.add(new String[] {sink.getName(), bp.getBEL().getName() + "/" + bp.getName()});
         }
-        return lookupFirst(si, keys, "sink " + sink.getName());
+        return lookupFirst(si, keys, () -> "sink " + sink.getName());
     }
 
     /** Delay between two BEL pins inside one site (intra-site net), primary corner. */
@@ -718,7 +718,7 @@ public class VersalTimingModel {
     public float[] intraSiteNetDelays(SiteInst si, BELPin from, BELPin to) {
         List<String[]> keys = new ArrayList<>(1);
         keys.add(new String[] {from.getBEL().getName() + "/" + from.getName(), to.getBEL().getName() + "/" + to.getName()});
-        return lookupFirst(si, keys, "intra " + keys.get(0)[0] + " -> " + keys.get(0)[1]);
+        return lookupFirst(si, keys, () -> "intra " + keys.get(0)[0] + " -> " + keys.get(0)[1]);
     }
 
     /**
@@ -728,9 +728,10 @@ public class VersalTimingModel {
      */
     private static final String DEBUG_INTRA = System.getenv("DEBUG_INTRA");
 
-    private float[] lookupFirst(SiteInst si, List<String[]> keys, String missKey) {
+    private float[] lookupFirst(SiteInst si, List<String[]> keys, java.util.function.Supplier<String> missKeyOf) {
         intraSiteLookups++;
-        boolean dbg = DEBUG_INTRA != null && missKey.contains(DEBUG_INTRA);
+        String missKey = DEBUG_INTRA != null ? missKeyOf.get() : null;
+        boolean dbg = missKey != null && missKey.contains(DEBUG_INTRA);
         for (String[] k : keys) {
             String from = k[0], to = k[1];
             Short v = lookup(0, si, from, to);
@@ -757,6 +758,7 @@ public class VersalTimingModel {
             return out;
         }
         intraSiteMisses++;
+        if (missKey == null) missKey = missKeyOf.get();
         missKeys.merge(missKey.length() > 80 ? missKey.substring(0, 80) : missKey, 1, Integer::sum);
         float[] out = new float[corners.length];
         Arrays.fill(out, intraSiteFallback);
@@ -774,9 +776,12 @@ public class VersalTimingModel {
         }
     }
 
+    /** Tail of a slice pin name replicated per LUT/FF letter (compiled once: these run for every intra-site lookup). */
+    private static final Pattern LETTERED_TAIL = Pattern.compile("(\\d|X|Q|_|MUX|FF|[56]LUT|CY|\\d_IMR).*");
+
     /** True for a slice pin name in letter-A form that exists once per LUT/FF letter ("A3", "AFF/Q", "A6LUT/WE"). */
     static boolean isLettered(String pinA) {
-        return pinA.matches("^A(\\d|X|Q|_|MUX|FF|[56]LUT|CY|\\d_IMR).*");
+        return !pinA.isEmpty() && pinA.charAt(0) == 'A' && LETTERED_TAIL.matcher(pinA).region(1, pinA.length()).matches();
     }
 
     /** The letter-A form of a slice pin name with its letter replaced by {@code c}; other names unchanged. */
@@ -787,7 +792,7 @@ public class VersalTimingModel {
     /** Maps slice pin names of letter B..H onto letter A (e.g. "C3", "CFF/Q", "H6LUT/A4"). */
     static String toLetterA(String pin) {
         if (pin.isEmpty() || pin.charAt(0) < 'B' || pin.charAt(0) > 'H') return pin;
-        if (pin.matches("^[B-H](\\d|X|Q|_|MUX|FF|[56]LUT|CY|\\d_IMR).*")) return "A" + pin.substring(1);
+        if (LETTERED_TAIL.matcher(pin).region(1, pin.length()).matches()) return "A" + pin.substring(1);
         return pin;
     }
 
