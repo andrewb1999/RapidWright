@@ -168,15 +168,21 @@ public class VersalSlackAnalysis {
      * propagates, and computes every slack: per endpoint and process the worst slack over the groups,
      * each with the pessimism removal of its own launch.
      */
+    /** Wall time of the analysis phases after the build: clock seeding, arrival propagation, slack (ms). */
+    public final long[] phaseMs = new long[3];
+
     public void run() {
         graph.build();
+        long t = System.currentTimeMillis();
         for (VersalTimingGraph.Vertex q : graph.getLaunches()) {
             SitePinInst spi = clockSitePin(q);
             float[] arr = clockArrival(spi, q.cell);
             if (arr == null) { unclockedLaunches++; graph.unseedLaunch(q); continue; }
             graph.seedLaunch(q, arr, launchGroup(spi));
         }
+        phaseMs[0] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
         graph.computeArrivals();
+        phaseMs[1] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
         for (VersalTimingGraph.Vertex v : graph.getEndpoints()) {
             SitePinInst cap = clockSitePin(v);
             float[] capArr = clockArrival(cap, v.cell);
@@ -230,6 +236,7 @@ public class VersalSlackAnalysis {
                 if (worstHold == null || r.holdSlack < worstHold.holdSlack) worstHold = r;
             }
         }
+        phaseMs[2] = System.currentTimeMillis() - t;
     }
 
     /** The launch at the head of an arrival group's path into an endpoint at a corner (the endpoint itself if none). */

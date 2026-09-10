@@ -280,10 +280,17 @@ public class VersalTimingGraph {
     }
 
     /** Builds logic arcs and net edges for the whole design. */
+    /** Wall time of the build phases: constants, logic arcs, net edges (ms). */
+    public final long[] phaseMs = new long[3];
+
     public void build() {
+        long t = System.currentTimeMillis();
         propagateConstants();
+        phaseMs[0] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
         buildLogicArcs();
+        phaseMs[1] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
         buildNetEdges();
+        phaseMs[2] = System.currentTimeMillis() - t;
     }
 
     /** cell name + "/" + physical pin -> constant value (0/1) for pins Vivado would treat as constant. */

@@ -138,6 +138,8 @@ public class VersalTimingReport {
         System.out.printf("graph: %d vertices, %d edges, built and analysed in %d ms; unknown BELs %d %s, unrouted sinks %d, skipped nets %d, edge misses %d, intra-site misses %d/%d%n",
                 g.getVertexCount(), g.getEdgeCount(), System.currentTimeMillis() - t0, g.getUnknownBelCount(), g.getUnknownBelNames(),
                 g.getUnroutedSinkCount(), g.getSkippedNetCount(), model.getEdgeMissCount(), model.getIntraSiteMissCount(), model.getIntraSiteLookupCount());
+        System.out.printf("phases (ms): constants %d, logic arcs %d, net edges %d, clock seeding %d, arrivals %d, slack %d%n",
+                g.phaseMs[0], g.phaseMs[1], g.phaseMs[2], sa.phaseMs[0], sa.phaseMs[1], sa.phaseMs[2]);
         if (model.getIntraSiteMissCount() > 0) {
             List<Map.Entry<String, Integer>> miss = new ArrayList<>(model.getIntraSiteMissKeys().entrySet());
             miss.sort((a, b) -> b.getValue() - a.getValue());
