@@ -767,7 +767,8 @@ public class VersalTimingGraph {
     /**
      * Propagates arrival times from the launch vertices for every corner (longest path at max
      * corners, shortest at min corners); returns the endpoints reached at the primary corner,
-     * sorted worst first.
+     * sorted worst first. A launch vertex with incoming combinational edges (SRL / LUT-RAM output
+     * from the address pins) ends up with the extreme of its clock-to-Q and the paths into it.
      */
     public List<Vertex> computeArrivals() {
         // Kahn topological order restricted to the reachable graph
@@ -782,7 +783,10 @@ public class VersalTimingGraph {
             Vertex v = queue.poll();
             visited++;
             for (Edge e : v.outs) {
-                if (!e.dst.launch) {
+                // a launch vertex can also be the output of a combinational arc (an SRL or LUT-RAM output
+                // reached from its address pins, a bypassed DSP register): its arrival is the extreme of its
+                // own clock-to-Q and the paths into it, so edges into launches are relaxed like any other
+                {
                     for (int i = 0; i < nc; i++) {
                         if (!isSet(v.arrival[i])) continue;
                         float a = v.arrival[i] + e.delay[i];
