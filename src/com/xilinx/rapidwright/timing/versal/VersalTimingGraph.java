@@ -559,87 +559,135 @@ public class VersalTimingGraph {
         return null;
     }
 
+    /** What one cell adds to the graph, resolved off the graph (parallel) and applied in cell order. */
+    private static final class CellPlan {
+        final Cell cell;
+        String unknownBel;          // type@BEL when the delay model has no section for it
+        int pruned;
+        /** in order: {in, out, delays or null} for a clock-to-output launch (clock input) ... */
+        final List<Object[]> launches = new ArrayList<>();
+        /** ... {in, out, delays} for a combinational arc ... */
+        final List<Object[]> arcs = new ArrayList<>();
+        /** ... and {in, check delays or null, clock pin} for an endpoint; launches and arcs interleave in input order, so they carry a sequence number */
+        final List<Object[]> checks = new ArrayList<>();
+        /** ordered stream of the launch and arc entries: true = launch, false = arc */
+        final List<Boolean> order = new ArrayList<>();
+        CellPlan(Cell cell) { this.cell = cell; }
+    }
+
     private void buildLogicArcs() {
+        List<Cell> cells = new ArrayList<>();
         for (Cell c : design.getCells()) {
             if (c.getBEL() == null || c.isRoutethru()) continue;
-            short[] belIdx = belIndices(c);
-            if (belIdx == null) {
-                unknownBels++;
-                unknownBelNames.add(c.getType() + "@" + c.getBELName());
-                continue;
-            }
-            Map<String, String> p2l = c.getPinMappingsP2L();
-            List<String> ins = new ArrayList<>(), outs = new ArrayList<>();
-            for (String phys : p2l.keySet()) {
-                BELPin bp = c.getBEL().getPin(phys);
-                if (bp == null) continue;
-                (bp.isInput() ? ins : outs).add(phys);
-            }
-            boolean ff = isFlipFlop(c);
-            List<String> clocks = new ArrayList<>(1);
-            for (String in : ins) if (isClockPin(in)) clocks.add(in);
-            boolean sequential = ff || !clocks.isEmpty();
-            long lutInit = -1; int lutSize = 0;
-            if (c.getType() != null && c.getType().startsWith("LUT")) {
-                lutSize = LUTTools.getLUTSize(c);
-                lutInit = lutInitValue(c);
-            }
-            ArcConfig cfg = arcConfig(c, ins, outs);
-            boolean dbg = DEBUG_CELL != null && c.getName().contains(DEBUG_CELL);
-            if (dbg && cfg != null) System.out.println("[debug cell] arc config: noLaunch " + cfg.noLaunch + " noCombInto " + cfg.noCombInto + " noCheck " + cfg.noCheck + " allowedInto " + cfg.allowedInto);
-            if (dbg) System.out.println("[debug cell] " + c.getName() + " type " + c.getType() + " bel " + c.getBELName() + " ins " + ins + " outs " + outs + " lutSize " + lutSize + " init " + Long.toHexString(lutInit) + " belIdx " + (belIdx == null ? null : belIdx[0]) + " p2l " + p2l);
-            for (String in : ins) {
-                // Vivado has no timing arc from a constant pin, nor from a LUT input the INIT function
-                // does not depend on (given the other inputs that are constant)
-                if (constantPins.containsKey(c.getName() + "/" + in)) { prunedLutArcs++; if (dbg) System.out.println("[debug cell]   " + in + " constant"); continue; }
-                if (lutInit >= 0 && !lutDependsOnGivenConstants(c, in, lutInit, lutSize)) { prunedLutArcs++; if (dbg) System.out.println("[debug cell]   " + in + " pruned (INIT-independent)"); continue; }
-                if (dbg) for (String out : outs) System.out.println("[debug cell]   " + in + " -> " + out + " = " + java.util.Arrays.toString(logicDelays(belIdx, in, out)));
-                boolean clockIn = sequential && (isClockPin(in) || (ff && in.equals("CLK")));
-                for (String out : outs) {
-                    float[] d = logicDelays(belIdx, in, out);
-                    if (cfg != null && !clockIn) {
-                        if (cfg.noCombInto.contains(out)) continue;
-                        Set<String> allowed = cfg.allowedInto == null ? null : cfg.allowedInto.get(out);
-                        if (allowed != null && !allowed.contains(in)) continue;
+            cells.add(c);
+        }
+        // phase 1 (parallel): per cell, BEL indices, arc configuration, delay lookups, LUT pruning
+        CellPlan[] plans = new CellPlan[cells.size()];
+        java.util.stream.IntStream range = java.util.stream.IntStream.range(0, cells.size());
+        (DEBUG_CELL == null && com.xilinx.rapidwright.util.ParallelismTools.getParallel() ? range.parallel() : range)
+                .forEach(i -> plans[i] = planCell(cells.get(i)));
+        // phase 2 (sequential, cell order): the same vertices, launches, edges and endpoints in the same order
+        for (CellPlan p : plans) {
+            Cell c = p.cell;
+            if (p.unknownBel != null) { unknownBels++; unknownBelNames.add(p.unknownBel); continue; }
+            prunedLutArcs += p.pruned;
+            int li = 0, ai = 0;
+            for (boolean isLaunch : p.order) {
+                if (isLaunch) {
+                    Object[] l = p.launches.get(li++);
+                    String in = (String) l[0], out = (String) l[1];
+                    float[] d = (float[]) l[2];
+                    Vertex q = vertex(c, out);
+                    for (int i = 0; i < nc; i++) {
+                        float clkq = d == null ? 0 : Math.max(0, d[i]);
+                        q.arrival[i] = q.launch ? (model.isMax(i) ? Math.max(q.arrival[i], clkq) : Math.min(q.arrival[i], clkq)) : clkq;
                     }
-                    if (clockIn) {
-                        // clock-to-output launches the data path (a flop still launches at 0 without an arc)
-                        if (d == null && !ff) continue;
-                        if (cfg != null && cfg.noLaunch.contains(out)) continue;
-                        Vertex q = vertex(c, out);
-                        for (int i = 0; i < nc; i++) {
-                            float clkq = d == null ? 0 : Math.max(0, d[i]);
-                            q.arrival[i] = q.launch ? (model.isMax(i) ? Math.max(q.arrival[i], clkq) : Math.min(q.arrival[i], clkq)) : clkq;
-                        }
-                        q.launch = true;
-                        clkToQ.put(q, q.arrival.clone());
-                        clockPin.put(q, in);
-                        continue;
-                    }
-                    if (d == null) continue;
-                    addEdge(vertex(c, in), vertex(c, out), d, null, "logic");
+                    q.launch = true;
+                    clkToQ.put(q, q.arrival.clone());
+                    clockPin.put(q, in);
+                } else {
+                    Object[] a = p.arcs.get(ai++);
+                    addEdge(vertex(c, (String) a[0]), vertex(c, (String) a[1]), (float[]) a[2], null, "logic");
                 }
             }
-            if (sequential) {
-                for (String in : ins) {
-                    if (isClockPin(in) || (ff && in.equals("CLK"))) continue;
-                    if (cfg != null && cfg.noCheck.contains(in)) continue;
-                    // an input is an endpoint if it has a timing check from a clock pin (flop data/control
-                    // pins always are)
-                    float[] chk = null;
-                    for (String clk : (ff && clocks.isEmpty() ? Collections.singletonList("CLK") : clocks)) {
-                        chk = logicDelays(belIdx, clk, in);
-                        if (chk != null) break;
-                    }
-                    if (chk == null && !ff) continue;
-                    Vertex v = vertex(c, in);
-                    v.endpoint = true;
-                    if (chk != null) System.arraycopy(chk, 0, v.check, 0, nc);
-                    endpoints.add(v);
-                    clockPin.put(v, clocks.isEmpty() ? "CLK" : clocks.get(0));
-                }
+            for (Object[] k : p.checks) {
+                Vertex v = vertex(c, (String) k[0]);
+                v.endpoint = true;
+                float[] chk = (float[]) k[1];
+                if (chk != null) System.arraycopy(chk, 0, v.check, 0, nc);
+                endpoints.add(v);
+                clockPin.put(v, (String) k[2]);
             }
         }
+    }
+
+    private CellPlan planCell(Cell c) {
+        CellPlan plan = new CellPlan(c);
+        short[] belIdx = belIndices(c);
+        if (belIdx == null) { plan.unknownBel = c.getType() + "@" + c.getBELName(); return plan; }
+        Map<String, String> p2l = c.getPinMappingsP2L();
+        List<String> ins = new ArrayList<>(), outs = new ArrayList<>();
+        for (String phys : p2l.keySet()) {
+            BELPin bp = c.getBEL().getPin(phys);
+            if (bp == null) continue;
+            (bp.isInput() ? ins : outs).add(phys);
+        }
+        boolean ff = isFlipFlop(c);
+        List<String> clocks = new ArrayList<>(1);
+        for (String in : ins) if (isClockPin(in)) clocks.add(in);
+        boolean sequential = ff || !clocks.isEmpty();
+        long lutInit = -1; int lutSize = 0;
+        if (c.getType() != null && c.getType().startsWith("LUT")) {
+            lutSize = LUTTools.getLUTSize(c);
+            lutInit = lutInitValue(c);
+        }
+        ArcConfig cfg = arcConfig(c, ins, outs);
+        boolean dbg = DEBUG_CELL != null && c.getName().contains(DEBUG_CELL);
+        if (dbg && cfg != null) System.out.println("[debug cell] arc config: noLaunch " + cfg.noLaunch + " noCombInto " + cfg.noCombInto + " noCheck " + cfg.noCheck + " allowedInto " + cfg.allowedInto);
+        if (dbg) System.out.println("[debug cell] " + c.getName() + " type " + c.getType() + " bel " + c.getBELName() + " ins " + ins + " outs " + outs + " lutSize " + lutSize + " init " + Long.toHexString(lutInit) + " belIdx " + belIdx[0] + " p2l " + p2l);
+        for (String in : ins) {
+            // Vivado has no timing arc from a constant pin, nor from a LUT input the INIT function
+            // does not depend on (given the other inputs that are constant)
+            if (constantPins.containsKey(c.getName() + "/" + in)) { plan.pruned++; if (dbg) System.out.println("[debug cell]   " + in + " constant"); continue; }
+            if (lutInit >= 0 && !lutDependsOnGivenConstants(c, in, lutInit, lutSize)) { plan.pruned++; if (dbg) System.out.println("[debug cell]   " + in + " pruned (INIT-independent)"); continue; }
+            if (dbg) for (String out : outs) System.out.println("[debug cell]   " + in + " -> " + out + " = " + java.util.Arrays.toString(logicDelays(belIdx, in, out)));
+            boolean clockIn = sequential && (isClockPin(in) || (ff && in.equals("CLK")));
+            for (String out : outs) {
+                float[] d = logicDelays(belIdx, in, out);
+                if (cfg != null && !clockIn) {
+                    if (cfg.noCombInto.contains(out)) continue;
+                    Set<String> allowed = cfg.allowedInto == null ? null : cfg.allowedInto.get(out);
+                    if (allowed != null && !allowed.contains(in)) continue;
+                }
+                if (clockIn) {
+                    // clock-to-output launches the data path (a flop still launches at 0 without an arc)
+                    if (d == null && !ff) continue;
+                    if (cfg != null && cfg.noLaunch.contains(out)) continue;
+                    plan.launches.add(new Object[] {in, out, d});
+                    plan.order.add(Boolean.TRUE);
+                    continue;
+                }
+                if (d == null) continue;
+                plan.arcs.add(new Object[] {in, out, d});
+                plan.order.add(Boolean.FALSE);
+            }
+        }
+        if (sequential) {
+            for (String in : ins) {
+                if (isClockPin(in) || (ff && in.equals("CLK"))) continue;
+                if (cfg != null && cfg.noCheck.contains(in)) continue;
+                // an input is an endpoint if it has a timing check from a clock pin (flop data/control
+                // pins always are)
+                float[] chk = null;
+                for (String clk : (ff && clocks.isEmpty() ? Collections.singletonList("CLK") : clocks)) {
+                    chk = logicDelays(belIdx, clk, in);
+                    if (chk != null) break;
+                }
+                if (chk == null && !ff) continue;
+                plan.checks.add(new Object[] {in, chk, clocks.isEmpty() ? "CLK" : clocks.get(0)});
+            }
+        }
+        return plan;
     }
 
     /** What one net adds to the graph, resolved off the graph (parallel) and applied in net order. */
