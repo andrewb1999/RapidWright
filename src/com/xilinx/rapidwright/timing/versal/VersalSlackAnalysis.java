@@ -220,11 +220,11 @@ public class VersalSlackAnalysis {
                 SitePinInst lp = clockSitePin(r.launch);
                 float[] lArr = clockArrival(lp, r.launch.cell);
                 r.launchClockMax = lArr == null ? 0 : lArr[iMax];
-                if (lp != null && lp.getNet() == cap.getNet()) for (int vv = 0; vv < 6; vv++) r.setupPessimismVariants[vv] = clockModel.pessimism(tree, lp, cap, vv)[fast ? 1 : 0];
+                if (lp != null && lp.getNet() == cap.getNet()) { float[][] pv = pairVariants(tree, lp, cap, false); for (int vv = 0; vv < 6; vv++) r.setupPessimismVariants[vv] = pv[vv][fast ? 1 : 0]; }
                 SitePinInst hlp = clockSitePin(r.holdLaunch);
                 float[] hlArr = clockArrival(hlp, r.holdLaunch.cell);
                 r.launchClockMin = hlArr == null ? 0 : hlArr[iMin];
-                if (hlp != null && hlp.getNet() == cap.getNet()) for (int vv = 0; vv < 6; vv++) r.holdPessimismVariants[vv] = clockModel.pessimism(tree, hlp, cap, vv, true)[fast ? 1 : 0];
+                if (hlp != null && hlp.getNet() == cap.getNet()) { float[][] pv = pairVariants(tree, hlp, cap, true); for (int vv = 0; vv < 6; vv++) r.holdPessimismVariants[vv] = pv[vv][fast ? 1 : 0]; }
                 results.add(r);
                 if (worstSetup == null || r.setupSlack < worstSetup.setupSlack) worstSetup = r;
                 if (worstHold == null || r.holdSlack < worstHold.holdSlack) worstHold = r;
@@ -264,7 +264,24 @@ public class VersalSlackAnalysis {
                 return new float[][] {spread, spread.clone()};
             }
         }
-        return new float[][] {clockModel.pessimism(tree, lp, cap), clockModel.holdPessimism(tree, lp, cap)};
+        return pairPessimism(tree, lp, cap);
+    }
+
+    /** {setup {slow, fast}, hold {slow, fast}} per (launch pin, capture pin), computed once: the same pair recurs for every endpoint of a site. */
+    private final Map<SitePinInst, Map<SitePinInst, float[][]>> pairCpr = new HashMap<>();
+    private float[][] pairPessimism(VersalClockModel.ClockTree tree, SitePinInst lp, SitePinInst cap) {
+        return pairCpr.computeIfAbsent(lp, k -> new HashMap<>()).computeIfAbsent(cap,
+                c -> new float[][] {clockModel.pessimism(tree, lp, c), clockModel.holdPessimism(tree, lp, c)});
+    }
+
+    /** The six pessimism variants ({@link VersalClockModel#pessimism(VersalClockModel.ClockTree, SitePinInst, SitePinInst, int, boolean)}) per (launch pin, capture pin), [variant][slow, fast]. */
+    private final Map<SitePinInst, Map<SitePinInst, float[][]>> pairVariantsSetup = new HashMap<>(), pairVariantsHold = new HashMap<>();
+    private float[][] pairVariants(VersalClockModel.ClockTree tree, SitePinInst lp, SitePinInst cap, boolean hold) {
+        return (hold ? pairVariantsHold : pairVariantsSetup).computeIfAbsent(lp, k -> new HashMap<>()).computeIfAbsent(cap, c -> {
+            float[][] out = new float[6][];
+            for (int vv = 0; vv < 6; vv++) out[vv] = clockModel.pessimism(tree, lp, c, vv, hold);
+            return out;
+        });
     }
 
     /**

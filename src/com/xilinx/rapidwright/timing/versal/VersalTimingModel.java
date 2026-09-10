@@ -728,12 +728,21 @@ public class VersalTimingModel {
      */
     private static final String DEBUG_INTRA = System.getenv("DEBUG_INTRA");
 
+    /** (site type, from, to) -> per-corner delays, or {@link #INTRA_MISS}: the lookup below, letter fallback included, depends on nothing else. */
+    private final Map<String, float[]> intraSiteCache = new HashMap<>();
+    private static final float[] INTRA_MISS = new float[0];
+
     private float[] lookupFirst(SiteInst si, List<String[]> keys, java.util.function.Supplier<String> missKeyOf) {
         intraSiteLookups++;
         String missKey = DEBUG_INTRA != null ? missKeyOf.get() : null;
         boolean dbg = missKey != null && missKey.contains(DEBUG_INTRA);
+        String siteType = si.getSiteTypeEnum().name();
         for (String[] k : keys) {
             String from = k[0], to = k[1];
+            String cacheKey = siteType + "\t" + from + "\t" + to;
+            float[] cached = dbg ? null : intraSiteCache.get(cacheKey);
+            if (cached == INTRA_MISS) continue;
+            if (cached != null) return cached.clone();
             Short v = lookup(0, si, from, to);
             if (dbg) System.out.println("[debug intra] " + missKey + " key " + from + " -> " + to + " = " + v);
             if (v == null) {
@@ -748,13 +757,14 @@ public class VersalTimingModel {
                     }
                 }
             }
-            if (v == null) continue;
+            if (v == null) { intraSiteCache.put(cacheKey, INTRA_MISS); continue; }
             float[] out = new float[corners.length];
             out[0] = v;
             for (int i = 1; i < corners.length; i++) {
                 Short vi = lookup(i, si, from, to);
                 out[i] = vi == null ? v : vi;
             }
+            intraSiteCache.put(cacheKey, out.clone());
             return out;
         }
         intraSiteMisses++;

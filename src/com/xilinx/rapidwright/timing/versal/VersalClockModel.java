@@ -364,6 +364,31 @@ public class VersalClockModel {
             for (Node x = n; x != null; x = parent.get(x)) p.add(x);
             return p;
         }
+
+        private final Map<Node, Integer> depthOf = new HashMap<>();
+        /** Number of ancestors of a node (0 for a root or a node outside the tree). */
+        public int depth(Node n) {
+            Integer d = depthOf.get(n);
+            if (d != null) return d;
+            int k = 0;
+            for (Node x = parent.get(n); x != null; x = parent.get(x)) k++;
+            depthOf.put(n, k);
+            return k;
+        }
+
+        /**
+         * The nearest common node of two sink branches, with the two children of it the branches pass
+         * through ({@code null} when a branch starts at the common node): {common, towardA, towardB}, or
+         * null when the branches do not meet. Same answer as intersecting {@link #pathToRoot} lists.
+         */
+        public Node[] commonNode(Node a, Node b) {
+            Node x = a, y = b, ta = null, tb = null;
+            int da = depth(a), db = depth(b);
+            while (da > db) { ta = x; x = parent.get(x); da--; }
+            while (db > da) { tb = y; y = parent.get(y); db--; }
+            while (x != null && y != null && !x.equals(y)) { ta = x; tb = y; x = parent.get(x); y = parent.get(y); }
+            return x == null || y == null ? null : new Node[] {x, ta, tb};
+        }
     }
 
     private final Map<Net, float[]> rootStates = new HashMap<>();
@@ -872,15 +897,9 @@ public class VersalClockModel {
     public float[] pessimism(ClockTree t, SitePinInst launch, SitePinInst capture, int variant, boolean hold) {
         Node a = launch.getConnectedNode(), b = capture.getConnectedNode();
         if (a == null || b == null) return new float[2];
-        List<Node> pa = t.pathToRoot(a), pb = t.pathToRoot(b);
-        Set<Node> onB = new HashSet<>(pb);
-        Node common = null, towardLaunch = null, towardCapture = null;
-        for (Node x : pa) {
-            if (onB.contains(x)) { common = x; break; }
-            towardLaunch = x;
-        }
-        if (common == null) return new float[2];
-        for (Node x : pb) { if (x.equals(common)) break; towardCapture = x; }
+        Node[] cn = t.commonNode(a, b);
+        if (cn == null) return new float[2];
+        Node common = cn[0], towardLaunch = cn[1], towardCapture = cn[2];
         float[] arr;
         if (variant == 5) {
             // Vivado (sta.RSSCRPR): with the state S arriving at the nearest common node, the node's own
