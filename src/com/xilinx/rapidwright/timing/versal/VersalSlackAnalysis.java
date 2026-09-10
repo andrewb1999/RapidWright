@@ -193,7 +193,7 @@ public class VersalSlackAnalysis {
                     // setup: the group's latest arrival at the max corner, with its launch's pessimism removal
                     if (!Float.isInfinite(tg.arrival[iMax])) {
                         VersalTimingGraph.Vertex launch = launchOf(v, iMax, tg.tag);
-                        float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, cap));
+                        float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
                         float slack = periodPs + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival[iMax];
                         if (slack < r.setupSlack) {
                             r.setupSlack = slack; r.launch = launch; r.setupTag = tg.tag; r.dataMax = tg.arrival[iMax]; r.setupPessimism = cpr[0][fast ? 1 : 0];
@@ -202,7 +202,7 @@ public class VersalSlackAnalysis {
                     // hold: the group's earliest arrival at the min corner
                     if (!Float.isInfinite(tg.arrival[iMin])) {
                         VersalTimingGraph.Vertex launch = launchOf(v, iMin, tg.tag);
-                        float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, cap));
+                        float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
                         float slack = tg.arrival[iMin] - (r.captureClockMax - cpr[1][fast ? 1 : 0] + holdUncertaintyPs + r.holdCheck);
                         if (slack < r.holdSlack) {
                             r.holdSlack = slack; r.holdLaunch = launch; r.holdTag = tg.tag; r.dataMin = tg.arrival[iMin]; r.holdPessimism = cpr[1][fast ? 1 : 0];
@@ -233,8 +233,30 @@ public class VersalSlackAnalysis {
 
     /** {setup {slow, fast}, hold {slow, fast}} pessimism removal between a launch and a capture pin; zero across clock nets. */
     private float[][] pessimismOf(VersalClockModel.ClockTree tree, VersalTimingGraph.Vertex launch, SitePinInst cap) {
-        SitePinInst lp = clockSitePin(launch);
+        return pessimismOf(tree, launch, clockSitePin(launch), cap, null);
+    }
+
+    /**
+     * Pessimism removal for a launch and a capture pin. When both are the same site pin with the same
+     * arrival (a DSP58's internal register stages, whose clock enters by one site pin), the whole clock
+     * path is common, including the site's own segment and the implicit leaf the tree model adds after
+     * the tree, so the credit is the pin's full max - min spread at each process; the tree-based
+     * computation stops at the tree node and would leave that segment's spread out (-56 ps setup, -44
+     * hold on the 8x8's DSP stages).
+     */
+    private float[][] pessimismOf(VersalClockModel.ClockTree tree, VersalTimingGraph.Vertex launch, SitePinInst lp, SitePinInst cap, float[] capArr) {
         if (lp == null || lp.getNet() != cap.getNet()) return new float[][] {new float[2], new float[2]};
+        if (lp == cap && lp.getSiteInst() != null && !lp.getSiteInst().getSiteTypeEnum().name().startsWith("SLICE")) {
+            // hard blocks only: two flops of one slice share its clock site pin too, but Vivado does not credit
+            // the slice's own clock segment between them (applying it there moved the 8x8's flop-to-flop hold
+            // errors over 25 ps from 51 to 1849)
+            float[] lArr = clockArrival(lp, launch.cell);
+            if (capArr == null) capArr = clockArrival(cap, launch.cell);
+            if (lArr != null && capArr != null && java.util.Arrays.equals(lArr, capArr)) {
+                float[] spread = {lArr[iSlowMax] - lArr[iSlowMin], lArr[iFastMax] - lArr[iFastMin]};
+                return new float[][] {spread, spread.clone()};
+            }
+        }
         return new float[][] {clockModel.pessimism(tree, lp, cap), clockModel.holdPessimism(tree, lp, cap)};
     }
 
@@ -256,9 +278,8 @@ public class VersalSlackAnalysis {
         r.endpoint = v; r.launch = launch; r.holdLaunch = launch; r.fast = fast;
         r.captureClockMax = capArr[iMax]; r.captureClockMin = capArr[iMin];
         r.setupCheck = v.check[iMax]; r.holdCheck = v.check[iMin];
-        boolean sameNet = lp != null && lp.getNet() == cap.getNet();
-        float[] cpr = sameNet ? clockModel.pessimism(getClockTree(cap.getNet()), lp, cap) : new float[2];
-        float[] hcpr = sameNet ? clockModel.holdPessimism(getClockTree(cap.getNet()), lp, cap) : new float[2];
+        float[][] both = pessimismOf(getClockTree(cap.getNet()), launch, lp, cap, capArr);
+        float[] cpr = both[0], hcpr = both[1];
         r.launchClockMax = lArr[iMax]; r.launchClockMin = lArr[iMin];
         r.setupPessimism = cpr[fast ? 1 : 0]; r.holdPessimism = hcpr[fast ? 1 : 0];
         r.dataMax = graph.pathArrival(path, v, iMax);
