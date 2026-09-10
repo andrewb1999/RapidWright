@@ -447,9 +447,18 @@ public class VersalTimingModel {
                                 }
                             }
                         }
-                        d[i] = pArr[i] + tile[i] + edge + fan + gpt + ex + load;
-                        if (dbgNode && i == 0) System.out.printf("[debug node] %s <- %s: class %s children %s siblings %s (%d) gp %s x%d sig %s | edge %.1f tile %.1f fanout %.1f gp %.1f edgex %.1f load %.1f = hop %.1f, arrival %.1f%n",
-                                c, p, pClass, childKey, sibKey, kids.size(), gpi, gpFanout, signatureFull, edge, tile[i], fan, gpt, ex, load, d[i] - pArr[i], d[i]);
+                        float fx = 0;
+                        if (sibCount != null && terms[i].hasFanoutScale()) {
+                            for (Map.Entry<IntentCode, Integer> sc : sibCount.entrySet()) {
+                                int n = sc.getValue() - (sc.getKey() == ci ? 1 : 0);
+                                if (n > 0) fx += terms[i].fanoutScale(pClass, pi, ci, sc.getKey()) * Math.min(VersalDelayTerms.MAX_LOAD_SIBLINGS, n);
+                            }
+                        }
+                        float ref = load != 0 ? terms[i].loadReference(pClass, ci) : 0;
+                        if (ref > 10) load *= (tile[i] + edge) / ref;
+                        d[i] = pArr[i] + (tile[i] + edge) * (1f + fx) + fan + gpt + ex + load;
+                        if (dbgNode && i == 0) System.out.printf("[debug node] %s <- %s: class %s children %s siblings %s (%d) gp %s x%d sig %s | edge %.1f tile %.1f x(1+%.3f) fanout %.1f gp %.1f edgex %.1f load %.1f = hop %.1f, arrival %.1f%n",
+                                c, p, pClass, childKey, sibKey, kids.size(), gpi, gpFanout, signatureFull, edge, tile[i], fx, fan, gpt, ex, load, d[i] - pArr[i], d[i]);
                     }
                     arrivals.put(c, d);
                     if (rootOf != null) rootOf.put(c, root);

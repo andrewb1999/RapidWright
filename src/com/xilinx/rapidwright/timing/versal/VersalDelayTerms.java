@@ -73,6 +73,10 @@ public class VersalDelayTerms {
     public static final int MAX_LOAD_SIBLINGS = 7;
     /** "parent class or intent/node intent/sibling intent" -> ps per sibling of that intent (LOAD lines; empty for bucket-form tables) */
     private final Map<String, Float> loadTerms = new HashMap<>();
+    /** FANX: multiplicative fan-out factor per (parent class or intent, node intent, parent fanout bucket) */
+    private final Map<String, Float> fanxTerms = new HashMap<>();
+    /** LOADREF: reference own cost per (parent class, node intent) by which the LOAD sum is scaled (own / reference) */
+    private final Map<String, Float> loadRef = new HashMap<>();
     /** GPFAN: slew effect of a fanned-out driver two levels up: "gp intent/parent intent/node intent/gp fanout bucket" -> ps */
     private final Map<String, Float> gpTerms = new HashMap<>();
     private final Map<IntentCode, Map<IntentCode, Float>> edgeDefault = new EnumMap<>(IntentCode.class);
@@ -142,6 +146,18 @@ public class VersalDelayTerms {
                     case "FANOUT": {
                         IntentCode n = intent(f[1]);
                         if (n != null) fanout.put(n, Float.parseFloat(f[2]));
+                        break;
+                    }
+                    case "LOADREF": {
+                        // LOADREF <parent class> <node intent> <reference own cost>
+                        if (f.length < 4 || intent(f[1].split(":")[0]) == null || intent(f[2]) == null) break;
+                        loadRef.put(f[1] + "/" + f[2], Float.parseFloat(f[3]));
+                        break;
+                    }
+                    case "FANX": {
+                        // FANX <parent class or intent> <node intent> <sibling intent> <factor per sibling> <samples>
+                        if (f.length < 5 || intent(f[1].split(":")[0]) == null || intent(f[2]) == null || intent(f[3]) == null) break;
+                        fanxTerms.put(f[1] + "/" + f[2] + "/" + f[3], Float.parseFloat(f[4]));
                         break;
                     }
                     case "LOAD": {
@@ -301,6 +317,28 @@ public class VersalDelayTerms {
      * LOAD term: ps added to an edge parent -> node (of intent {@code node}) for each of the node's siblings of the given intent
      * (exact parent class first, then the bare parent intent; 0 if unlisted).
      */
+    /**
+     * FANX factor per sibling of the given intent (mult form): the hop's EDGE + TILE is scaled by 1 + the sum
+     * over the node's siblings of factor * min(MAX_LOAD_SIBLINGS, siblings of that intent). Exact parent class
+     * first, then the bare parent intent; 0 when unlisted.
+     */
+    public float fanoutScale(String parentClass, IntentCode parent, IntentCode node, IntentCode sibling) {
+        if (fanxTerms.isEmpty()) return 0f;
+        String tail = "/" + node.name() + "/" + sibling.name();
+        Float v = fanxTerms.get(parentClass + tail);
+        if (v == null && !parentClass.equals(parent.name())) v = fanxTerms.get(parent.name() + tail);
+        return v == null ? 0f : v;
+    }
+
+    public boolean hasFanoutScale() { return !fanxTerms.isEmpty(); }
+
+    /** Reference own cost for scaling the LOAD sum (0 when the class is unlisted). */
+    public float loadReference(String parentClass, IntentCode node) {
+        if (loadRef.isEmpty()) return 0f;
+        Float v = loadRef.get(parentClass + "/" + node.name());
+        return v == null ? 0f : v;
+    }
+
     public float loadTerm(String parentClass, IntentCode parent, IntentCode node, IntentCode sibling) {
         if (loadTerms.isEmpty()) return 0f;
         String tail = "/" + node.name() + "/" + sibling.name();
