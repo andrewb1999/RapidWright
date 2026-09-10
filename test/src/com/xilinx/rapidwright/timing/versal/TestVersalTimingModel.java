@@ -51,6 +51,11 @@ public class TestVersalTimingModel {
         Assertions.assertEquals("CLE_SLICEM_TOP_COUT", VersalTimingModel.dedicatedFamily("CLE_SLICEM_TOP_1_COUT"));
         Assertions.assertEquals("XPHY_CORE_O_PIN", VersalTimingModel.dedicatedFamily("XPHY_CORE_0_O1_2__PIN"));
         Assertions.assertEquals("BLI_GRP_C_BLI_LOGIC_OUTS", VersalTimingModel.dedicatedFamily("BLI_GRP1_C_BLI_LOGIC_OUTS3"));
+        // hard-block tile families for the IRI and OUTPUT classes
+        Assertions.assertEquals("NOC_NSU", VersalTimingModel.tileFamily("NOC_NSU512_TOP"));
+        Assertions.assertEquals("NOC_NMU", VersalTimingModel.tileFamily("NOC_NMU512_TOP"));
+        Assertions.assertEquals("DSP", VersalTimingModel.tileFamily("DSP_ROCF_T_TILE"));
+        Assertions.assertEquals("BRAM", VersalTimingModel.tileFamily("BRAM_ROCF_TL_TILE"));
     }
 
     @Test

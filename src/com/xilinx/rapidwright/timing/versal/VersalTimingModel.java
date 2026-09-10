@@ -500,7 +500,16 @@ public class VersalTimingModel {
         return m.group(1) + (m.group(2) != null ? "_" + m.group(2) : "");
     }
 
-    /** Parent class for the EDGE table: intent name, plus ":family" for horizontal wires. */
+    /**
+     * Family of a hard-block tile type for the IRI class: NOC_NSU512_TOP -> NOC_NSU, NOC_NMU512_TOP -> NOC_NMU,
+     * DSP_ROCF_T_TILE -> DSP, BRAM_ROCF_TL_TILE -> BRAM. Must match tile_family() in fit_versal_model.py.
+     */
+    public static String tileFamily(String tileType) {
+        String[] parts = tileType.replaceAll("\\d+", "").split("_");
+        return parts[0].equals("NOC") && parts.length > 1 ? parts[0] + "_" + parts[1] : parts[0];
+    }
+
+    /** Parent class for the EDGE table: intent name, plus ":family" for horizontal wires, dedicated and IRI nodes. */
     public static String parentClass(Node n) {
         IntentCode ic = n.getIntentCode();
         switch (ic) {
@@ -510,6 +519,15 @@ public class VersalTimingModel {
             }
             case NODE_DEDICATED:
                 return ic.name() + ":" + dedicatedFamily(n.getTile().getWireName(n.getWireIndex()));
+            case NODE_OUTPUT:
+                // a hard block's output pin node: the NoC's costs 88 ps into its output node, a DSP's or BRAM's 2
+                return ic.name() + ":" + tileFamily(n.getTile().getTileTypeEnum().name());
+            case NODE_IRI: {
+                // interface node: the family of the far tile its wires reach (a NoC block is a dedicated wire of
+                // 275-395 ps, a DSP a few ps), "INTF" when they stay in the interface tile
+                Tile far = farthestTile(n);
+                return ic.name() + ":" + (far == null || far == n.getTile() ? "INTF" : tileFamily(far.getTileTypeEnum().name()));
+            }
             default:
                 return ic.name();
         }
