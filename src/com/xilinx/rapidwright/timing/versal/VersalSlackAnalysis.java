@@ -137,10 +137,17 @@ public class VersalSlackAnalysis {
         return spi;
     }
 
+    /** Clock arrival at (site pin, cell), computed once: the same pin is asked for as a launch, as a capture and in every pessimism check against it. */
+    private final Map<SitePinInst, Map<Cell, float[]>> arrivalOf = new HashMap<>();
+    private static final float[] NO_ARRIVAL = new float[0];
+
     private float[] clockArrival(SitePinInst spi, Cell cell) {
         if (spi == null) return null;
-        VersalClockModel.ClockTree t = getClockTree(spi.getNet());
-        return clockModel.pinArrival(t, spi, cell);
+        float[] a = arrivalOf.computeIfAbsent(spi, k -> new HashMap<>(2)).computeIfAbsent(cell, c -> {
+            float[] r = clockModel.pinArrival(getClockTree(spi.getNet()), spi, c);
+            return r == null ? NO_ARRIVAL : r;
+        });
+        return a == NO_ARRIVAL ? null : a;
     }
 
     /**
