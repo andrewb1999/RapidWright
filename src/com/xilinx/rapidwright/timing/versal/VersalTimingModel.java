@@ -280,7 +280,13 @@ public class VersalTimingModel {
     private final int[] edgeMisses = new int[1];
     private int intraSiteMisses = 0;
     private int intraSiteLookups = 0;
-    private float intraSiteFallback = 60f;
+    /**
+     * Delay for an intra-site connection the table does not hold (after the letter fallback). 0: the
+     * misses are the dedicated hard-block pins (DSP PCOUT/ACOUT/BCOUT cascades on every DSP58 of the
+     * 8x8), whose cost Vivado carries in the cell arc and the dedicated wire; the DSP paths were
+     * validated with an effective 0 here (SmallDelayModel's -2 sentinel passed through as a delay).
+     */
+    private float intraSiteFallback = 0f;
     private final Map<String, Integer> missKeys = new HashMap<>();
 
     /** All four corners, slow-max first. */
@@ -637,13 +643,17 @@ public class VersalTimingModel {
         SiteInst si = src.getSiteInst();
         if (si == null) return new float[corners.length];
         List<String[]> keys = new ArrayList<>(2);
+        // a route-through cell (a LUT leaving through the flop bypass sits as a route-through on the FF BEL)
+        // is not the driver: its BEL pin would select the flop's own Q -> site pin term (~0) instead of the
+        // LUT output -> site pin path Vivado charges (~60 ps); the net's logical source below finds the LUT
         for (BELPin bp : DesignTools.getConnectedBELPins(src)) {
             if (!bp.isOutput()) continue;
-            if (si.getCell(bp.getBEL()) == null) continue;
+            Cell cell = si.getCell(bp.getBEL());
+            if (cell == null || cell.isRoutethru()) continue;
             keys.add(new String[] {bp.getBEL().getName() + "/" + bp.getName(), src.getName()});
         }
         for (Cell c : DesignTools.getConnectedCells(src)) {
-            if (c.getBEL() == null) continue;
+            if (c.getBEL() == null || c.isRoutethru()) continue;
             for (String phys : c.getPinMappingsP2L().keySet()) {
                 BELPin bp = c.getBEL().getPin(phys);
                 if (bp != null && bp.isOutput()) keys.add(new String[] {bp.getBEL().getName() + "/" + phys, src.getName()});
@@ -698,11 +708,15 @@ public class VersalTimingModel {
      * the delays of all corners for the first key found (with the letter fallback), or the
      * fallback delay everywhere with a miss recorded.
      */
+    private static final String DEBUG_INTRA = System.getenv("DEBUG_INTRA");
+
     private float[] lookupFirst(SiteInst si, List<String[]> keys, String missKey) {
         intraSiteLookups++;
+        boolean dbg = DEBUG_INTRA != null && missKey.contains(DEBUG_INTRA);
         for (String[] k : keys) {
             String from = k[0], to = k[1];
             Short v = lookup(0, si, from, to);
+            if (dbg) System.out.println("[debug intra] " + missKey + " key " + from + " -> " + to + " = " + v);
             if (v == null) {
                 // Slice pins are replicated per LUT/FF letter (A..H); fall back to the 'A' instance, then to
                 // any letter that was sampled (e.g. a LUTRAM WE pin seen only on F6LUT/H6LUT).
@@ -734,7 +748,9 @@ public class VersalTimingModel {
     private Short lookup(int corner, SiteInst si, String from, String to) {
         try {
             Short v = delayModels[corner].getIntraSiteDelay(si.getSiteTypeEnum(), from, to);
-            return v == null || v == -1 ? null : v;
+            // SmallDelayModel answers -2 (not null) for a connection the table does not hold; -1 marks an
+            // arc Vivado disables. Either is a miss here, so the letter fallback and the miss count apply.
+            return v == null || v == -1 || v == -2 ? null : v;
         } catch (IllegalArgumentException e) {
             return null; // unknown site type for this model
         }

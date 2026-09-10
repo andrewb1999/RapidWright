@@ -138,6 +138,12 @@ public class VersalTimingReport {
         System.out.printf("graph: %d vertices, %d edges, built and analysed in %d ms; unknown BELs %d %s, unrouted sinks %d, skipped nets %d, edge misses %d, intra-site misses %d/%d%n",
                 g.getVertexCount(), g.getEdgeCount(), System.currentTimeMillis() - t0, g.getUnknownBelCount(), g.getUnknownBelNames(),
                 g.getUnroutedSinkCount(), g.getSkippedNetCount(), model.getEdgeMissCount(), model.getIntraSiteMissCount(), model.getIntraSiteLookupCount());
+        if (model.getIntraSiteMissCount() > 0) {
+            List<Map.Entry<String, Integer>> miss = new ArrayList<>(model.getIntraSiteMissKeys().entrySet());
+            miss.sort((a, b) -> b.getValue() - a.getValue());
+            System.out.println("intra-site misses (" + model.getIntraSiteMissCount() + "), most frequent keys:");
+            for (int k = 0; k < Math.min(25, miss.size()); k++) System.out.println("   " + miss.get(k).getValue() + "x " + miss.get(k).getKey());
+        }
         System.out.print(sa.report());
 
         // per endpoint: the worse of the two processes, as Vivado's summary counts endpoints
