@@ -5,9 +5,9 @@
 #   'site <types>' sections list <from pin> <to pin> <delay>, where a pin is a site pin or bel/pin.
 #   'bel <bels> in <sites>' sections list <from bel pin> <to bel pin> <delay>.
 # index: per_name
-# runs: spread, spread2, spread3, rnd1, rnd2, rnd3, rnd4, rnd5, rnd6, mix1, rnd7, rnd8, rnd9, rapidsa8x8
-# edges: 3812537
-# nets: 158827
+# runs: spread, spread2, spread3, rnd1, rnd2, rnd3, rnd4, rnd5, rnd6, mix1, rnd7, rnd8, rnd9, noc8x8, rapidsa8x8
+# edges: 3821740
+# nets: 159385
 # corner: slow_max
 # form: hybrid
 # vivado_version: 2026.1
