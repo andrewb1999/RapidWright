@@ -635,70 +635,109 @@ public class VersalTimingGraph {
         }
     }
 
+    /** What one net adds to the graph, resolved off the graph (parallel) and applied in net order. */
+    private static final class NetPlan {
+        final Net net;
+        Cell srcCell; String srcPhys;
+        /** {sink cell, physical pin, delays or null when unrouted, kind}: in sink port order, unrouted sinks included (their vertex is still created) */
+        final List<Object[]> sinks = new ArrayList<>();
+        int unrouted, skipped;
+        NetPlan(Net net) { this.net = net; }
+    }
+
+    /** Whether the per-net resolution runs across threads (RW_PARALLEL honoured; serial under DEBUG_SINK to keep its output in order). */
+    static boolean parallelNets() {
+        return DEBUG_SINK == null && com.xilinx.rapidwright.util.ParallelismTools.getParallel();
+    }
+
     private void buildNetEdges() {
+        List<Net> nets = new ArrayList<>();
         for (Net net : design.getNets()) {
             if (net.getType() != NetType.WIRE || net.isStaticNet() || net.isClockNet()) continue;
-            EDIFHierNet hnet = design.getNetlist().getHierNetFromName(net.getName());
-            if (hnet == null) { netsSkipped++; continue; }
-            EDIFHierPortInst srcPort = null;
-            List<EDIFHierPortInst> sinkPorts = new ArrayList<>();
-            for (EDIFHierPortInst p : hnet.getLeafHierPortInsts(true, true)) {
-                if (p.isOutput()) { if (srcPort == null) srcPort = p; } else sinkPorts.add(p);
-            }
-            if (srcPort == null) { netsSkipped++; continue; }
-            Cell srcCell = srcPort.getPhysicalCell(design);
-            if (srcCell == null || srcCell.getBEL() == null) { netsSkipped++; continue; }
-            String srcPhys = srcCell.getPhysicalPinMapping(srcPort.getPortInst().getName());
-            if (srcPhys == null) { netsSkipped++; continue; }
-            if (srcCell.getType().startsWith("BUFG") || srcCell.getType().startsWith("MBUFG")) continue;
-            Vertex vs = vertex(srcCell, srcPhys);
-
-            // sinks reached through site pins
-            Map<SitePinInst, VersalTimingModel.SinkDelay> sinkDelays =
-                    net.getSource() != null ? model.calcNetDelays(net) : Collections.emptyMap();
-            Map<Cell, Map<String, float[]>> viaSitePin = new HashMap<>();
-            // hard-block sites (DSP58): the site pin's connected BEL pins are not the placed cell's; match
-            // the sink site pin to the cell's BEL pin by name (C44 <-> C_44_)
-            Map<SiteInst, Map<String, VersalTimingModel.SinkDelay>> byName = new HashMap<>();
-            for (Map.Entry<SitePinInst, VersalTimingModel.SinkDelay> e : sinkDelays.entrySet()) {
-                SitePinInst spi = e.getKey();
-                SiteInst si = spi.getSiteInst();
-                if (si == null) continue;
-                byName.computeIfAbsent(si, k -> new HashMap<>()).put(spi.getName().replace("_", ""), e.getValue());
-                for (BELPin bp : DesignTools.getConnectedBELPins(spi)) {
-                    if (!bp.isInput()) continue;
-                    Cell c = si.getCell(bp.getBEL());
-                    if (c == null) continue;
-                    if (!e.getValue().routed) { unroutedSinks++; continue; }
-                    viaSitePin.computeIfAbsent(c, k -> new HashMap<>()).put(bp.getName(), e.getValue().getTotals());
-                }
-            }
-            for (EDIFHierPortInst sp : sinkPorts) {
-                Cell dc = sp.getPhysicalCell(design);
-                boolean dbgSink = DEBUG_SINK != null && sp.toString().contains(DEBUG_SINK);
-                if (dbgSink) System.out.println("[debug sink] " + sp.toString() + " net " + net.getName() + " cell " + dc + " bel " + (dc == null ? null : dc.getBELName())
-                        + " phys " + (dc == null ? null : dc.getPhysicalPinMapping(sp.getPortInst().getName())) + " viaSitePin " + (dc == null ? null : viaSitePin.get(dc))
-                        + " sinkDelays " + sinkDelays.size() + " netSinkPins " + net.getSinkPins().size() + " src " + srcCell + "/" + srcPhys + " pips " + net.getPIPs().size());
-                if (dc == null || dc.getBEL() == null) continue;
-                String dphys = dc.getPhysicalPinMapping(sp.getPortInst().getName());
-                if (dphys == null) continue;
-                Vertex vd = vertex(dc, dphys);
-                float[] viaPin = viaSitePin.getOrDefault(dc, Collections.emptyMap()).get(dphys);
-                if (viaPin == null && dc.getSiteInst() != null && dc.getSiteInst() != srcCell.getSiteInst()) {
-                    VersalTimingModel.SinkDelay sd = byName.getOrDefault(dc.getSiteInst(), Collections.emptyMap()).get(dphys.replace("_", ""));
-                    if (sd != null && sd.routed) viaPin = sd.getTotals();
-                    if (dbgSink) System.out.println("[debug sink]   by-name site pin " + dphys.replace("_", "") + " -> " + (sd == null ? "none" : "routed=" + sd.routed));
-                }
-                if (viaPin != null) {
-                    addEdge(vs, vd, viaPin, net, "net");
-                } else if (dc.getSiteInst() == srcCell.getSiteInst()) {
-                    BELPin from = srcCell.getBEL().getPin(srcPhys), to = dc.getBEL().getPin(dphys);
-                    addEdge(vs, vd, model.intraSiteNetDelays(dc.getSiteInst(), from, to), net, "intrasite");
-                } else {
-                    unroutedSinks++;
-                }
+            nets.add(net);
+        }
+        // phase 1 (parallel): pure lookups against the design, the device and the model's tables
+        NetPlan[] plans = new NetPlan[nets.size()];
+        java.util.stream.IntStream range = java.util.stream.IntStream.range(0, nets.size());
+        (parallelNets() ? range.parallel() : range).forEach(i -> plans[i] = planNet(nets.get(i)));
+        // phase 2 (sequential, net order): vertices and edges in the same order as before, so the
+        // topological queue and every tie-break are unchanged
+        for (NetPlan p : plans) {
+            netsSkipped += p.skipped;
+            unroutedSinks += p.unrouted;
+            if (p.srcCell == null) continue;
+            Vertex vs = vertex(p.srcCell, p.srcPhys);
+            for (Object[] sk : p.sinks) {
+                Vertex vd = vertex((Cell) sk[0], (String) sk[1]);
+                if (sk[2] != null) addEdge(vs, vd, (float[]) sk[2], p.net, (String) sk[3]);
             }
         }
+    }
+
+    private NetPlan planNet(Net net) {
+        NetPlan plan = new NetPlan(net);
+        EDIFHierNet hnet = design.getNetlist().getHierNetFromName(net.getName());
+        if (hnet == null) { plan.skipped++; return plan; }
+        EDIFHierPortInst srcPort = null;
+        List<EDIFHierPortInst> sinkPorts = new ArrayList<>();
+        for (EDIFHierPortInst p : hnet.getLeafHierPortInsts(true, true)) {
+            if (p.isOutput()) { if (srcPort == null) srcPort = p; } else sinkPorts.add(p);
+        }
+        if (srcPort == null) { plan.skipped++; return plan; }
+        Cell srcCell = srcPort.getPhysicalCell(design);
+        if (srcCell == null || srcCell.getBEL() == null) { plan.skipped++; return plan; }
+        String srcPhys = srcCell.getPhysicalPinMapping(srcPort.getPortInst().getName());
+        if (srcPhys == null) { plan.skipped++; return plan; }
+        if (srcCell.getType().startsWith("BUFG") || srcCell.getType().startsWith("MBUFG")) return plan;
+        plan.srcCell = srcCell;
+        plan.srcPhys = srcPhys;
+
+        // sinks reached through site pins
+        Map<SitePinInst, VersalTimingModel.SinkDelay> sinkDelays =
+                net.getSource() != null ? model.calcNetDelays(net) : Collections.emptyMap();
+        Map<Cell, Map<String, float[]>> viaSitePin = new HashMap<>();
+        // hard-block sites (DSP58): the site pin's connected BEL pins are not the placed cell's; match
+        // the sink site pin to the cell's BEL pin by name (C44 <-> C_44_)
+        Map<SiteInst, Map<String, VersalTimingModel.SinkDelay>> byName = new HashMap<>();
+        for (Map.Entry<SitePinInst, VersalTimingModel.SinkDelay> e : sinkDelays.entrySet()) {
+            SitePinInst spi = e.getKey();
+            SiteInst si = spi.getSiteInst();
+            if (si == null) continue;
+            byName.computeIfAbsent(si, k -> new HashMap<>()).put(spi.getName().replace("_", ""), e.getValue());
+            for (BELPin bp : DesignTools.getConnectedBELPins(spi)) {
+                if (!bp.isInput()) continue;
+                Cell c = si.getCell(bp.getBEL());
+                if (c == null) continue;
+                if (!e.getValue().routed) { plan.unrouted++; continue; }
+                viaSitePin.computeIfAbsent(c, k -> new HashMap<>()).put(bp.getName(), e.getValue().getTotals());
+            }
+        }
+        for (EDIFHierPortInst sp : sinkPorts) {
+            Cell dc = sp.getPhysicalCell(design);
+            boolean dbgSink = DEBUG_SINK != null && sp.toString().contains(DEBUG_SINK);
+            if (dbgSink) System.out.println("[debug sink] " + sp.toString() + " net " + net.getName() + " cell " + dc + " bel " + (dc == null ? null : dc.getBELName())
+                    + " phys " + (dc == null ? null : dc.getPhysicalPinMapping(sp.getPortInst().getName())) + " viaSitePin " + (dc == null ? null : viaSitePin.get(dc))
+                    + " sinkDelays " + sinkDelays.size() + " netSinkPins " + net.getSinkPins().size() + " src " + srcCell + "/" + srcPhys + " pips " + net.getPIPs().size());
+            if (dc == null || dc.getBEL() == null) continue;
+            String dphys = dc.getPhysicalPinMapping(sp.getPortInst().getName());
+            if (dphys == null) continue;
+            float[] viaPin = viaSitePin.getOrDefault(dc, Collections.emptyMap()).get(dphys);
+            if (viaPin == null && dc.getSiteInst() != null && dc.getSiteInst() != srcCell.getSiteInst()) {
+                VersalTimingModel.SinkDelay sd = byName.getOrDefault(dc.getSiteInst(), Collections.emptyMap()).get(dphys.replace("_", ""));
+                if (sd != null && sd.routed) viaPin = sd.getTotals();
+                if (dbgSink) System.out.println("[debug sink]   by-name site pin " + dphys.replace("_", "") + " -> " + (sd == null ? "none" : "routed=" + sd.routed));
+            }
+            if (viaPin != null) {
+                plan.sinks.add(new Object[] {dc, dphys, viaPin, "net"});
+            } else if (dc.getSiteInst() == srcCell.getSiteInst()) {
+                BELPin from = srcCell.getBEL().getPin(srcPhys), to = dc.getBEL().getPin(dphys);
+                plan.sinks.add(new Object[] {dc, dphys, model.intraSiteNetDelays(dc.getSiteInst(), from, to), "intrasite"});
+            } else {
+                plan.sinks.add(new Object[] {dc, dphys, null, null});
+                plan.unrouted++;
+            }
+        }
+        return plan;
     }
 
     /**

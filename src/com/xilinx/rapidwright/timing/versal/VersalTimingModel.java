@@ -108,11 +108,11 @@ public class VersalTimingModel {
     private final VersalCorner[] corners;
     private final VersalDelayTerms[] terms;
     private final DelayModel[] delayModels;
-    private final Map<Node, float[]> tileTermCache = new HashMap<>();
+    private final Map<Node, float[]> tileTermCache = new java.util.concurrent.ConcurrentHashMap<>();
     /** DEBUG_NODE=<substring>: print the per-term breakdown of every hop into a matching node (primary corner) */
     private static final String DEBUG_NODE = System.getenv("DEBUG_NODE");
-    private final Map<Node, String> signatureCache = new HashMap<>();
-    private final Map<Node, String> signatureCacheFull = new HashMap<>();
+    private final Map<Node, String> signatureCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<Node, String> signatureCacheFull = new java.util.concurrent.ConcurrentHashMap<>();
     /** tile types treated as plain fabric (not part of a crossing signature); must match fit_versal_model.py */
     private static final java.util.Set<String> FABRIC_TILE_NAMES = new java.util.HashSet<>(java.util.Arrays.asList("INT", "CLE_E_CORE", "CLE_W_CORE", "SLL", "NULL"));
     private static final String[] FABRIC_TILE_PREFIXES = {"CLE_BC", "CBRK", "CPIPE", "RBRK"};
@@ -277,9 +277,10 @@ public class VersalTimingModel {
         if (nulls > 0) sb.append("+NULLx").append(nulls);
         return sb.toString();
     }
-    private final int[] edgeMisses = new int[1];
-    private int intraSiteMisses = 0;
-    private int intraSiteLookups = 0;
+    // counters and caches are touched from the parallel net walk in VersalTimingGraph.buildNetEdges
+    private final java.util.concurrent.atomic.AtomicInteger edgeMisses = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger intraSiteMisses = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger intraSiteLookups = new java.util.concurrent.atomic.AtomicInteger();
     /**
      * Delay for an intra-site connection the table does not hold (after the letter fallback). 0: the
      * misses are the dedicated hard-block pins (DSP PCOUT/ACOUT/BCOUT cascades on every DSP58 of the
@@ -287,7 +288,7 @@ public class VersalTimingModel {
      * validated with an effective 0 here (SmallDelayModel's -2 sentinel passed through as a delay).
      */
     private float intraSiteFallback = 0f;
-    private final Map<String, Integer> missKeys = new HashMap<>();
+    private final Map<String, Integer> missKeys = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** All four corners, slow-max first. */
     public VersalTimingModel(Device device) {
@@ -389,6 +390,7 @@ public class VersalTimingModel {
         Map<Node, List<Node>> children = new HashMap<>();
         Map<Node, Node> parentOf = new HashMap<>();
         Set<Node> ends = new HashSet<>();
+        int[] misses = new int[1];   // per net, added to the shared counter at the end
         for (PIP pip : net.getPIPs()) {
             Node s = pip.getStartNode(), e = pip.getEndNode();
             if (s == null || e == null) continue;
@@ -440,7 +442,7 @@ public class VersalTimingModel {
                     boolean dbgNode = DEBUG_NODE != null && c.toString().contains(DEBUG_NODE);
                     String cClass = nodeClass(c);
                     for (int i = 0; i < nc; i++) {
-                        float edge = terms[i].edgeDelay(pClass, pi, ci, childKey, sibKey, kids.size(), i == 0 ? edgeMisses : null);
+                        float edge = terms[i].edgeDelay(pClass, pi, ci, childKey, sibKey, kids.size(), i == 0 ? misses : null);
                         float fan = extra > 0 ? terms[i].fanoutTerm(ci) * extra : 0, gpt = gpi != null ? terms[i].grandparentTerm(gpi, pi, ci, gpFanout) : 0;
                         float ex = signature != null ? terms[i].crossingCorrection(pClass, pi, cClass, ci, signatureFull, signature) : 0, load = 0;
                         if (sibCount != null) {
@@ -472,6 +474,7 @@ public class VersalTimingModel {
                 }
             }
         }
+        edgeMisses.addAndGet(misses[0]);
         return arrivals;
     }
 
@@ -729,11 +732,11 @@ public class VersalTimingModel {
     private static final String DEBUG_INTRA = System.getenv("DEBUG_INTRA");
 
     /** (site type, from, to) -> per-corner delays, or {@link #INTRA_MISS}: the lookup below, letter fallback included, depends on nothing else. */
-    private final Map<String, float[]> intraSiteCache = new HashMap<>();
+    private final Map<String, float[]> intraSiteCache = new java.util.concurrent.ConcurrentHashMap<>();
     private static final float[] INTRA_MISS = new float[0];
 
     private float[] lookupFirst(SiteInst si, List<String[]> keys, java.util.function.Supplier<String> missKeyOf) {
-        intraSiteLookups++;
+        intraSiteLookups.incrementAndGet();
         String missKey = DEBUG_INTRA != null ? missKeyOf.get() : null;
         boolean dbg = missKey != null && missKey.contains(DEBUG_INTRA);
         String siteType = si.getSiteTypeEnum().name();
@@ -767,7 +770,7 @@ public class VersalTimingModel {
             intraSiteCache.put(cacheKey, out.clone());
             return out;
         }
-        intraSiteMisses++;
+        intraSiteMisses.incrementAndGet();
         if (missKey == null) missKey = missKeyOf.get();
         missKeys.merge(missKey.length() > 80 ? missKey.substring(0, 80) : missKey, 1, Integer::sum);
         float[] out = new float[corners.length];
@@ -811,15 +814,15 @@ public class VersalTimingModel {
     }
 
     public int getEdgeMissCount() {
-        return edgeMisses[0];
+        return edgeMisses.get();
     }
 
     public int getIntraSiteMissCount() {
-        return intraSiteMisses;
+        return intraSiteMisses.get();
     }
 
     public int getIntraSiteLookupCount() {
-        return intraSiteLookups;
+        return intraSiteLookups.get();
     }
 
     /** Intra-site lookups that fell back to the default, by key, for diagnostics. */
