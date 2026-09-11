@@ -74,6 +74,64 @@ site DSP58
             B_7_ DSP_A_B_DATA/B_7_             0
             B_8_ DSP_A_B_DATA/B_8_             0
             B_9_ DSP_A_B_DATA/B_9_             0
+            C_0_ DSP_C_DATA/C_0_               0
+           C_10_ DSP_C_DATA/C_10_              0
+           C_11_ DSP_C_DATA/C_11_              0
+           C_12_ DSP_C_DATA/C_12_              0
+           C_13_ DSP_C_DATA/C_13_              0
+           C_14_ DSP_C_DATA/C_14_              0
+           C_15_ DSP_C_DATA/C_15_              0
+           C_16_ DSP_C_DATA/C_16_              0
+           C_17_ DSP_C_DATA/C_17_              0
+           C_18_ DSP_C_DATA/C_18_              0
+           C_19_ DSP_C_DATA/C_19_              0
+            C_1_ DSP_C_DATA/C_1_               0
+           C_20_ DSP_C_DATA/C_20_              0
+           C_21_ DSP_C_DATA/C_21_              0
+           C_22_ DSP_C_DATA/C_22_              0
+           C_23_ DSP_C_DATA/C_23_              0
+           C_24_ DSP_C_DATA/C_24_              0
+           C_25_ DSP_C_DATA/C_25_              0
+           C_26_ DSP_C_DATA/C_26_              0
+           C_27_ DSP_C_DATA/C_27_              0
+           C_28_ DSP_C_DATA/C_28_              0
+           C_29_ DSP_C_DATA/C_29_              0
+            C_2_ DSP_C_DATA/C_2_               0
+           C_30_ DSP_C_DATA/C_30_              0
+           C_31_ DSP_C_DATA/C_31_              0
+           C_32_ DSP_C_DATA/C_32_              0
+           C_33_ DSP_C_DATA/C_33_              0
+           C_34_ DSP_C_DATA/C_34_              0
+           C_35_ DSP_C_DATA/C_35_              0
+           C_36_ DSP_C_DATA/C_36_              0
+           C_37_ DSP_C_DATA/C_37_              0
+           C_38_ DSP_C_DATA/C_38_              0
+           C_39_ DSP_C_DATA/C_39_              0
+            C_3_ DSP_C_DATA/C_3_               0
+           C_40_ DSP_C_DATA/C_40_              0
+           C_41_ DSP_C_DATA/C_41_              0
+           C_42_ DSP_C_DATA/C_42_              0
+           C_43_ DSP_C_DATA/C_43_              0
+           C_44_ DSP_C_DATA/C_44_              0
+           C_45_ DSP_C_DATA/C_45_              0
+           C_46_ DSP_C_DATA/C_46_              0
+           C_47_ DSP_C_DATA/C_47_              0
+           C_48_ DSP_C_DATA/C_48_              0
+           C_49_ DSP_C_DATA/C_49_              0
+            C_4_ DSP_C_DATA/C_4_               0
+           C_50_ DSP_C_DATA/C_50_              0
+           C_51_ DSP_C_DATA/C_51_              0
+           C_52_ DSP_C_DATA/C_52_              0
+           C_53_ DSP_C_DATA/C_53_              0
+           C_54_ DSP_C_DATA/C_54_              0
+           C_55_ DSP_C_DATA/C_55_              0
+           C_56_ DSP_C_DATA/C_56_              0
+           C_57_ DSP_C_DATA/C_57_              0
+            C_5_ DSP_C_DATA/C_5_               0
+            C_6_ DSP_C_DATA/C_6_               0
+            C_7_ DSP_C_DATA/C_7_               0
+            C_8_ DSP_C_DATA/C_8_               0
+            C_9_ DSP_C_DATA/C_9_               0
 DSP_ALUADD/ALUMODE10 DSP_OUTPUT/ALUMODE10          0
 DSP_ALUADD/ALU_OUT_0_ DSP_OUTPUT/ALU_OUT_0_         0
 DSP_ALUADD/ALU_OUT_0_ DSP_PATDET/ALU_OUT_0_         0
@@ -1278,6 +1336,7 @@ DSP_PREADD_DATA/PREADD_AB_6_ DSP_PREADD/PREADD_AB_6_       0
 DSP_PREADD_DATA/PREADD_AB_7_ DSP_PREADD/PREADD_AB_7_       0
 DSP_PREADD_DATA/PREADD_AB_8_ DSP_PREADD/PREADD_AB_8_       0
 DSP_PREADD_DATA/PREADD_AB_9_ DSP_PREADD/PREADD_AB_9_       0
+       OPMODE_4_ DSP_ALUREG/OPMODE_4_         38
 SRCMXINV/ASYNC_RST DSP_ALUREG/ASYNC_RST          0
 SRCMXINV/ASYNC_RST DSP_A_B_DATA/ASYNC_RST        0
 SRCMXINV/ASYNC_RST DSP_C_DATA/ASYNC_RST          0
