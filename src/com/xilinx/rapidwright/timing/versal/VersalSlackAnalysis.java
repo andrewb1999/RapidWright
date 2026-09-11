@@ -110,6 +110,8 @@ public class VersalSlackAnalysis {
     private final float periodPs, setupUncertaintyPs, holdUncertaintyPs;
     private final Map<Net, VersalClockModel.ClockTree> trees = new HashMap<>();
     private final Map<VersalTimingGraph.Vertex, SitePinInst> clockPinOf = new HashMap<>();
+    private static final boolean DEBUG_CLKARC = System.getenv("DEBUG_CLKARC") != null;
+    private int debugClkArc = 0;
     private final int iSlowMax, iSlowMin, iFastMax, iFastMin;
     private int unclockedLaunches = 0, unclockedEndpoints = 0;
     private final List<Result> results = new ArrayList<>();
@@ -176,9 +178,41 @@ public class VersalSlackAnalysis {
         if (spi == null) return null;
         float[] a = arrivalOf.computeIfAbsent(spi, k -> new HashMap<>(2)).computeIfAbsent(cell, c -> {
             float[] r = clockModel.pinArrival(getClockTree(spi.getNet()), spi, c);
-            return r == null ? NO_ARRIVAL : r;
+            if (r == null) return NO_ARRIVAL;
+            float[] mux = clockInputArc(spi, c);
+            if (mux != null) { r = r.clone(); for (int i = 0; i < r.length && i < mux.length; i++) r[i] += mux[i]; }
+            return r;
         });
         return a == NO_ARRIVAL ? null : a;
+    }
+
+    /**
+     * On a hard block the clock enters through a mux/inverter BEL of its own (DSP58: SRCMXINV, CLK_NAT -> CLK,
+     * 59-63 ps; Vivado's path reports show it as a cell arc after the clock net, "Prop_SRCMXINV_DSP58_CLK_IN_CLK")
+     * before the internal clock wire reaches the registers. The clock net delay Vivado reports, and so the
+     * CLKSITE term fitted from it, end at that BEL's input, so the arc is added here from the logic tables:
+     * the cell placed on the BEL the sink site pin connects to, from that pin to its output, when it is not the
+     * clocked cell itself. Slices have no such BEL (the site pin's BEL is the flop) and get nothing.
+     */
+    private float[] clockInputArc(SitePinInst spi, Cell cell) {
+        com.xilinx.rapidwright.design.SiteInst si = spi.getSiteInst();
+        com.xilinx.rapidwright.device.BELPin bp = spi.getBELPin();
+        boolean dbg = DEBUG_CLKARC && si != null && !si.getSiteTypeEnum().name().startsWith("SLICE") && debugClkArc++ < 8;
+        if (dbg) System.out.println("clkarc " + spi + " belpin " + bp + " bel " + (bp == null ? null : bp.getBEL()) + " cell " + (bp == null || bp.getBEL() == null ? null : si.getCell(bp.getBEL())) + " for " + cell);
+        if (si == null || bp == null || bp.getBEL() == null) return null;
+        // the site pin's own BEL pin is the site port; the BELs it feeds are on its site wire
+        for (com.xilinx.rapidwright.device.BELPin in : bp.getSiteConns()) {
+            if (!in.isInput() || in.getBEL() == null) continue;
+            Cell mux = si.getCell(in.getBEL());
+            if (mux == null || mux == cell) continue;
+            for (com.xilinx.rapidwright.device.BELPin out : in.getBEL().getPins()) {
+                if (!out.isOutput()) continue;
+                float[] d = graph.cellArc(mux, in.getName(), out.getName());
+                if (dbg) System.out.println("clkarc   " + in + " -> " + out.getName() + " = " + java.util.Arrays.toString(d));
+                if (d != null) return d;
+            }
+        }
+        return null;
     }
 
     /**

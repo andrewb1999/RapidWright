@@ -1099,6 +1099,12 @@ public class VersalTimingGraph {
     public int getUnroutedSinkCount() { return unroutedSinks; }
     public int getSkippedNetCount() { return netsSkipped; }
     public List<Vertex> getEndpoints() { return endpoints; }
+
+    /** A cell's logic arc from one BEL pin to another (per corner, model order), or null if its BEL has no such arc. */
+    public float[] cellArc(Cell c, String in, String out) {
+        short[] idx = belIndices(c);
+        return idx == null ? null : logicDelays(idx, in, out);
+    }
     public List<Edge> getEdges() { return edges; }
     public java.util.Collection<Vertex> getVertices() { return vertices.values(); }
 }
