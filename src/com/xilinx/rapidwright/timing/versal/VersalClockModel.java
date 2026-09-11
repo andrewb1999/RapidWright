@@ -840,6 +840,24 @@ public class VersalClockModel {
         return pessimism(t, launch, capture, variant, false);
     }
 
+    /**
+     * Clock delay to the nearest common node of a launch and a capture branch, including that node's own
+     * wire ({slow max, slow min, fast max, fast min}): Vivado's "Common Clock Delay (CCD)" of the
+     * inter-SLR compensation. Null when the two pins share no node.
+     */
+    public float[] commonClockDelay(ClockTree t, SitePinInst launch, SitePinInst capture) {
+        Node a = launch.getConnectedNode(), b = capture.getConnectedNode();
+        if (a == null || b == null) return null;
+        Node[] cn = t.commonNode(a, b);
+        if (cn == null) return null;
+        float[] s0 = t.arriving.get(cn[0]);
+        if (s0 == null) return null;
+        float[] w = wireDelay(cn[0]);
+        float[] out = new float[4];
+        for (int i = 0; i < 4; i++) out[i] = s0[i] + w[i];
+        return out;
+    }
+
     /** A node's own wire delay (4 corners): exact class, then intent, else 0. */
     public float[] wireDelay(Node n) {
         float[] w = wire.get(nodeKey(n));

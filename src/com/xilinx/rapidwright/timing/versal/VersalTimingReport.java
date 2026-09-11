@@ -205,11 +205,12 @@ public class VersalTimingReport {
 
         if (csv != null) {
             try (PrintWriter pw = new PrintWriter(csv)) {
-                pw.println("endpoint,startpoint,process,setup_slack_ps,hold_slack_ps,launch_clock_max_ps,launch_clock_min_ps,capture_clock_max_ps,capture_clock_min_ps,setup_cpr_ps,hold_cpr_ps,data_max_ps,data_min_ps,setup_check_ps,hold_check_ps,hold_startpoint");
+                pw.println("endpoint,startpoint,process,setup_slack_ps,hold_slack_ps,launch_clock_max_ps,launch_clock_min_ps,capture_clock_max_ps,capture_clock_min_ps,setup_cpr_ps,hold_cpr_ps,data_max_ps,data_min_ps,setup_check_ps,hold_check_ps,hold_startpoint,setup_slr_ps,hold_slr_ps");
                 for (VersalSlackAnalysis.Result r : sa.getResults())
-                    pw.printf("%s,%s,%s,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%s%n", r.endpoint, r.launch, r.fast ? "fast" : "slow",
+                    pw.printf("%s,%s,%s,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%s,%.1f,%.1f%n", r.endpoint, r.launch, r.fast ? "fast" : "slow",
                             r.setupSlack, r.holdSlack, r.launchClockMax, r.launchClockMin, r.captureClockMax, r.captureClockMin,
-                            r.setupPessimism, r.holdPessimism, r.dataMax - r.launchClockMax, r.dataMin - r.launchClockMin, r.setupCheck, r.holdCheck, r.holdLaunch);
+                            r.setupPessimism, r.holdPessimism, r.dataMax - r.launchClockMax, r.dataMin - r.launchClockMin, r.setupCheck, r.holdCheck, r.holdLaunch,
+                            r.setupSlrComp, r.holdSlrComp);
             }
             System.out.println("wrote " + sa.getResults().size() + " rows to " + csv);
         }

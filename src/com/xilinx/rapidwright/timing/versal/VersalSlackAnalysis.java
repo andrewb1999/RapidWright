@@ -70,6 +70,37 @@ public class VersalSlackAnalysis {
         public float[] setupPessimismVariants = new float[6], holdPessimismVariants = new float[6];
         public float dataMax, dataMin;   // launch clock + clk-to-Q + data path, i.e. the arrival
         public float setupCheck, holdCheck;
+        /** Vivado's inter-SLR compensation (ps) when the data path crosses an SLR: subtracted from the setup and the hold slack */
+        public float setupSlrComp, holdSlrComp;
+    }
+
+    /**
+     * Vivado's inter-SLR compensation prorating factor ("Prorating Factor (PF)" in report_timing, 0.100 on the
+     * xcv80 -2MHP): a path whose launch and capture cells sit in different SLRs loses
+     * {@code (capture clock (min) - common clock delay) * PF} of setup slack and
+     * {@code (launch clock (min) + data (min) - common clock delay) * PF} of hold slack, the common clock
+     * delay being the arrival at the nearest common node of the two clock branches (RapidSA 32x8, Sep 11:
+     * 358 / 229 ps setup, 401 ps hold on its SLR-crossing register pairs, which set Vivado's WNS and WHS).
+     */
+    public static final float SLR_PRORATING = 0.1f;
+
+    /** The launch and the endpoint sit in different SLRs (the data path crosses an SLL). */
+    private static boolean crossesSlr(VersalTimingGraph.Vertex launch, VersalTimingGraph.Vertex v) {
+        if (launch == null || v == null || launch.cell == null || v.cell == null) return false;
+        com.xilinx.rapidwright.device.Site a = launch.cell.getSite(), b = v.cell.getSite();
+        if (a == null || b == null) return false;
+        com.xilinx.rapidwright.device.SLR sa = a.getTile().getSLR(), sb = b.getTile().getSLR();
+        return sa != null && sb != null && sa.getId() != sb.getId();
+    }
+
+    /** {slow, fast} min-corner clock delay to the nearest common node of a launch and a capture pin (Vivado's CCD); 0 across clock nets. */
+    private final Map<SitePinInst, Map<SitePinInst, float[]>> pairCcd = new HashMap<>();
+    private float[] commonDelayMin(VersalClockModel.ClockTree tree, SitePinInst lp, SitePinInst cap) {
+        if (lp == null || cap == null || lp.getNet() != cap.getNet()) return new float[2];
+        return pairCcd.computeIfAbsent(lp, k -> new HashMap<>()).computeIfAbsent(cap, c -> {
+            float[] d = clockModel.commonClockDelay(tree, lp, c);
+            return d == null ? new float[2] : new float[] {d[1], d[3]};
+        });
     }
 
     private final Design design;
@@ -207,18 +238,20 @@ public class VersalSlackAnalysis {
                     if (!Float.isInfinite(tg.arrival[iMax])) {
                         VersalTimingGraph.Vertex launch = launchOf(v, iMax, tg.tag);
                         float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
-                        float slack = periodPs + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival[iMax];
+                        float slr = crossesSlr(launch, v) ? (r.captureClockMin - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
+                        float slack = periodPs + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival[iMax] - slr;
                         if (slack < r.setupSlack) {
-                            r.setupSlack = slack; r.launch = launch; r.setupTag = tg.tag; r.dataMax = tg.arrival[iMax]; r.setupPessimism = cpr[0][fast ? 1 : 0];
+                            r.setupSlack = slack; r.launch = launch; r.setupTag = tg.tag; r.dataMax = tg.arrival[iMax]; r.setupPessimism = cpr[0][fast ? 1 : 0]; r.setupSlrComp = slr;
                         }
                     }
                     // hold: the group's earliest arrival at the min corner
                     if (!Float.isInfinite(tg.arrival[iMin])) {
                         VersalTimingGraph.Vertex launch = launchOf(v, iMin, tg.tag);
                         float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
-                        float slack = tg.arrival[iMin] - (r.captureClockMax - cpr[1][fast ? 1 : 0] + holdUncertaintyPs + r.holdCheck);
+                        float slr = crossesSlr(launch, v) ? (tg.arrival[iMin] - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
+                        float slack = tg.arrival[iMin] - (r.captureClockMax - cpr[1][fast ? 1 : 0] + holdUncertaintyPs + r.holdCheck) - slr;
                         if (slack < r.holdSlack) {
-                            r.holdSlack = slack; r.holdLaunch = launch; r.holdTag = tg.tag; r.dataMin = tg.arrival[iMin]; r.holdPessimism = cpr[1][fast ? 1 : 0];
+                            r.holdSlack = slack; r.holdLaunch = launch; r.holdTag = tg.tag; r.dataMin = tg.arrival[iMin]; r.holdPessimism = cpr[1][fast ? 1 : 0]; r.holdSlrComp = slr;
                         }
                     }
                 }
@@ -315,8 +348,13 @@ public class VersalSlackAnalysis {
         r.setupPessimism = cpr[fast ? 1 : 0]; r.holdPessimism = hcpr[fast ? 1 : 0];
         r.dataMax = graph.pathArrival(path, v, iMax);
         r.dataMin = graph.pathArrival(hpath, v, iMin);
-        r.setupSlack = periodPs + r.captureClockMin + r.setupPessimism - setupUncertaintyPs - r.setupCheck - r.dataMax;
-        r.holdSlack = r.dataMin - (r.captureClockMax - r.holdPessimism + holdUncertaintyPs + r.holdCheck);
+        if (crossesSlr(launch, v)) {
+            float ccd = commonDelayMin(getClockTree(cap.getNet()), lp, cap)[fast ? 1 : 0];
+            r.setupSlrComp = (r.captureClockMin - ccd) * SLR_PRORATING;
+            r.holdSlrComp = (r.dataMin - ccd) * SLR_PRORATING;
+        }
+        r.setupSlack = periodPs + r.captureClockMin + r.setupPessimism - setupUncertaintyPs - r.setupCheck - r.dataMax - r.setupSlrComp;
+        r.holdSlack = r.dataMin - (r.captureClockMax - r.holdPessimism + holdUncertaintyPs + r.holdCheck) - r.holdSlrComp;
         return r;
     }
 
@@ -325,10 +363,10 @@ public class VersalSlackAnalysis {
         int iMax = r.fast ? iFastMax : iSlowMax, iMin = r.fast ? iFastMin : iSlowMin;
         List<VersalTimingGraph.Edge> path = graph.getPathFrom(r.launch, r.endpoint, setup ? iMax : iMin);
         StringBuilder sb = new StringBuilder();
-        if (setup) sb.append(String.format("setup slack %.0f ps (%s process): launch %s clock %.0f + data %.0f = arrival %.0f; required = %.0f + capture %.0f + cpr %.0f - unc %.0f - setup %.0f%n",
-                r.setupSlack, r.fast ? "fast" : "slow", r.launch, r.launchClockMax, r.dataMax - r.launchClockMax, r.dataMax, periodPs, r.captureClockMin, r.setupPessimism, setupUncertaintyPs, r.setupCheck));
-        else sb.append(String.format("hold slack %.0f ps (%s process): launch clock %.0f + data %.0f = arrival %.0f; required = capture %.0f - cpr %.0f + unc %.0f + hold %.0f%n",
-                r.holdSlack, r.fast ? "fast" : "slow", r.launchClockMin, r.dataMin - r.launchClockMin, r.dataMin, r.captureClockMax, r.holdPessimism, holdUncertaintyPs, r.holdCheck));
+        if (setup) sb.append(String.format("setup slack %.0f ps (%s process): launch %s clock %.0f + data %.0f = arrival %.0f; required = %.0f + capture %.0f + cpr %.0f - unc %.0f - setup %.0f - slr %.0f%n",
+                r.setupSlack, r.fast ? "fast" : "slow", r.launch, r.launchClockMax, r.dataMax - r.launchClockMax, r.dataMax, periodPs, r.captureClockMin, r.setupPessimism, setupUncertaintyPs, r.setupCheck, r.setupSlrComp));
+        else sb.append(String.format("hold slack %.0f ps (%s process): launch clock %.0f + data %.0f = arrival %.0f; required = capture %.0f - cpr %.0f + unc %.0f + hold %.0f + slr %.0f%n",
+                r.holdSlack, r.fast ? "fast" : "slow", r.launchClockMin, r.dataMin - r.launchClockMin, r.dataMin, r.captureClockMax, r.holdPessimism, holdUncertaintyPs, r.holdCheck, r.holdSlrComp));
         sb.append(graph.formatPath(path, r.endpoint, setup ? iMax : iMin));
         return sb.toString();
     }
@@ -374,14 +412,14 @@ public class VersalSlackAnalysis {
         int iMax = r.fast ? iFastMax : iSlowMax, iMin = r.fast ? iFastMin : iSlowMin;
         StringBuilder sb = new StringBuilder();
         if (setup) {
-            sb.append(String.format("WNS %.0f ps at %s (%s process): launch %s clock %.0f + data %.0f = arrival %.0f; required = %.0f + capture %.0f + cpr %.0f - unc %.0f - setup %.0f%n",
+            sb.append(String.format("WNS %.0f ps at %s (%s process): launch %s clock %.0f + data %.0f = arrival %.0f; required = %.0f + capture %.0f + cpr %.0f - unc %.0f - setup %.0f - slr %.0f%n",
                     r.setupSlack, r.endpoint, r.fast ? "fast" : "slow", r.launch, r.launchClockMax, r.dataMax - r.launchClockMax, r.dataMax,
-                    periodPs, r.captureClockMin, r.setupPessimism, setupUncertaintyPs, r.setupCheck));
+                    periodPs, r.captureClockMin, r.setupPessimism, setupUncertaintyPs, r.setupCheck, r.setupSlrComp));
             sb.append(graph.formatPath(graph.getPath(r.endpoint, iMax, r.setupTag), r.endpoint, iMax));
         } else {
-            sb.append(String.format("WHS %.0f ps at %s (%s process): launch clock %.0f + data %.0f = arrival %.0f; required = capture %.0f - cpr %.0f + unc %.0f + hold %.0f%n",
+            sb.append(String.format("WHS %.0f ps at %s (%s process): launch clock %.0f + data %.0f = arrival %.0f; required = capture %.0f - cpr %.0f + unc %.0f + hold %.0f + slr %.0f%n",
                     r.holdSlack, r.endpoint, r.fast ? "fast" : "slow", r.launchClockMin, r.dataMin - r.launchClockMin, r.dataMin,
-                    r.captureClockMax, r.holdPessimism, holdUncertaintyPs, r.holdCheck));
+                    r.captureClockMax, r.holdPessimism, holdUncertaintyPs, r.holdCheck, r.holdSlrComp));
             sb.append(graph.formatPath(graph.getPath(r.endpoint, iMin, r.holdTag), r.endpoint, iMin));
         }
         return sb.toString();

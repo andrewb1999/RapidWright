@@ -14341,8 +14341,6 @@ V_DATA_8_ Y_8_         19
 V_DATA_9_ Y_9_         19
 
 bel DSP_ALUREG@DSP58 in DSP58
-# hold, n=1, max 0, sd 0.0
-     CLK RSTALLCARRYIN      0
 # combinational, n=1, max 252, sd 0.0
 OPMODE_4_ OPMODE_DATA_4_    252
 
@@ -14541,42 +14539,42 @@ bel DSP_A_B_DATA@DSP58 in DSP58
      CLK A_16_      -125
 # hold, n=2, max -144, sd 0.0
      CLK A_17_      -144
-# hold, n=2, max 0, sd 57.0
-     CLK A_18_       -57
-# hold, n=2, max 0, sd 81.0
-     CLK A_19_       -81
+# hold, n=1, max -114, sd 0.0
+     CLK A_18_      -114
+# hold, n=1, max -162, sd 0.0
+     CLK A_19_      -162
 # hold, n=2, max -142, sd 0.0
      CLK A_1_       -142
-# hold, n=2, max 0, sd 65.0
-     CLK A_20_       -65
-# hold, n=2, max 0, sd 60.0
-     CLK A_21_       -60
-# hold, n=2, max 0, sd 81.5
-     CLK A_22_       -82
-# hold, n=2, max 0, sd 67.5
-     CLK A_23_       -68
-# hold, n=2, max 0, sd 68.0
-     CLK A_24_       -68
-# hold, n=2, max 0, sd 69.0
-     CLK A_25_       -69
-# hold, n=2, max 0, sd 78.0
-     CLK A_26_       -78
-# hold, n=2, max 0, sd 75.5
-     CLK A_27_       -76
-# hold, n=2, max 0, sd 69.0
-     CLK A_28_       -69
-# hold, n=2, max 0, sd 67.5
-     CLK A_29_       -68
+# hold, n=1, max -130, sd 0.0
+     CLK A_20_      -130
+# hold, n=1, max -120, sd 0.0
+     CLK A_21_      -120
+# hold, n=1, max -163, sd 0.0
+     CLK A_22_      -163
+# hold, n=1, max -135, sd 0.0
+     CLK A_23_      -135
+# hold, n=1, max -136, sd 0.0
+     CLK A_24_      -136
+# hold, n=1, max -138, sd 0.0
+     CLK A_25_      -138
+# hold, n=1, max -156, sd 0.0
+     CLK A_26_      -156
+# hold, n=1, max -151, sd 0.0
+     CLK A_27_      -151
+# hold, n=1, max -138, sd 0.0
+     CLK A_28_      -138
+# hold, n=1, max -135, sd 0.0
+     CLK A_29_      -135
 # hold, n=2, max -142, sd 0.0
      CLK A_2_       -142
-# hold, n=2, max 0, sd 85.5
-     CLK A_30_       -86
-# hold, n=2, max 0, sd 90.5
-     CLK A_31_       -90
-# hold, n=2, max 0, sd 83.5
-     CLK A_32_       -84
-# hold, n=2, max 0, sd 74.0
-     CLK A_33_       -74
+# hold, n=1, max -171, sd 0.0
+     CLK A_30_      -171
+# hold, n=1, max -181, sd 0.0
+     CLK A_31_      -181
+# hold, n=1, max -167, sd 0.0
+     CLK A_32_      -167
+# hold, n=1, max -148, sd 0.0
+     CLK A_33_      -148
 # hold, n=2, max -131, sd 0.0
      CLK A_3_       -131
 # hold, n=2, max -143, sd 0.0
@@ -14821,20 +14819,20 @@ bel DSP_A_B_DATA@DSP58 in DSP58
      CLK B_16_      -136
 # hold, n=2, max -135, sd 0.0
      CLK B_17_      -135
-# hold, n=2, max 0, sd 68.5
-     CLK B_18_       -68
-# hold, n=2, max 0, sd 59.0
-     CLK B_19_       -59
+# hold, n=1, max -137, sd 0.0
+     CLK B_18_      -137
+# hold, n=1, max -118, sd 0.0
+     CLK B_19_      -118
 # hold, n=2, max -162, sd 0.0
      CLK B_1_       -162
-# hold, n=2, max 0, sd 64.0
-     CLK B_20_       -64
-# hold, n=2, max 0, sd 67.0
-     CLK B_21_       -67
-# hold, n=2, max 0, sd 56.0
-     CLK B_22_       -56
-# hold, n=2, max 0, sd 71.0
-     CLK B_23_       -71
+# hold, n=1, max -128, sd 0.0
+     CLK B_20_      -128
+# hold, n=1, max -134, sd 0.0
+     CLK B_21_      -134
+# hold, n=1, max -112, sd 0.0
+     CLK B_22_      -112
+# hold, n=1, max -142, sd 0.0
+     CLK B_23_      -142
 # hold, n=2, max -200, sd 0.0
      CLK B_2_       -200
 # hold, n=2, max -157, sd 0.0
@@ -14899,18 +14897,8 @@ bel DSP_A_B_DATA@DSP58 in DSP58
      CLK B_ALU_8_    143
 # Reg Clk to Q, n=2, max 143, sd 0.0
      CLK B_ALU_9_    143
-# hold, n=2, max 0, sd 0.0
-     CLK CEA1          0
-# hold, n=2, max 0, sd 0.0
-     CLK CEA2          0
-# hold, n=2, max 0, sd 0.0
-     CLK CEB1          0
-# hold, n=2, max 0, sd 0.0
-     CLK CEB2          0
 
 bel DSP_C_DATA@DSP58 in DSP58
-# hold, n=1, max 0, sd 0.0
-     CLK CEC           0
 # hold, n=1, max -123, sd 0.0
      CLK C_0_       -123
 # hold, n=1, max -153, sd 0.0
@@ -15143,8 +15131,6 @@ bel DSP_C_DATA@DSP58 in DSP58
      CLK C_DATA_8_    121
 # Reg Clk to Q, n=1, max 121, sd 0.0
      CLK C_DATA_9_    121
-# hold, n=1, max 0, sd 0.0
-     CLK RSTC          0
 
 bel DSP_MULTIPLIER@DSP58 in DSP58
 # combinational, n=2, max 105, sd 0.0
@@ -21695,10 +21681,6 @@ NEGATE_DATA_2_ V_49_       120
 NEGATE_DATA_2_ V_50_       120
 
 bel DSP_M_DATA@DSP58 in DSP58
-# hold, n=1, max 0, sd 0.0
-     CLK CEM           0
-# hold, n=1, max 0, sd 0.0
-     CLK RSTM          0
 # hold, n=1, max 105, sd 0.0
      CLK U_0_        105
 # hold, n=1, max 105, sd 0.0
@@ -22425,8 +22407,6 @@ bel DSP_OUTPUT@DSP58 in DSP58
      CLK CARRYOUT_2_    162
 # Reg Clk to Q, n=2, max 149, sd 0.0
      CLK CARRYOUT_3_    149
-# hold, n=2, max 0, sd 0.0
-     CLK CEP           0
 # Reg Clk to Q, n=2, max 141, sd 0.0
      CLK MULTSIGNOUT    141
 # Reg Clk to Q, n=2, max 225, sd 0.0
@@ -22785,8 +22765,6 @@ bel DSP_OUTPUT@DSP58 in DSP58
      CLK P_FDBK_9_    124
 # Reg Clk to Q, n=2, max 166, sd 0.0
      CLK P_FDBK_MSB    166
-# hold, n=2, max 0, sd 0.0
-     CLK RSTP          0
 # Reg Clk to Q, n=2, max 197, sd 0.0
      CLK UNDERFLOW    197
 # Reg Clk to Q, n=2, max 194, sd 0.0
@@ -24643,532 +24621,164 @@ bel SRCMXINV@DSP58 in DSP58
  CLK_NAT CLK          59
 
 bel NMU@NOC_NMU512 in NOC_NMU512
-# hold, n=2, max 158, sd 79.0
-     CLK IF_NOC_AXI_ARADDR_0_     79
-# hold, n=2, max 177, sd 88.5
-     CLK IF_NOC_AXI_ARADDR_10_     88
-# hold, n=2, max 164, sd 82.0
-     CLK IF_NOC_AXI_ARADDR_11_     82
-# hold, n=2, max 207, sd 103.5
-     CLK IF_NOC_AXI_ARADDR_12_    104
-# hold, n=2, max 178, sd 89.0
-     CLK IF_NOC_AXI_ARADDR_13_     89
-# hold, n=2, max 195, sd 97.5
-     CLK IF_NOC_AXI_ARADDR_14_     98
-# hold, n=2, max 188, sd 94.0
-     CLK IF_NOC_AXI_ARADDR_15_     94
-# hold, n=2, max 172, sd 86.0
-     CLK IF_NOC_AXI_ARADDR_16_     86
-# hold, n=2, max 160, sd 80.0
-     CLK IF_NOC_AXI_ARADDR_17_     80
-# hold, n=2, max 179, sd 89.5
-     CLK IF_NOC_AXI_ARADDR_18_     90
-# hold, n=2, max 153, sd 76.5
-     CLK IF_NOC_AXI_ARADDR_19_     76
-# hold, n=2, max 185, sd 92.5
-     CLK IF_NOC_AXI_ARADDR_1_     92
-# hold, n=2, max 183, sd 91.5
-     CLK IF_NOC_AXI_ARADDR_20_     92
-# hold, n=2, max 118, sd 59.0
-     CLK IF_NOC_AXI_ARADDR_21_     59
-# hold, n=2, max 185, sd 92.5
-     CLK IF_NOC_AXI_ARADDR_22_     92
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_ARADDR_23_     88
-# hold, n=2, max 192, sd 96.0
-     CLK IF_NOC_AXI_ARADDR_24_     96
-# hold, n=2, max 187, sd 93.5
-     CLK IF_NOC_AXI_ARADDR_25_     94
-# hold, n=2, max 171, sd 85.5
-     CLK IF_NOC_AXI_ARADDR_26_     86
-# hold, n=2, max 198, sd 99.0
-     CLK IF_NOC_AXI_ARADDR_27_     99
-# hold, n=2, max 199, sd 99.5
-     CLK IF_NOC_AXI_ARADDR_28_    100
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_ARADDR_29_     88
-# hold, n=2, max 170, sd 85.0
-     CLK IF_NOC_AXI_ARADDR_2_     85
-# hold, n=2, max 155, sd 77.5
-     CLK IF_NOC_AXI_ARADDR_30_     78
-# hold, n=2, max 148, sd 74.0
-     CLK IF_NOC_AXI_ARADDR_31_     74
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_32_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_33_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_34_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_35_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_36_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_37_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_38_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_39_      0
-# hold, n=2, max 163, sd 81.5
-     CLK IF_NOC_AXI_ARADDR_3_     82
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_40_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_41_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_42_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_43_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_44_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_45_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_46_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_47_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_48_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_49_      0
-# hold, n=2, max 104, sd 52.0
-     CLK IF_NOC_AXI_ARADDR_4_     52
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_50_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_51_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_52_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_53_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_54_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_55_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_56_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_57_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_58_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_59_      0
-# hold, n=2, max 163, sd 81.5
-     CLK IF_NOC_AXI_ARADDR_5_     82
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_60_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_61_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_62_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_63_      0
-# hold, n=2, max 202, sd 101.0
-     CLK IF_NOC_AXI_ARADDR_6_    101
-# hold, n=2, max 185, sd 92.5
-     CLK IF_NOC_AXI_ARADDR_7_     92
-# hold, n=2, max 133, sd 66.5
-     CLK IF_NOC_AXI_ARADDR_8_     66
-# hold, n=2, max 164, sd 82.0
-     CLK IF_NOC_AXI_ARADDR_9_     82
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_PAR_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_PAR_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_PAR_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_PAR_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_PAR_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_PAR_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_PAR_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARADDR_PAR_7_      0
-# hold, n=2, max 138, sd 69.0
-     CLK IF_NOC_AXI_ARBURST_0_     69
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARBURST_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARCACHE_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARCACHE_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARCACHE_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARCACHE_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_10_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_11_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_12_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_13_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_14_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_15_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_8_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARID_9_      0
-# hold, n=2, max 203, sd 101.5
-     CLK IF_NOC_AXI_ARLEN_0_    102
-# hold, n=2, max 203, sd 101.5
-     CLK IF_NOC_AXI_ARLEN_1_    102
-# hold, n=2, max 156, sd 78.0
-     CLK IF_NOC_AXI_ARLEN_2_     78
-# hold, n=2, max 184, sd 92.0
-     CLK IF_NOC_AXI_ARLEN_3_     92
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARLEN_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARLEN_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARLEN_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARLEN_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARLOCK_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARPROT_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARPROT_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARPROT_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARQOS_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARQOS_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARQOS_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARQOS_3_      0
+# hold, n=1, max 158, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_0_    158
+# hold, n=1, max 177, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_10_    177
+# hold, n=1, max 164, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_11_    164
+# hold, n=1, max 207, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_12_    207
+# hold, n=1, max 178, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_13_    178
+# hold, n=1, max 195, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_14_    195
+# hold, n=1, max 188, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_15_    188
+# hold, n=1, max 172, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_16_    172
+# hold, n=1, max 160, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_17_    160
+# hold, n=1, max 179, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_18_    179
+# hold, n=1, max 153, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_19_    153
+# hold, n=1, max 185, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_1_    185
+# hold, n=1, max 183, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_20_    183
+# hold, n=1, max 118, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_21_    118
+# hold, n=1, max 185, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_22_    185
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_23_    176
+# hold, n=1, max 192, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_24_    192
+# hold, n=1, max 187, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_25_    187
+# hold, n=1, max 171, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_26_    171
+# hold, n=1, max 198, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_27_    198
+# hold, n=1, max 199, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_28_    199
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_29_    176
+# hold, n=1, max 170, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_2_    170
+# hold, n=1, max 155, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_30_    155
+# hold, n=1, max 148, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_31_    148
+# hold, n=1, max 163, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_3_    163
+# hold, n=1, max 104, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_4_    104
+# hold, n=1, max 163, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_5_    163
+# hold, n=1, max 202, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_6_    202
+# hold, n=1, max 185, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_7_    185
+# hold, n=1, max 133, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_8_    133
+# hold, n=1, max 164, sd 0.0
+     CLK IF_NOC_AXI_ARADDR_9_    164
+# hold, n=1, max 138, sd 0.0
+     CLK IF_NOC_AXI_ARBURST_0_    138
+# hold, n=1, max 203, sd 0.0
+     CLK IF_NOC_AXI_ARLEN_0_    203
+# hold, n=1, max 203, sd 0.0
+     CLK IF_NOC_AXI_ARLEN_1_    203
+# hold, n=1, max 156, sd 0.0
+     CLK IF_NOC_AXI_ARLEN_2_    156
+# hold, n=1, max 184, sd 0.0
+     CLK IF_NOC_AXI_ARLEN_3_    184
 # Reg Clk to Q, n=1, max 252, sd 0.0
      CLK IF_NOC_AXI_ARREADY    252
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARSIZE_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARSIZE_1_      0
-# hold, n=2, max 168, sd 84.0
-     CLK IF_NOC_AXI_ARSIZE_2_     84
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_10_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_11_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_12_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_13_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_14_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_15_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_8_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_ARUSER_9_      0
-# hold, n=2, max 149, sd 74.5
-     CLK IF_NOC_AXI_ARVALID     74
-# hold, n=2, max 209, sd 104.5
-     CLK IF_NOC_AXI_AWADDR_0_    104
-# hold, n=2, max 207, sd 103.5
-     CLK IF_NOC_AXI_AWADDR_10_    104
-# hold, n=2, max 222, sd 111.0
-     CLK IF_NOC_AXI_AWADDR_11_    111
-# hold, n=2, max 222, sd 111.0
-     CLK IF_NOC_AXI_AWADDR_12_    111
-# hold, n=2, max 225, sd 112.5
-     CLK IF_NOC_AXI_AWADDR_13_    112
-# hold, n=2, max 191, sd 95.5
-     CLK IF_NOC_AXI_AWADDR_14_     96
-# hold, n=2, max 190, sd 95.0
-     CLK IF_NOC_AXI_AWADDR_15_     95
-# hold, n=2, max 199, sd 99.5
-     CLK IF_NOC_AXI_AWADDR_16_    100
-# hold, n=2, max 227, sd 113.5
-     CLK IF_NOC_AXI_AWADDR_17_    114
-# hold, n=2, max 191, sd 95.5
-     CLK IF_NOC_AXI_AWADDR_18_     96
-# hold, n=2, max 184, sd 92.0
-     CLK IF_NOC_AXI_AWADDR_19_     92
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_AWADDR_1_     88
-# hold, n=2, max 186, sd 93.0
-     CLK IF_NOC_AXI_AWADDR_20_     93
-# hold, n=2, max 224, sd 112.0
-     CLK IF_NOC_AXI_AWADDR_21_    112
-# hold, n=2, max 174, sd 87.0
-     CLK IF_NOC_AXI_AWADDR_22_     87
-# hold, n=2, max 198, sd 99.0
-     CLK IF_NOC_AXI_AWADDR_23_     99
-# hold, n=2, max 202, sd 101.0
-     CLK IF_NOC_AXI_AWADDR_24_    101
-# hold, n=2, max 219, sd 109.5
-     CLK IF_NOC_AXI_AWADDR_25_    110
-# hold, n=2, max 192, sd 96.0
-     CLK IF_NOC_AXI_AWADDR_26_     96
-# hold, n=2, max 206, sd 103.0
-     CLK IF_NOC_AXI_AWADDR_27_    103
-# hold, n=2, max 182, sd 91.0
-     CLK IF_NOC_AXI_AWADDR_28_     91
-# hold, n=2, max 169, sd 84.5
-     CLK IF_NOC_AXI_AWADDR_29_     84
-# hold, n=2, max 189, sd 94.5
-     CLK IF_NOC_AXI_AWADDR_2_     94
-# hold, n=2, max 171, sd 85.5
-     CLK IF_NOC_AXI_AWADDR_30_     86
-# hold, n=2, max 162, sd 81.0
-     CLK IF_NOC_AXI_AWADDR_31_     81
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_32_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_33_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_34_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_35_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_36_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_37_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_38_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_39_      0
-# hold, n=2, max 204, sd 102.0
-     CLK IF_NOC_AXI_AWADDR_3_    102
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_40_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_41_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_42_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_43_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_44_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_45_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_46_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_47_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_48_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_49_      0
-# hold, n=2, max 219, sd 109.5
-     CLK IF_NOC_AXI_AWADDR_4_    110
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_50_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_51_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_52_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_53_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_54_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_55_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_56_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_57_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_58_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_59_      0
-# hold, n=2, max 211, sd 105.5
-     CLK IF_NOC_AXI_AWADDR_5_    106
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_60_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_61_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_62_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_63_      0
-# hold, n=2, max 180, sd 90.0
-     CLK IF_NOC_AXI_AWADDR_6_     90
-# hold, n=2, max 213, sd 106.5
-     CLK IF_NOC_AXI_AWADDR_7_    106
-# hold, n=2, max 226, sd 113.0
-     CLK IF_NOC_AXI_AWADDR_8_    113
-# hold, n=2, max 197, sd 98.5
-     CLK IF_NOC_AXI_AWADDR_9_     98
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_PAR_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_PAR_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_PAR_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_PAR_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_PAR_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_PAR_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_PAR_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWADDR_PAR_7_      0
-# hold, n=2, max 191, sd 95.5
-     CLK IF_NOC_AXI_AWBURST_0_     96
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWBURST_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWCACHE_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWCACHE_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWCACHE_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWCACHE_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_10_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_11_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_12_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_13_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_14_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_15_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_8_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWID_9_      0
-# hold, n=2, max 185, sd 92.5
-     CLK IF_NOC_AXI_AWLEN_0_     92
-# hold, n=2, max 191, sd 95.5
-     CLK IF_NOC_AXI_AWLEN_1_     96
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWLEN_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWLEN_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWLEN_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWLEN_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWLEN_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWLEN_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWLOCK_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWPROT_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWPROT_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWPROT_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWQOS_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWQOS_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWQOS_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWQOS_3_      0
+# hold, n=1, max 168, sd 0.0
+     CLK IF_NOC_AXI_ARSIZE_2_    168
+# hold, n=1, max 149, sd 0.0
+     CLK IF_NOC_AXI_ARVALID    149
+# hold, n=1, max 209, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_0_    209
+# hold, n=1, max 207, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_10_    207
+# hold, n=1, max 222, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_11_    222
+# hold, n=1, max 222, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_12_    222
+# hold, n=1, max 225, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_13_    225
+# hold, n=1, max 191, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_14_    191
+# hold, n=1, max 190, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_15_    190
+# hold, n=1, max 199, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_16_    199
+# hold, n=1, max 227, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_17_    227
+# hold, n=1, max 191, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_18_    191
+# hold, n=1, max 184, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_19_    184
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_1_    176
+# hold, n=1, max 186, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_20_    186
+# hold, n=1, max 224, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_21_    224
+# hold, n=1, max 174, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_22_    174
+# hold, n=1, max 198, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_23_    198
+# hold, n=1, max 202, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_24_    202
+# hold, n=1, max 219, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_25_    219
+# hold, n=1, max 192, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_26_    192
+# hold, n=1, max 206, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_27_    206
+# hold, n=1, max 182, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_28_    182
+# hold, n=1, max 169, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_29_    169
+# hold, n=1, max 189, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_2_    189
+# hold, n=1, max 171, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_30_    171
+# hold, n=1, max 162, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_31_    162
+# hold, n=1, max 204, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_3_    204
+# hold, n=1, max 219, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_4_    219
+# hold, n=1, max 211, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_5_    211
+# hold, n=1, max 180, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_6_    180
+# hold, n=1, max 213, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_7_    213
+# hold, n=1, max 226, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_8_    226
+# hold, n=1, max 197, sd 0.0
+     CLK IF_NOC_AXI_AWADDR_9_    197
+# hold, n=1, max 191, sd 0.0
+     CLK IF_NOC_AXI_AWBURST_0_    191
+# hold, n=1, max 185, sd 0.0
+     CLK IF_NOC_AXI_AWLEN_0_    185
+# hold, n=1, max 191, sd 0.0
+     CLK IF_NOC_AXI_AWLEN_1_    191
 # Reg Clk to Q, n=1, max 253, sd 0.0
      CLK IF_NOC_AXI_AWREADY    253
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWSIZE_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWSIZE_1_      0
-# hold, n=2, max 189, sd 94.5
-     CLK IF_NOC_AXI_AWSIZE_2_     94
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_10_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_11_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_12_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_13_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_14_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_15_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_8_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_AWUSER_9_      0
-# hold, n=2, max 89, sd 44.5
-     CLK IF_NOC_AXI_AWVALID     44
-# hold, n=2, max 0, sd 61.0
-     CLK IF_NOC_AXI_BREADY    -61
+# hold, n=1, max 189, sd 0.0
+     CLK IF_NOC_AXI_AWSIZE_2_    189
+# hold, n=1, max 89, sd 0.0
+     CLK IF_NOC_AXI_AWVALID     89
+# hold, n=1, max -122, sd 0.0
+     CLK IF_NOC_AXI_BREADY   -122
 # Reg Clk to Q, n=1, max 330, sd 0.0
      CLK IF_NOC_AXI_BRESP_0_    330
 # Reg Clk to Q, n=1, max 337, sd 0.0
@@ -25433,502 +25043,308 @@ bel NMU@NOC_NMU512 in NOC_NMU512
      CLK IF_NOC_AXI_RDATA_9_    380
 # Reg Clk to Q, n=1, max 428, sd 0.0
      CLK IF_NOC_AXI_RLAST_0_    428
-# hold, n=2, max 14, sd 7.0
-     CLK IF_NOC_AXI_RREADY      7
+# hold, n=1, max 14, sd 0.0
+     CLK IF_NOC_AXI_RREADY     14
 # Reg Clk to Q, n=1, max 442, sd 0.0
      CLK IF_NOC_AXI_RRESP_0_    442
 # Reg Clk to Q, n=1, max 449, sd 0.0
      CLK IF_NOC_AXI_RRESP_1_    449
 # Reg Clk to Q, n=1, max 397, sd 0.0
      CLK IF_NOC_AXI_RVALID    397
-# hold, n=2, max 172, sd 86.0
-     CLK IF_NOC_AXI_WDATA_0_     86
-# hold, n=2, max 174, sd 87.0
-     CLK IF_NOC_AXI_WDATA_100_     87
-# hold, n=2, max 210, sd 105.0
-     CLK IF_NOC_AXI_WDATA_101_    105
-# hold, n=2, max 158, sd 79.0
-     CLK IF_NOC_AXI_WDATA_102_     79
-# hold, n=2, max 194, sd 97.0
-     CLK IF_NOC_AXI_WDATA_103_     97
-# hold, n=2, max 146, sd 73.0
-     CLK IF_NOC_AXI_WDATA_104_     73
-# hold, n=2, max 190, sd 95.0
-     CLK IF_NOC_AXI_WDATA_105_     95
-# hold, n=2, max 168, sd 84.0
-     CLK IF_NOC_AXI_WDATA_106_     84
-# hold, n=2, max 157, sd 78.5
-     CLK IF_NOC_AXI_WDATA_107_     78
-# hold, n=2, max 165, sd 82.5
-     CLK IF_NOC_AXI_WDATA_108_     82
-# hold, n=2, max 174, sd 87.0
-     CLK IF_NOC_AXI_WDATA_109_     87
-# hold, n=2, max 166, sd 83.0
-     CLK IF_NOC_AXI_WDATA_10_     83
-# hold, n=2, max 224, sd 112.0
-     CLK IF_NOC_AXI_WDATA_110_    112
-# hold, n=2, max 175, sd 87.5
-     CLK IF_NOC_AXI_WDATA_111_     88
-# hold, n=2, max 173, sd 86.5
-     CLK IF_NOC_AXI_WDATA_112_     86
-# hold, n=2, max 143, sd 71.5
-     CLK IF_NOC_AXI_WDATA_113_     72
-# hold, n=2, max 179, sd 89.5
-     CLK IF_NOC_AXI_WDATA_114_     90
-# hold, n=2, max 178, sd 89.0
-     CLK IF_NOC_AXI_WDATA_115_     89
-# hold, n=2, max 169, sd 84.5
-     CLK IF_NOC_AXI_WDATA_116_     84
-# hold, n=2, max 175, sd 87.5
-     CLK IF_NOC_AXI_WDATA_117_     88
-# hold, n=2, max 170, sd 85.0
-     CLK IF_NOC_AXI_WDATA_118_     85
-# hold, n=2, max 183, sd 91.5
-     CLK IF_NOC_AXI_WDATA_119_     92
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_WDATA_11_     88
-# hold, n=2, max 175, sd 87.5
-     CLK IF_NOC_AXI_WDATA_120_     88
-# hold, n=2, max 175, sd 87.5
-     CLK IF_NOC_AXI_WDATA_121_     88
-# hold, n=2, max 145, sd 72.5
-     CLK IF_NOC_AXI_WDATA_122_     72
-# hold, n=2, max 180, sd 90.0
-     CLK IF_NOC_AXI_WDATA_123_     90
-# hold, n=2, max 168, sd 84.0
-     CLK IF_NOC_AXI_WDATA_124_     84
-# hold, n=2, max 178, sd 89.0
-     CLK IF_NOC_AXI_WDATA_125_     89
-# hold, n=2, max 183, sd 91.5
-     CLK IF_NOC_AXI_WDATA_126_     92
-# hold, n=2, max 173, sd 86.5
-     CLK IF_NOC_AXI_WDATA_127_     86
-# hold, n=2, max 174, sd 87.0
-     CLK IF_NOC_AXI_WDATA_12_     87
-# hold, n=2, max 158, sd 79.0
-     CLK IF_NOC_AXI_WDATA_13_     79
-# hold, n=2, max 178, sd 89.0
-     CLK IF_NOC_AXI_WDATA_14_     89
-# hold, n=2, max 168, sd 84.0
-     CLK IF_NOC_AXI_WDATA_15_     84
-# hold, n=2, max 177, sd 88.5
-     CLK IF_NOC_AXI_WDATA_16_     88
-# hold, n=2, max 178, sd 89.0
-     CLK IF_NOC_AXI_WDATA_17_     89
-# hold, n=2, max 224, sd 112.0
-     CLK IF_NOC_AXI_WDATA_18_    112
-# hold, n=2, max 195, sd 97.5
-     CLK IF_NOC_AXI_WDATA_19_     98
-# hold, n=2, max 179, sd 89.5
-     CLK IF_NOC_AXI_WDATA_1_     90
-# hold, n=2, max 170, sd 85.0
-     CLK IF_NOC_AXI_WDATA_20_     85
-# hold, n=2, max 185, sd 92.5
-     CLK IF_NOC_AXI_WDATA_21_     92
-# hold, n=2, max 181, sd 90.5
-     CLK IF_NOC_AXI_WDATA_22_     90
-# hold, n=2, max 177, sd 88.5
-     CLK IF_NOC_AXI_WDATA_23_     88
-# hold, n=2, max 230, sd 115.0
-     CLK IF_NOC_AXI_WDATA_24_    115
-# hold, n=2, max 130, sd 65.0
-     CLK IF_NOC_AXI_WDATA_25_     65
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_WDATA_26_     88
-# hold, n=2, max 172, sd 86.0
-     CLK IF_NOC_AXI_WDATA_27_     86
-# hold, n=2, max 169, sd 84.5
-     CLK IF_NOC_AXI_WDATA_28_     84
-# hold, n=2, max 182, sd 91.0
-     CLK IF_NOC_AXI_WDATA_29_     91
-# hold, n=2, max 167, sd 83.5
-     CLK IF_NOC_AXI_WDATA_2_     84
-# hold, n=2, max 167, sd 83.5
-     CLK IF_NOC_AXI_WDATA_30_     84
-# hold, n=2, max 191, sd 95.5
-     CLK IF_NOC_AXI_WDATA_31_     96
-# hold, n=2, max 166, sd 83.0
-     CLK IF_NOC_AXI_WDATA_32_     83
-# hold, n=2, max 202, sd 101.0
-     CLK IF_NOC_AXI_WDATA_33_    101
-# hold, n=2, max 205, sd 102.5
-     CLK IF_NOC_AXI_WDATA_34_    102
-# hold, n=2, max 168, sd 84.0
-     CLK IF_NOC_AXI_WDATA_35_     84
-# hold, n=2, max 180, sd 90.0
-     CLK IF_NOC_AXI_WDATA_36_     90
-# hold, n=2, max 194, sd 97.0
-     CLK IF_NOC_AXI_WDATA_37_     97
-# hold, n=2, max 216, sd 108.0
-     CLK IF_NOC_AXI_WDATA_38_    108
-# hold, n=2, max 208, sd 104.0
-     CLK IF_NOC_AXI_WDATA_39_    104
-# hold, n=2, max 186, sd 93.0
-     CLK IF_NOC_AXI_WDATA_3_     93
-# hold, n=2, max 185, sd 92.5
-     CLK IF_NOC_AXI_WDATA_40_     92
-# hold, n=2, max 131, sd 65.5
-     CLK IF_NOC_AXI_WDATA_41_     66
-# hold, n=2, max 151, sd 75.5
-     CLK IF_NOC_AXI_WDATA_42_     76
-# hold, n=2, max 163, sd 81.5
-     CLK IF_NOC_AXI_WDATA_43_     82
-# hold, n=2, max 219, sd 109.5
-     CLK IF_NOC_AXI_WDATA_44_    110
-# hold, n=2, max 215, sd 107.5
-     CLK IF_NOC_AXI_WDATA_45_    108
-# hold, n=2, max 185, sd 92.5
-     CLK IF_NOC_AXI_WDATA_46_     92
-# hold, n=2, max 188, sd 94.0
-     CLK IF_NOC_AXI_WDATA_47_     94
-# hold, n=2, max 221, sd 110.5
-     CLK IF_NOC_AXI_WDATA_48_    110
-# hold, n=2, max 173, sd 86.5
-     CLK IF_NOC_AXI_WDATA_49_     86
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_WDATA_4_     88
-# hold, n=2, max 191, sd 95.5
-     CLK IF_NOC_AXI_WDATA_50_     96
-# hold, n=2, max 161, sd 80.5
-     CLK IF_NOC_AXI_WDATA_51_     80
-# hold, n=2, max 195, sd 97.5
-     CLK IF_NOC_AXI_WDATA_52_     98
-# hold, n=2, max 226, sd 113.0
-     CLK IF_NOC_AXI_WDATA_53_    113
-# hold, n=2, max 168, sd 84.0
-     CLK IF_NOC_AXI_WDATA_54_     84
-# hold, n=2, max 149, sd 74.5
-     CLK IF_NOC_AXI_WDATA_55_     74
-# hold, n=2, max 173, sd 86.5
-     CLK IF_NOC_AXI_WDATA_56_     86
-# hold, n=2, max 186, sd 93.0
-     CLK IF_NOC_AXI_WDATA_57_     93
-# hold, n=2, max 190, sd 95.0
-     CLK IF_NOC_AXI_WDATA_58_     95
-# hold, n=2, max 197, sd 98.5
-     CLK IF_NOC_AXI_WDATA_59_     98
-# hold, n=2, max 161, sd 80.5
-     CLK IF_NOC_AXI_WDATA_5_     80
-# hold, n=2, max 188, sd 94.0
-     CLK IF_NOC_AXI_WDATA_60_     94
-# hold, n=2, max 187, sd 93.5
-     CLK IF_NOC_AXI_WDATA_61_     94
-# hold, n=2, max 174, sd 87.0
-     CLK IF_NOC_AXI_WDATA_62_     87
-# hold, n=2, max 185, sd 92.5
-     CLK IF_NOC_AXI_WDATA_63_     92
-# hold, n=2, max 173, sd 86.5
-     CLK IF_NOC_AXI_WDATA_64_     86
-# hold, n=2, max 191, sd 95.5
-     CLK IF_NOC_AXI_WDATA_65_     96
-# hold, n=2, max 183, sd 91.5
-     CLK IF_NOC_AXI_WDATA_66_     92
-# hold, n=2, max 166, sd 83.0
-     CLK IF_NOC_AXI_WDATA_67_     83
-# hold, n=2, max 165, sd 82.5
-     CLK IF_NOC_AXI_WDATA_68_     82
-# hold, n=2, max 184, sd 92.0
-     CLK IF_NOC_AXI_WDATA_69_     92
-# hold, n=2, max 177, sd 88.5
-     CLK IF_NOC_AXI_WDATA_6_     88
-# hold, n=2, max 224, sd 112.0
-     CLK IF_NOC_AXI_WDATA_70_    112
-# hold, n=2, max 171, sd 85.5
-     CLK IF_NOC_AXI_WDATA_71_     86
-# hold, n=2, max 160, sd 80.0
-     CLK IF_NOC_AXI_WDATA_72_     80
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_WDATA_73_     88
-# hold, n=2, max 163, sd 81.5
-     CLK IF_NOC_AXI_WDATA_74_     82
-# hold, n=2, max 181, sd 90.5
-     CLK IF_NOC_AXI_WDATA_75_     90
-# hold, n=2, max 174, sd 87.0
-     CLK IF_NOC_AXI_WDATA_76_     87
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_WDATA_77_     88
-# hold, n=2, max 160, sd 80.0
-     CLK IF_NOC_AXI_WDATA_78_     80
-# hold, n=2, max 174, sd 87.0
-     CLK IF_NOC_AXI_WDATA_79_     87
-# hold, n=2, max 131, sd 65.5
-     CLK IF_NOC_AXI_WDATA_7_     66
-# hold, n=2, max 205, sd 102.5
-     CLK IF_NOC_AXI_WDATA_80_    102
-# hold, n=2, max 173, sd 86.5
-     CLK IF_NOC_AXI_WDATA_81_     86
-# hold, n=2, max 175, sd 87.5
-     CLK IF_NOC_AXI_WDATA_82_     88
-# hold, n=2, max 182, sd 91.0
-     CLK IF_NOC_AXI_WDATA_83_     91
-# hold, n=2, max 186, sd 93.0
-     CLK IF_NOC_AXI_WDATA_84_     93
-# hold, n=2, max 307, sd 153.5
-     CLK IF_NOC_AXI_WDATA_85_    154
-# hold, n=2, max 177, sd 88.5
-     CLK IF_NOC_AXI_WDATA_86_     88
-# hold, n=2, max 183, sd 91.5
-     CLK IF_NOC_AXI_WDATA_87_     92
-# hold, n=2, max 152, sd 76.0
-     CLK IF_NOC_AXI_WDATA_88_     76
-# hold, n=2, max 178, sd 89.0
-     CLK IF_NOC_AXI_WDATA_89_     89
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_WDATA_8_     88
-# hold, n=2, max 258, sd 129.0
-     CLK IF_NOC_AXI_WDATA_90_    129
-# hold, n=2, max 143, sd 71.5
-     CLK IF_NOC_AXI_WDATA_91_     72
-# hold, n=2, max 176, sd 88.0
-     CLK IF_NOC_AXI_WDATA_92_     88
-# hold, n=2, max 165, sd 82.5
-     CLK IF_NOC_AXI_WDATA_93_     82
-# hold, n=2, max 168, sd 84.0
-     CLK IF_NOC_AXI_WDATA_94_     84
-# hold, n=2, max 183, sd 91.5
-     CLK IF_NOC_AXI_WDATA_95_     92
-# hold, n=2, max 215, sd 107.5
-     CLK IF_NOC_AXI_WDATA_96_    108
-# hold, n=2, max 196, sd 98.0
-     CLK IF_NOC_AXI_WDATA_97_     98
-# hold, n=2, max 214, sd 107.0
-     CLK IF_NOC_AXI_WDATA_98_    107
-# hold, n=2, max 202, sd 101.0
-     CLK IF_NOC_AXI_WDATA_99_    101
-# hold, n=2, max 184, sd 92.0
-     CLK IF_NOC_AXI_WDATA_9_     92
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_10_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_11_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_12_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_13_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_14_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_15_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_16_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_17_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_18_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_19_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_20_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_21_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_22_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_23_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_24_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_25_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_26_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_27_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_28_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_29_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_30_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_31_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_32_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_33_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_34_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_35_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_36_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_37_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_38_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_39_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_40_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_41_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_42_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_43_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_44_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_45_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_46_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_47_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_48_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_49_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_50_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_51_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_52_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_53_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_54_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_55_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_56_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_57_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_58_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_59_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_60_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_61_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_62_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_63_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_8_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WDATA_PAR_9_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WID_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WID_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WID_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WID_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WID_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WID_5_      0
-# hold, n=2, max 250, sd 125.0
-     CLK IF_NOC_AXI_WLAST_0_    125
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_WPOISON      0
+# hold, n=1, max 172, sd 0.0
+     CLK IF_NOC_AXI_WDATA_0_    172
+# hold, n=1, max 174, sd 0.0
+     CLK IF_NOC_AXI_WDATA_100_    174
+# hold, n=1, max 210, sd 0.0
+     CLK IF_NOC_AXI_WDATA_101_    210
+# hold, n=1, max 158, sd 0.0
+     CLK IF_NOC_AXI_WDATA_102_    158
+# hold, n=1, max 194, sd 0.0
+     CLK IF_NOC_AXI_WDATA_103_    194
+# hold, n=1, max 146, sd 0.0
+     CLK IF_NOC_AXI_WDATA_104_    146
+# hold, n=1, max 190, sd 0.0
+     CLK IF_NOC_AXI_WDATA_105_    190
+# hold, n=1, max 168, sd 0.0
+     CLK IF_NOC_AXI_WDATA_106_    168
+# hold, n=1, max 157, sd 0.0
+     CLK IF_NOC_AXI_WDATA_107_    157
+# hold, n=1, max 165, sd 0.0
+     CLK IF_NOC_AXI_WDATA_108_    165
+# hold, n=1, max 174, sd 0.0
+     CLK IF_NOC_AXI_WDATA_109_    174
+# hold, n=1, max 166, sd 0.0
+     CLK IF_NOC_AXI_WDATA_10_    166
+# hold, n=1, max 224, sd 0.0
+     CLK IF_NOC_AXI_WDATA_110_    224
+# hold, n=1, max 175, sd 0.0
+     CLK IF_NOC_AXI_WDATA_111_    175
+# hold, n=1, max 173, sd 0.0
+     CLK IF_NOC_AXI_WDATA_112_    173
+# hold, n=1, max 143, sd 0.0
+     CLK IF_NOC_AXI_WDATA_113_    143
+# hold, n=1, max 179, sd 0.0
+     CLK IF_NOC_AXI_WDATA_114_    179
+# hold, n=1, max 178, sd 0.0
+     CLK IF_NOC_AXI_WDATA_115_    178
+# hold, n=1, max 169, sd 0.0
+     CLK IF_NOC_AXI_WDATA_116_    169
+# hold, n=1, max 175, sd 0.0
+     CLK IF_NOC_AXI_WDATA_117_    175
+# hold, n=1, max 170, sd 0.0
+     CLK IF_NOC_AXI_WDATA_118_    170
+# hold, n=1, max 183, sd 0.0
+     CLK IF_NOC_AXI_WDATA_119_    183
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_WDATA_11_    176
+# hold, n=1, max 175, sd 0.0
+     CLK IF_NOC_AXI_WDATA_120_    175
+# hold, n=1, max 175, sd 0.0
+     CLK IF_NOC_AXI_WDATA_121_    175
+# hold, n=1, max 145, sd 0.0
+     CLK IF_NOC_AXI_WDATA_122_    145
+# hold, n=1, max 180, sd 0.0
+     CLK IF_NOC_AXI_WDATA_123_    180
+# hold, n=1, max 168, sd 0.0
+     CLK IF_NOC_AXI_WDATA_124_    168
+# hold, n=1, max 178, sd 0.0
+     CLK IF_NOC_AXI_WDATA_125_    178
+# hold, n=1, max 183, sd 0.0
+     CLK IF_NOC_AXI_WDATA_126_    183
+# hold, n=1, max 173, sd 0.0
+     CLK IF_NOC_AXI_WDATA_127_    173
+# hold, n=1, max 174, sd 0.0
+     CLK IF_NOC_AXI_WDATA_12_    174
+# hold, n=1, max 158, sd 0.0
+     CLK IF_NOC_AXI_WDATA_13_    158
+# hold, n=1, max 178, sd 0.0
+     CLK IF_NOC_AXI_WDATA_14_    178
+# hold, n=1, max 168, sd 0.0
+     CLK IF_NOC_AXI_WDATA_15_    168
+# hold, n=1, max 177, sd 0.0
+     CLK IF_NOC_AXI_WDATA_16_    177
+# hold, n=1, max 178, sd 0.0
+     CLK IF_NOC_AXI_WDATA_17_    178
+# hold, n=1, max 224, sd 0.0
+     CLK IF_NOC_AXI_WDATA_18_    224
+# hold, n=1, max 195, sd 0.0
+     CLK IF_NOC_AXI_WDATA_19_    195
+# hold, n=1, max 179, sd 0.0
+     CLK IF_NOC_AXI_WDATA_1_    179
+# hold, n=1, max 170, sd 0.0
+     CLK IF_NOC_AXI_WDATA_20_    170
+# hold, n=1, max 185, sd 0.0
+     CLK IF_NOC_AXI_WDATA_21_    185
+# hold, n=1, max 181, sd 0.0
+     CLK IF_NOC_AXI_WDATA_22_    181
+# hold, n=1, max 177, sd 0.0
+     CLK IF_NOC_AXI_WDATA_23_    177
+# hold, n=1, max 230, sd 0.0
+     CLK IF_NOC_AXI_WDATA_24_    230
+# hold, n=1, max 130, sd 0.0
+     CLK IF_NOC_AXI_WDATA_25_    130
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_WDATA_26_    176
+# hold, n=1, max 172, sd 0.0
+     CLK IF_NOC_AXI_WDATA_27_    172
+# hold, n=1, max 169, sd 0.0
+     CLK IF_NOC_AXI_WDATA_28_    169
+# hold, n=1, max 182, sd 0.0
+     CLK IF_NOC_AXI_WDATA_29_    182
+# hold, n=1, max 167, sd 0.0
+     CLK IF_NOC_AXI_WDATA_2_    167
+# hold, n=1, max 167, sd 0.0
+     CLK IF_NOC_AXI_WDATA_30_    167
+# hold, n=1, max 191, sd 0.0
+     CLK IF_NOC_AXI_WDATA_31_    191
+# hold, n=1, max 166, sd 0.0
+     CLK IF_NOC_AXI_WDATA_32_    166
+# hold, n=1, max 202, sd 0.0
+     CLK IF_NOC_AXI_WDATA_33_    202
+# hold, n=1, max 205, sd 0.0
+     CLK IF_NOC_AXI_WDATA_34_    205
+# hold, n=1, max 168, sd 0.0
+     CLK IF_NOC_AXI_WDATA_35_    168
+# hold, n=1, max 180, sd 0.0
+     CLK IF_NOC_AXI_WDATA_36_    180
+# hold, n=1, max 194, sd 0.0
+     CLK IF_NOC_AXI_WDATA_37_    194
+# hold, n=1, max 216, sd 0.0
+     CLK IF_NOC_AXI_WDATA_38_    216
+# hold, n=1, max 208, sd 0.0
+     CLK IF_NOC_AXI_WDATA_39_    208
+# hold, n=1, max 186, sd 0.0
+     CLK IF_NOC_AXI_WDATA_3_    186
+# hold, n=1, max 185, sd 0.0
+     CLK IF_NOC_AXI_WDATA_40_    185
+# hold, n=1, max 131, sd 0.0
+     CLK IF_NOC_AXI_WDATA_41_    131
+# hold, n=1, max 151, sd 0.0
+     CLK IF_NOC_AXI_WDATA_42_    151
+# hold, n=1, max 163, sd 0.0
+     CLK IF_NOC_AXI_WDATA_43_    163
+# hold, n=1, max 219, sd 0.0
+     CLK IF_NOC_AXI_WDATA_44_    219
+# hold, n=1, max 215, sd 0.0
+     CLK IF_NOC_AXI_WDATA_45_    215
+# hold, n=1, max 185, sd 0.0
+     CLK IF_NOC_AXI_WDATA_46_    185
+# hold, n=1, max 188, sd 0.0
+     CLK IF_NOC_AXI_WDATA_47_    188
+# hold, n=1, max 221, sd 0.0
+     CLK IF_NOC_AXI_WDATA_48_    221
+# hold, n=1, max 173, sd 0.0
+     CLK IF_NOC_AXI_WDATA_49_    173
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_WDATA_4_    176
+# hold, n=1, max 191, sd 0.0
+     CLK IF_NOC_AXI_WDATA_50_    191
+# hold, n=1, max 161, sd 0.0
+     CLK IF_NOC_AXI_WDATA_51_    161
+# hold, n=1, max 195, sd 0.0
+     CLK IF_NOC_AXI_WDATA_52_    195
+# hold, n=1, max 226, sd 0.0
+     CLK IF_NOC_AXI_WDATA_53_    226
+# hold, n=1, max 168, sd 0.0
+     CLK IF_NOC_AXI_WDATA_54_    168
+# hold, n=1, max 149, sd 0.0
+     CLK IF_NOC_AXI_WDATA_55_    149
+# hold, n=1, max 173, sd 0.0
+     CLK IF_NOC_AXI_WDATA_56_    173
+# hold, n=1, max 186, sd 0.0
+     CLK IF_NOC_AXI_WDATA_57_    186
+# hold, n=1, max 190, sd 0.0
+     CLK IF_NOC_AXI_WDATA_58_    190
+# hold, n=1, max 197, sd 0.0
+     CLK IF_NOC_AXI_WDATA_59_    197
+# hold, n=1, max 161, sd 0.0
+     CLK IF_NOC_AXI_WDATA_5_    161
+# hold, n=1, max 188, sd 0.0
+     CLK IF_NOC_AXI_WDATA_60_    188
+# hold, n=1, max 187, sd 0.0
+     CLK IF_NOC_AXI_WDATA_61_    187
+# hold, n=1, max 174, sd 0.0
+     CLK IF_NOC_AXI_WDATA_62_    174
+# hold, n=1, max 185, sd 0.0
+     CLK IF_NOC_AXI_WDATA_63_    185
+# hold, n=1, max 173, sd 0.0
+     CLK IF_NOC_AXI_WDATA_64_    173
+# hold, n=1, max 191, sd 0.0
+     CLK IF_NOC_AXI_WDATA_65_    191
+# hold, n=1, max 183, sd 0.0
+     CLK IF_NOC_AXI_WDATA_66_    183
+# hold, n=1, max 166, sd 0.0
+     CLK IF_NOC_AXI_WDATA_67_    166
+# hold, n=1, max 165, sd 0.0
+     CLK IF_NOC_AXI_WDATA_68_    165
+# hold, n=1, max 184, sd 0.0
+     CLK IF_NOC_AXI_WDATA_69_    184
+# hold, n=1, max 177, sd 0.0
+     CLK IF_NOC_AXI_WDATA_6_    177
+# hold, n=1, max 224, sd 0.0
+     CLK IF_NOC_AXI_WDATA_70_    224
+# hold, n=1, max 171, sd 0.0
+     CLK IF_NOC_AXI_WDATA_71_    171
+# hold, n=1, max 160, sd 0.0
+     CLK IF_NOC_AXI_WDATA_72_    160
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_WDATA_73_    176
+# hold, n=1, max 163, sd 0.0
+     CLK IF_NOC_AXI_WDATA_74_    163
+# hold, n=1, max 181, sd 0.0
+     CLK IF_NOC_AXI_WDATA_75_    181
+# hold, n=1, max 174, sd 0.0
+     CLK IF_NOC_AXI_WDATA_76_    174
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_WDATA_77_    176
+# hold, n=1, max 160, sd 0.0
+     CLK IF_NOC_AXI_WDATA_78_    160
+# hold, n=1, max 174, sd 0.0
+     CLK IF_NOC_AXI_WDATA_79_    174
+# hold, n=1, max 131, sd 0.0
+     CLK IF_NOC_AXI_WDATA_7_    131
+# hold, n=1, max 205, sd 0.0
+     CLK IF_NOC_AXI_WDATA_80_    205
+# hold, n=1, max 173, sd 0.0
+     CLK IF_NOC_AXI_WDATA_81_    173
+# hold, n=1, max 175, sd 0.0
+     CLK IF_NOC_AXI_WDATA_82_    175
+# hold, n=1, max 182, sd 0.0
+     CLK IF_NOC_AXI_WDATA_83_    182
+# hold, n=1, max 186, sd 0.0
+     CLK IF_NOC_AXI_WDATA_84_    186
+# hold, n=1, max 307, sd 0.0
+     CLK IF_NOC_AXI_WDATA_85_    307
+# hold, n=1, max 177, sd 0.0
+     CLK IF_NOC_AXI_WDATA_86_    177
+# hold, n=1, max 183, sd 0.0
+     CLK IF_NOC_AXI_WDATA_87_    183
+# hold, n=1, max 152, sd 0.0
+     CLK IF_NOC_AXI_WDATA_88_    152
+# hold, n=1, max 178, sd 0.0
+     CLK IF_NOC_AXI_WDATA_89_    178
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_WDATA_8_    176
+# hold, n=1, max 258, sd 0.0
+     CLK IF_NOC_AXI_WDATA_90_    258
+# hold, n=1, max 143, sd 0.0
+     CLK IF_NOC_AXI_WDATA_91_    143
+# hold, n=1, max 176, sd 0.0
+     CLK IF_NOC_AXI_WDATA_92_    176
+# hold, n=1, max 165, sd 0.0
+     CLK IF_NOC_AXI_WDATA_93_    165
+# hold, n=1, max 168, sd 0.0
+     CLK IF_NOC_AXI_WDATA_94_    168
+# hold, n=1, max 183, sd 0.0
+     CLK IF_NOC_AXI_WDATA_95_    183
+# hold, n=1, max 215, sd 0.0
+     CLK IF_NOC_AXI_WDATA_96_    215
+# hold, n=1, max 196, sd 0.0
+     CLK IF_NOC_AXI_WDATA_97_    196
+# hold, n=1, max 214, sd 0.0
+     CLK IF_NOC_AXI_WDATA_98_    214
+# hold, n=1, max 202, sd 0.0
+     CLK IF_NOC_AXI_WDATA_99_    202
+# hold, n=1, max 184, sd 0.0
+     CLK IF_NOC_AXI_WDATA_9_    184
+# hold, n=1, max 250, sd 0.0
+     CLK IF_NOC_AXI_WLAST_0_    250
 # Reg Clk to Q, n=1, max 296, sd 0.0
      CLK IF_NOC_AXI_WREADY    296
-# hold, n=2, max 155, sd 77.5
-     CLK IF_NOC_AXI_WSTRB_0_     78
-# hold, n=2, max 181, sd 90.5
-     CLK IF_NOC_AXI_WSTRB_10_     90
-# hold, n=2, max 210, sd 105.0
-     CLK IF_NOC_AXI_WSTRB_11_    105
-# hold, n=2, max 209, sd 104.5
-     CLK IF_NOC_AXI_WSTRB_12_    104
-# hold, n=2, max 175, sd 87.5
-     CLK IF_NOC_AXI_WSTRB_13_     88
-# hold, n=2, max 167, sd 83.5
-     CLK IF_NOC_AXI_WSTRB_14_     84
-# hold, n=2, max 184, sd 92.0
-     CLK IF_NOC_AXI_WSTRB_15_     92
-# hold, n=2, max 155, sd 77.5
-     CLK IF_NOC_AXI_WSTRB_1_     78
-# hold, n=2, max 188, sd 94.0
-     CLK IF_NOC_AXI_WSTRB_2_     94
-# hold, n=2, max 162, sd 81.0
-     CLK IF_NOC_AXI_WSTRB_3_     81
-# hold, n=2, max 177, sd 88.5
-     CLK IF_NOC_AXI_WSTRB_4_     88
-# hold, n=2, max 173, sd 86.5
-     CLK IF_NOC_AXI_WSTRB_5_     86
-# hold, n=2, max 172, sd 86.0
-     CLK IF_NOC_AXI_WSTRB_6_     86
-# hold, n=2, max 118, sd 59.0
-     CLK IF_NOC_AXI_WSTRB_7_     59
-# hold, n=2, max 131, sd 65.5
-     CLK IF_NOC_AXI_WSTRB_8_     66
-# hold, n=2, max 184, sd 92.0
-     CLK IF_NOC_AXI_WSTRB_9_     92
-# hold, n=2, max 95, sd 47.5
-     CLK IF_NOC_AXI_WVALID     48
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_DEST_MODE      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_10_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_11_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_8_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_RD_USR_DST_9_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_DEST_MODE      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_10_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_11_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_8_      0
-# hold, n=1, max 0, sd 0.0
-     CLK NMU_WR_USR_DST_9_      0
+# hold, n=1, max 155, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_0_    155
+# hold, n=1, max 181, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_10_    181
+# hold, n=1, max 210, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_11_    210
+# hold, n=1, max 209, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_12_    209
+# hold, n=1, max 175, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_13_    175
+# hold, n=1, max 167, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_14_    167
+# hold, n=1, max 184, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_15_    184
+# hold, n=1, max 155, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_1_    155
+# hold, n=1, max 188, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_2_    188
+# hold, n=1, max 162, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_3_    162
+# hold, n=1, max 177, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_4_    177
+# hold, n=1, max 173, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_5_    173
+# hold, n=1, max 172, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_6_    172
+# hold, n=1, max 118, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_7_    118
+# hold, n=1, max 131, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_8_    131
+# hold, n=1, max 184, sd 0.0
+     CLK IF_NOC_AXI_WSTRB_9_    184
+# hold, n=1, max 95, sd 0.0
+     CLK IF_NOC_AXI_WVALID     95
 
 bel NSU@NOC_NSU512 in NOC_NSU512
 # Reg Clk to Q, n=1, max 349, sd 0.0
@@ -26373,42 +25789,6 @@ bel NSU@NOC_NSU512 in NOC_NSU512
      CLK IF_NOC_AXI_BCID_1_    148
 # Reg Clk to Q, n=1, max 352, sd 0.0
      CLK IF_NOC_AXI_BREADY    352
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BRESP_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BRESP_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_10_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_11_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_12_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_13_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_14_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_15_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_8_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_BUSER_9_      0
 # hold, n=1, max 109, sd 0.0
      CLK IF_NOC_AXI_BVALID    109
 # hold, n=1, max 238, sd 0.0
@@ -26479,144 +25859,8 @@ bel NSU@NOC_NSU512 in NOC_NSU512
      CLK IF_NOC_AXI_RDATA_8_    231
 # hold, n=1, max 204, sd 0.0
      CLK IF_NOC_AXI_RDATA_9_    204
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_10_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_11_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_12_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_13_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_14_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_15_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_16_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_17_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_18_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_19_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_1_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_20_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_21_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_22_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_23_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_24_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_25_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_26_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_27_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_28_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_29_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_2_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_30_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_31_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_32_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_33_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_34_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_35_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_36_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_37_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_38_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_39_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_3_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_40_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_41_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_42_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_43_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_44_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_45_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_46_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_47_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_48_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_49_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_4_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_50_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_51_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_52_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_53_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_54_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_55_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_56_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_57_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_58_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_59_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_5_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_60_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_61_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_62_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_63_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_6_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_7_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_8_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RDATA_PAR_9_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RLAST_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RPOISON      0
 # Reg Clk to Q, n=1, max 349, sd 0.0
      CLK IF_NOC_AXI_RREADY    349
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RRESP_0_      0
-# hold, n=1, max 0, sd 0.0
-     CLK IF_NOC_AXI_RRESP_1_      0
 # hold, n=1, max 176, sd 0.0
      CLK IF_NOC_AXI_RVALID    176
 # Reg Clk to Q, n=1, max 456, sd 0.0
@@ -26699,12 +25943,10 @@ bel NSU@NOC_NSU512 in NOC_NSU512
      CLK IF_NOC_AXI_WVALID    332
 
 bel RAMB18_L_RAM@RAMB18_L in RAMB18_L
-# hold, n=2, max 0, sd 0.0
-CLKARDCLK ADDRARDADDR_0_      0
-# hold, n=2, max 0, sd 28.5
-CLKARDCLK ADDRARDADDR_10_    -28
-# hold, n=2, max 0, sd 21.0
-CLKARDCLK ADDRARDADDR_1_    -21
+# hold, n=1, max -57, sd 0.0
+CLKARDCLK ADDRARDADDR_10_    -57
+# hold, n=1, max -42, sd 0.0
+CLKARDCLK ADDRARDADDR_1_    -42
 # hold, n=2, max -64, sd 0.0
 CLKARDCLK ADDRARDADDR_2_    -64
 # hold, n=2, max -74, sd 0.0
@@ -26717,54 +25959,10 @@ CLKARDCLK ADDRARDADDR_5_    -66
 CLKARDCLK ADDRARDADDR_6_    -63
 # hold, n=2, max -58, sd 0.0
 CLKARDCLK ADDRARDADDR_7_    -58
-# hold, n=2, max 0, sd 30.0
-CLKARDCLK ADDRARDADDR_8_    -30
-# hold, n=2, max 0, sd 30.0
-CLKARDCLK ADDRARDADDR_9_    -30
-# hold, n=2, max 0, sd 0.0
-CLKARDCLK CASDOMUXA      0
-# hold, n=2, max 0, sd 0.0
-CLKARDCLK CASDOMUXEN_A      0
-# hold, n=2, max 0, sd 0.0
-CLKARDCLK CASOREGIMUXA      0
-# hold, n=2, max 0, sd 0.0
-CLKARDCLK CASOREGIMUXEN_A      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_10_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_11_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_12_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_13_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_14_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_15_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_1_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_2_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_3_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_4_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_5_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_6_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_7_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_8_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_9_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINPADINP_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINPADINP_1_      0
+# hold, n=1, max -60, sd 0.0
+CLKARDCLK ADDRARDADDR_8_    -60
+# hold, n=1, max -60, sd 0.0
+CLKARDCLK ADDRARDADDR_9_    -60
 # Reg Clk to Q, n=1, max 357, sd 0.0
 CLKARDCLK DOUTADOUT_0_    357
 # Reg Clk to Q, n=1, max 358, sd 0.0
@@ -26829,30 +26027,16 @@ CLKARDCLK DOUTBDOUT_9_    351
 CLKARDCLK DOUTPADOUTP_0_    344
 # Reg Clk to Q, n=1, max 332, sd 0.0
 CLKARDCLK DOUTPADOUTP_1_    332
-# hold, n=2, max 0, sd 0.5
-CLKARDCLK ENARDEN       0
-# hold, n=2, max 0, sd 50.5
-CLKARDCLK REGCEAREGCE    -50
-# hold, n=2, max 0, sd 0.0
-CLKARDCLK RSTRAMARSTRAM      0
-# hold, n=2, max 0, sd 41.0
-CLKARDCLK RSTREGARSTREG    -41
-# hold, n=2, max 0, sd 0.0
-CLKARDCLK SLEEP         0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK WEA_0_        0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK WEA_1_        0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK WEA_2_        0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK WEA_3_        0
-# hold, n=2, max 0, sd 0.0
-CLKBWRCLK ADDRBWRADDR_0_      0
-# hold, n=2, max 0, sd 37.0
-CLKBWRCLK ADDRBWRADDR_10_    -37
-# hold, n=2, max 0, sd 27.0
-CLKBWRCLK ADDRBWRADDR_1_    -27
+# hold, n=1, max -1, sd 0.0
+CLKARDCLK ENARDEN      -1
+# hold, n=1, max -101, sd 0.0
+CLKARDCLK REGCEAREGCE   -101
+# hold, n=1, max -82, sd 0.0
+CLKARDCLK RSTREGARSTREG    -82
+# hold, n=1, max -74, sd 0.0
+CLKBWRCLK ADDRBWRADDR_10_    -74
+# hold, n=1, max -54, sd 0.0
+CLKBWRCLK ADDRBWRADDR_1_    -54
 # hold, n=2, max -86, sd 0.0
 CLKBWRCLK ADDRBWRADDR_2_    -86
 # hold, n=2, max -68, sd 0.0
@@ -26865,18 +26049,10 @@ CLKBWRCLK ADDRBWRADDR_5_    -67
 CLKBWRCLK ADDRBWRADDR_6_    -93
 # hold, n=2, max -72, sd 0.0
 CLKBWRCLK ADDRBWRADDR_7_    -72
-# hold, n=2, max 0, sd 42.5
-CLKBWRCLK ADDRBWRADDR_8_    -42
-# hold, n=2, max 0, sd 44.0
-CLKBWRCLK ADDRBWRADDR_9_    -44
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK CASDOMUXB      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK CASDOMUXEN_B      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK CASOREGIMUXB      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK CASOREGIMUXEN_B      0
+# hold, n=1, max -85, sd 0.0
+CLKBWRCLK ADDRBWRADDR_8_    -85
+# hold, n=1, max -88, sd 0.0
+CLKBWRCLK ADDRBWRADDR_9_    -88
 # hold, n=1, max -50, sd 0.0
 CLKBWRCLK DINADIN_0_    -50
 # hold, n=1, max -66, sd 0.0
@@ -26911,52 +26087,36 @@ CLKBWRCLK DINADIN_8_    -73
 CLKBWRCLK DINADIN_9_    -54
 # hold, n=2, max -42, sd 0.0
 CLKBWRCLK DINBDIN_0_    -42
-# hold, n=2, max 0, sd 22.0
-CLKBWRCLK DINBDIN_10_    -22
-# hold, n=2, max 0, sd 23.0
-CLKBWRCLK DINBDIN_11_    -23
-# hold, n=2, max 0, sd 23.5
-CLKBWRCLK DINBDIN_12_    -24
-# hold, n=2, max 0, sd 21.0
-CLKBWRCLK DINBDIN_13_    -21
-# hold, n=2, max 0, sd 0.0
-CLKBWRCLK DINBDIN_14_      0
-# hold, n=2, max 0, sd 0.0
-CLKBWRCLK DINBDIN_15_      0
+# hold, n=1, max -44, sd 0.0
+CLKBWRCLK DINBDIN_10_    -44
+# hold, n=1, max -46, sd 0.0
+CLKBWRCLK DINBDIN_11_    -46
+# hold, n=1, max -47, sd 0.0
+CLKBWRCLK DINBDIN_12_    -47
+# hold, n=1, max -42, sd 0.0
+CLKBWRCLK DINBDIN_13_    -42
 # hold, n=2, max -36, sd 1.0
 CLKBWRCLK DINBDIN_1_    -37
-# hold, n=2, max 0, sd 26.5
-CLKBWRCLK DINBDIN_2_    -26
-# hold, n=2, max 0, sd 26.0
-CLKBWRCLK DINBDIN_3_    -26
-# hold, n=2, max 0, sd 24.5
-CLKBWRCLK DINBDIN_4_    -24
-# hold, n=2, max 0, sd 23.5
-CLKBWRCLK DINBDIN_5_    -24
-# hold, n=2, max 0, sd 22.0
-CLKBWRCLK DINBDIN_6_    -22
-# hold, n=2, max 0, sd 36.0
-CLKBWRCLK DINBDIN_7_    -36
-# hold, n=2, max 0, sd 26.5
-CLKBWRCLK DINBDIN_8_    -26
-# hold, n=2, max 0, sd 22.5
-CLKBWRCLK DINBDIN_9_    -22
+# hold, n=1, max -53, sd 0.0
+CLKBWRCLK DINBDIN_2_    -53
+# hold, n=1, max -52, sd 0.0
+CLKBWRCLK DINBDIN_3_    -52
+# hold, n=1, max -49, sd 0.0
+CLKBWRCLK DINBDIN_4_    -49
+# hold, n=1, max -47, sd 0.0
+CLKBWRCLK DINBDIN_5_    -47
+# hold, n=1, max -44, sd 0.0
+CLKBWRCLK DINBDIN_6_    -44
+# hold, n=1, max -72, sd 0.0
+CLKBWRCLK DINBDIN_7_    -72
+# hold, n=1, max -53, sd 0.0
+CLKBWRCLK DINBDIN_8_    -53
+# hold, n=1, max -45, sd 0.0
+CLKBWRCLK DINBDIN_9_    -45
 # hold, n=1, max -51, sd 0.0
 CLKBWRCLK DINPADINP_0_    -51
 # hold, n=1, max -55, sd 0.0
 CLKBWRCLK DINPADINP_1_    -55
-# hold, n=2, max 0, sd 0.0
-CLKBWRCLK DINPBDINP_0_      0
-# hold, n=2, max 0, sd 0.0
-CLKBWRCLK DINPBDINP_1_      0
-# hold, n=2, max 0, sd 0.0
-CLKBWRCLK ENBWREN       0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK REGCEB        0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK RSTRAMB       0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK RSTREGB       0
 # hold, n=1, max -126, sd 0.0
 CLKBWRCLK WEA_0_     -126
 # hold, n=1, max -126, sd 0.0
@@ -26975,10 +26135,6 @@ CLKBWRCLK WEBWE_2_   -134
 CLKBWRCLK WEBWE_3_   -134
 
 bel RAMB18_U_RAM@RAMB18_U in RAMB18_U
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK ADDRARDADDR_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK ADDRARDADDR_10_      0
 # hold, n=1, max -53, sd 0.0
 CLKARDCLK ADDRARDADDR_1_    -53
 # hold, n=1, max -81, sd 0.0
@@ -26993,54 +26149,6 @@ CLKARDCLK ADDRARDADDR_5_    -69
 CLKARDCLK ADDRARDADDR_6_    -60
 # hold, n=1, max -60, sd 0.0
 CLKARDCLK ADDRARDADDR_7_    -60
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK ADDRARDADDR_8_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK ADDRARDADDR_9_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK CASDOMUXA      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK CASDOMUXEN_A      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK CASOREGIMUXA      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK CASOREGIMUXEN_A      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_10_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_11_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_12_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_13_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_14_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_15_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_1_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_2_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_3_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_4_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_5_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_6_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_7_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_8_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINADIN_9_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINPADINP_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK DINPADINP_1_      0
 # Reg Clk to Q, n=1, max 145, sd 0.0
 CLKARDCLK DOUTADOUT_0_    145
 # Reg Clk to Q, n=1, max 143, sd 0.0
@@ -27049,24 +26157,8 @@ CLKARDCLK DOUTADOUT_1_    143
 CLKARDCLK ENARDEN     -47
 # hold, n=1, max -84, sd 0.0
 CLKARDCLK REGCEAREGCE    -84
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK RSTRAMARSTRAM      0
 # hold, n=1, max -88, sd 0.0
 CLKARDCLK RSTREGARSTREG    -88
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK SLEEP         0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK WEA_0_        0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK WEA_1_        0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK WEA_2_        0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLK WEA_3_        0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK ADDRBWRADDR_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK ADDRBWRADDR_10_      0
 # hold, n=1, max -45, sd 0.0
 CLKBWRCLK ADDRBWRADDR_1_    -45
 # hold, n=1, max -94, sd 0.0
@@ -27081,62 +26173,10 @@ CLKBWRCLK ADDRBWRADDR_5_    -81
 CLKBWRCLK ADDRBWRADDR_6_    -92
 # hold, n=1, max -82, sd 0.0
 CLKBWRCLK ADDRBWRADDR_7_    -82
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK ADDRBWRADDR_8_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK ADDRBWRADDR_9_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK CASDOMUXB      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK CASDOMUXEN_B      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK CASOREGIMUXB      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK CASOREGIMUXEN_B      0
 # hold, n=1, max -37, sd 0.0
 CLKBWRCLK DINBDIN_0_    -37
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_10_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_11_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_12_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_13_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_14_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_15_      0
 # hold, n=1, max -41, sd 0.0
 CLKBWRCLK DINBDIN_1_    -41
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_2_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_3_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_4_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_5_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_6_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_7_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_8_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINBDIN_9_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINPBDINP_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK DINPBDINP_1_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK ENBWREN       0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK REGCEB        0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK RSTRAMB       0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLK RSTREGB       0
 # hold, n=1, max -120, sd 0.0
 CLKBWRCLK WEBWE_0_   -120
 # hold, n=1, max -135, sd 0.0
@@ -27147,16 +26187,6 @@ CLKBWRCLK WEBWE_2_   -118
 CLKBWRCLK WEBWE_3_   -120
 
 bel RAMB36_RAM@RAMB36 in RAMB36
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL ADDRARDADDRL_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL ADDRARDADDRL_10_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL ADDRARDADDRL_11_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL ADDRARDADDRL_1_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL ADDRARDADDRL_2_      0
 # hold, n=1, max -64, sd 0.0
 CLKARDCLKL ADDRARDADDRL_3_    -64
 # hold, n=1, max -74, sd 0.0
@@ -27171,14 +26201,6 @@ CLKARDCLKL ADDRARDADDRL_7_    -63
 CLKARDCLKL ADDRARDADDRL_8_    -58
 # hold, n=1, max -60, sd 0.0
 CLKARDCLKL ADDRARDADDRL_9_    -60
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL CASDOMUXAL      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL CASDOMUXEN_AL      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL CASOREGIMUXAL      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL CASOREGIMUXEN_AL      0
 # Reg Clk to Q, n=1, max 123, sd 0.0
 CLKARDCLKL DOUTADOUT_0_    123
 # Reg Clk to Q, n=1, max 125, sd 0.0
@@ -27251,28 +26273,12 @@ CLKARDCLKL DOUTPADOUTP_2_    123
 CLKARDCLKL DOUTPBDOUTP_0_    133
 # Reg Clk to Q, n=1, max 135, sd 0.0
 CLKARDCLKL DOUTPBDOUTP_2_    135
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL ECCPIPECEL      0
 # hold, n=1, max -1, sd 0.0
 CLKARDCLKL ENARDENL     -1
 # hold, n=1, max -101, sd 0.0
 CLKARDCLKL REGCEAREGCEL   -101
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL RSTRAMARSTRAML      0
 # hold, n=1, max -82, sd 0.0
 CLKARDCLKL RSTREGARSTREGL    -82
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKL SLEEPL        0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU ADDRARDADDRU_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU ADDRARDADDRU_10_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU ADDRARDADDRU_11_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU ADDRARDADDRU_1_      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU ADDRARDADDRU_2_      0
 # hold, n=1, max -81, sd 0.0
 CLKARDCLKU ADDRARDADDRU_3_    -81
 # hold, n=1, max -80, sd 0.0
@@ -27287,14 +26293,6 @@ CLKARDCLKU ADDRARDADDRU_7_    -60
 CLKARDCLKU ADDRARDADDRU_8_    -60
 # hold, n=1, max -68, sd 0.0
 CLKARDCLKU ADDRARDADDRU_9_    -68
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU CASDOMUXAU      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU CASDOMUXEN_AU      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU CASOREGIMUXAU      0
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU CASOREGIMUXEN_AU      0
 # Reg Clk to Q, n=1, max 139, sd 0.0
 CLKARDCLKU DOUTADOUT_11_    139
 # Reg Clk to Q, n=1, max 140, sd 0.0
@@ -27367,28 +26365,12 @@ CLKARDCLKU DOUTPADOUTP_3_    146
 CLKARDCLKU DOUTPBDOUTP_1_    163
 # Reg Clk to Q, n=1, max 137, sd 0.0
 CLKARDCLKU DOUTPBDOUTP_3_    137
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU ECCPIPECEL      0
 # hold, n=1, max -47, sd 0.0
 CLKARDCLKU ENARDENU    -47
 # hold, n=1, max -84, sd 0.0
 CLKARDCLKU REGCEAREGCEU    -84
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU RSTRAMARSTRAMU      0
 # hold, n=1, max -88, sd 0.0
 CLKARDCLKU RSTREGARSTREGU    -88
-# hold, n=1, max 0, sd 0.0
-CLKARDCLKU SLEEPU        0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKL ADDRBWRADDRL_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKL ADDRBWRADDRL_10_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKL ADDRBWRADDRL_11_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKL ADDRBWRADDRL_1_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKL ADDRBWRADDRL_2_      0
 # hold, n=1, max -86, sd 0.0
 CLKBWRCLKL ADDRBWRADDRL_3_    -86
 # hold, n=1, max -68, sd 0.0
@@ -27475,8 +26457,6 @@ CLKBWRCLKL DINPADINP_2_    -55
 CLKBWRCLKL DINPBDINP_0_    -69
 # hold, n=1, max -71, sd 0.0
 CLKBWRCLKL DINPBDINP_2_    -71
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKL ENBWRENL      0
 # hold, n=1, max -126, sd 0.0
 CLKBWRCLKL WEAL_0_    -126
 # hold, n=1, max -126, sd 0.0
@@ -27493,18 +26473,6 @@ CLKBWRCLKL WEBWEL_1_   -134
 CLKBWRCLKL WEBWEL_2_   -135
 # hold, n=1, max -135, sd 0.0
 CLKBWRCLKL WEBWEL_3_   -135
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKL WE_IND_PARITY      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKU ADDRBWRADDRU_0_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKU ADDRBWRADDRU_10_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKU ADDRBWRADDRU_11_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKU ADDRBWRADDRU_1_      0
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKU ADDRBWRADDRU_2_      0
 # hold, n=1, max -94, sd 0.0
 CLKBWRCLKU ADDRBWRADDRU_3_    -94
 # hold, n=1, max -92, sd 0.0
@@ -27591,8 +26559,6 @@ CLKBWRCLKU DINPADINP_3_    -74
 CLKBWRCLKU DINPBDINP_1_    -51
 # hold, n=1, max -65, sd 0.0
 CLKBWRCLKU DINPBDINP_3_    -65
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKU ENBWRENU      0
 # hold, n=1, max -124, sd 0.0
 CLKBWRCLKU WEAU_0_    -124
 # hold, n=1, max -144, sd 0.0
@@ -27609,8 +26575,6 @@ CLKBWRCLKU WEBWEU_1_   -141
 CLKBWRCLKU WEBWEU_2_   -128
 # hold, n=1, max -131, sd 0.0
 CLKBWRCLKU WEBWEU_3_   -131
-# hold, n=1, max 0, sd 0.0
-CLKBWRCLKU WE_IND_PARITY      0
 
 bel A5LUT@SLICEL in SLICEL
 # combinational, n=515, max 96, sd 0.0
@@ -27691,7 +26655,7 @@ bel A6LUT_LUTCY@SLICEL in SLICEL
 bel AFF@SLICEL in SLICEL
 # hold, n=2778, max 35, sd 0.0
      CLK CE           35
-# hold, n=6363, max 40, sd 0.7
+# hold, n=6361, max 40, sd 0.0
      CLK D            40
 # Reg Clk to Q, n=6361, max 71, sd 0.0
      CLK Q            71
@@ -27701,7 +26665,7 @@ bel AFF@SLICEL in SLICEL
 bel AFF2@SLICEL in SLICEL
 # hold, n=422, max 35, sd 0.0
      CLK CE           35
-# hold, n=2604, max 40, sd 0.8
+# hold, n=2603, max 40, sd 0.0
      CLK D            40
 # Reg Clk to Q, n=2603, max 71, sd 0.0
      CLK Q            71
@@ -27791,7 +26755,7 @@ bel B6LUT_LUTCY@SLICEL in SLICEL
 bel BFF@SLICEL in SLICEL
 # hold, n=255, max 35, sd 0.0
      CLK CE           35
-# hold, n=1613, max 39, sd 1.0
+# hold, n=1612, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=1612, max 70, sd 0.0
      CLK Q            70
@@ -27801,7 +26765,7 @@ bel BFF@SLICEL in SLICEL
 bel BFF2@SLICEL in SLICEL
 # hold, n=283, max 35, sd 0.0
      CLK CE           35
-# hold, n=1717, max 39, sd 1.3
+# hold, n=1715, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=1715, max 71, sd 0.0
      CLK Q            71
@@ -27895,7 +26859,7 @@ bel C6LUT_LUTCY@SLICEL in SLICEL
 bel CFF@SLICEL in SLICEL
 # hold, n=1904, max 34, sd 0.0
      CLK CE           34
-# hold, n=3428, max 38, sd 0.6
+# hold, n=3427, max 38, sd 0.0
      CLK D            38
 # Reg Clk to Q, n=3427, max 70, sd 0.0
      CLK Q            70
@@ -27905,7 +26869,7 @@ bel CFF@SLICEL in SLICEL
 bel CFF2@SLICEL in SLICEL
 # hold, n=402, max 34, sd 0.0
      CLK CE           34
-# hold, n=1690, max 39, sd 0.9
+# hold, n=1689, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=1689, max 70, sd 0.0
      CLK Q            70
@@ -28095,7 +27059,7 @@ bel E6LUT_LUTCY@SLICEL in SLICEL
 bel EFF@SLICEL in SLICEL
 # hold, n=1503, max 33, sd 0.0
      CLK CE           33
-# hold, n=2749, max 39, sd 0.7
+# hold, n=2748, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=2748, max 70, sd 0.0
      CLK Q            70
@@ -28565,8 +27529,8 @@ bel A5LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=1, max 91, sd 0.0
      CLK WA4          91
-# hold, n=2, max 93, sd 46.5
-     CLK WA5          46
+# hold, n=1, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 4, sd 0.0
      CLK WE            4
 
@@ -28645,8 +27609,8 @@ bel A6LUT_RAM@SLICEM in SLICEM
       A6 O6           13
 # hold, n=1, max 64, sd 0.0
      CLK DI           64
-# hold, n=2, max 63, sd 31.5
-     CLK DI2WE2       32
+# hold, n=1, max 63, sd 0.0
+     CLK DI2WE2       63
 # Reg Clk to Q, n=2, max 161, sd 0.0
      CLK O6          161
 # hold, n=2, max 93, sd 0.0
@@ -28657,8 +27621,8 @@ bel A6LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=2, max 91, sd 0.0
      CLK WA4          91
-# hold, n=3, max 93, sd 43.8
-     CLK WA5          62
+# hold, n=2, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 93, sd 0.0
      CLK WA6          93
 # hold, n=2, max 4, sd 0.0
@@ -28687,7 +27651,7 @@ bel A6LUT_SRL@SLICEM in SLICEM
 bel AFF@SLICEM in SLICEM
 # hold, n=2819, max 35, sd 0.0
      CLK CE           35
-# hold, n=5233, max 40, sd 0.8
+# hold, n=5231, max 40, sd 0.0
      CLK D            40
 # Reg Clk to Q, n=5231, max 70, sd 0.0
      CLK Q            70
@@ -28697,7 +27661,7 @@ bel AFF@SLICEM in SLICEM
 bel AFF2@SLICEM in SLICEM
 # hold, n=355, max 35, sd 0.0
      CLK CE           35
-# hold, n=2115, max 40, sd 0.9
+# hold, n=2114, max 40, sd 0.0
      CLK D            40
 # Reg Clk to Q, n=2114, max 70, sd 0.0
      CLK Q            70
@@ -28761,8 +27725,8 @@ bel B5LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=1, max 91, sd 0.0
      CLK WA4          91
-# hold, n=2, max 93, sd 46.5
-     CLK WA5          46
+# hold, n=1, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 4, sd 0.0
      CLK WE            4
 
@@ -28831,8 +27795,8 @@ bel B6LUT_RAM@SLICEM in SLICEM
       A6 O6           13
 # hold, n=1, max 64, sd 0.0
      CLK DI           64
-# hold, n=2, max 64, sd 32.0
-     CLK DI2WE2       32
+# hold, n=1, max 64, sd 0.0
+     CLK DI2WE2       64
 # Reg Clk to Q, n=2, max 161, sd 0.0
      CLK O6          161
 # hold, n=2, max 93, sd 0.0
@@ -28843,8 +27807,8 @@ bel B6LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=2, max 91, sd 0.0
      CLK WA4          91
-# hold, n=3, max 93, sd 43.8
-     CLK WA5          62
+# hold, n=2, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 93, sd 0.0
      CLK WA6          93
 # hold, n=2, max 4, sd 0.0
@@ -28859,8 +27823,8 @@ bel B6LUT_SRL@SLICEM in SLICEM
       A4 O6           57
 # combinational, n=1, max 39, sd 0.0
       A5 O6           39
-# hold, n=2, max 90, sd 45.0
-     CLK DI2WE2       45
+# hold, n=1, max 90, sd 0.0
+     CLK DI2WE2       90
 # Reg Clk to Q, n=1, max 153, sd 0.0
      CLK O6          153
 # hold, n=1, max 4, sd 0.0
@@ -28869,7 +27833,7 @@ bel B6LUT_SRL@SLICEM in SLICEM
 bel BFF@SLICEM in SLICEM
 # hold, n=240, max 35, sd 0.0
      CLK CE           35
-# hold, n=1269, max 39, sd 1.1
+# hold, n=1268, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=1268, max 69, sd 0.0
      CLK Q            69
@@ -28879,7 +27843,7 @@ bel BFF@SLICEM in SLICEM
 bel BFF2@SLICEM in SLICEM
 # hold, n=232, max 35, sd 0.0
      CLK CE           35
-# hold, n=1301, max 39, sd 1.1
+# hold, n=1300, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=1300, max 70, sd 0.0
      CLK Q            70
@@ -28943,8 +27907,8 @@ bel C5LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=1, max 91, sd 0.0
      CLK WA4          91
-# hold, n=2, max 93, sd 46.5
-     CLK WA5          46
+# hold, n=1, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 4, sd 0.0
      CLK WE            4
 
@@ -29023,8 +27987,8 @@ bel C6LUT_RAM@SLICEM in SLICEM
       A6 O6           12
 # hold, n=1, max 61, sd 0.0
      CLK DI           61
-# hold, n=2, max 64, sd 32.0
-     CLK DI2WE2       32
+# hold, n=1, max 64, sd 0.0
+     CLK DI2WE2       64
 # Reg Clk to Q, n=2, max 157, sd 0.0
      CLK O6          157
 # hold, n=2, max 93, sd 0.0
@@ -29035,8 +27999,8 @@ bel C6LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=2, max 91, sd 0.0
      CLK WA4          91
-# hold, n=3, max 93, sd 43.8
-     CLK WA5          62
+# hold, n=2, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 93, sd 0.0
      CLK WA6          93
 # hold, n=2, max 4, sd 0.0
@@ -29051,8 +28015,8 @@ bel C6LUT_SRL@SLICEM in SLICEM
       A4 O6           56
 # combinational, n=2, max 38, sd 0.0
       A5 O6           38
-# hold, n=3, max 89, sd 42.0
-     CLK DI2WE2       59
+# hold, n=2, max 89, sd 0.0
+     CLK DI2WE2       89
 # Reg Clk to Q, n=2, max 155, sd 0.0
      CLK O6          155
 # hold, n=1, max 4, sd 0.0
@@ -29061,7 +28025,7 @@ bel C6LUT_SRL@SLICEM in SLICEM
 bel CFF@SLICEM in SLICEM
 # hold, n=1748, max 34, sd 0.0
      CLK CE           34
-# hold, n=3046, max 38, sd 0.7
+# hold, n=3045, max 38, sd 0.0
      CLK D            38
 # Reg Clk to Q, n=3045, max 69, sd 0.0
      CLK Q            69
@@ -29071,7 +28035,7 @@ bel CFF@SLICEM in SLICEM
 bel CFF2@SLICEM in SLICEM
 # hold, n=362, max 34, sd 0.0
      CLK CE           34
-# hold, n=1485, max 39, sd 1.0
+# hold, n=1484, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=1484, max 70, sd 0.0
      CLK Q            70
@@ -29135,8 +28099,8 @@ bel D5LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=1, max 91, sd 0.0
      CLK WA4          91
-# hold, n=2, max 93, sd 46.5
-     CLK WA5          46
+# hold, n=1, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 4, sd 0.0
      CLK WE            4
 
@@ -29205,8 +28169,8 @@ bel D6LUT_RAM@SLICEM in SLICEM
       A6 O6           12
 # hold, n=1, max 62, sd 0.0
      CLK DI           62
-# hold, n=2, max 65, sd 32.5
-     CLK DI2WE2       32
+# hold, n=1, max 65, sd 0.0
+     CLK DI2WE2       65
 # Reg Clk to Q, n=2, max 157, sd 0.0
      CLK O6          157
 # hold, n=2, max 93, sd 0.0
@@ -29217,8 +28181,8 @@ bel D6LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=2, max 91, sd 0.0
      CLK WA4          91
-# hold, n=3, max 93, sd 43.8
-     CLK WA5          62
+# hold, n=2, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 93, sd 0.0
      CLK WA6          93
 # hold, n=2, max 4, sd 0.0
@@ -29241,7 +28205,7 @@ bel D6LUT_SRL@SLICEM in SLICEM
 bel DFF@SLICEM in SLICEM
 # hold, n=589, max 34, sd 0.0
      CLK CE           34
-# hold, n=1222, max 39, sd 1.1
+# hold, n=1221, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=1221, max 68, sd 0.0
      CLK Q            68
@@ -29251,7 +28215,7 @@ bel DFF@SLICEM in SLICEM
 bel DFF2@SLICEM in SLICEM
 # hold, n=246, max 34, sd 0.0
      CLK CE           34
-# hold, n=963, max 39, sd 1.3
+# hold, n=962, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=962, max 70, sd 0.0
      CLK Q            70
@@ -29303,8 +28267,6 @@ bel E5LUT_RAM@SLICEM in SLICEM
       A4 O5           63
 # combinational, n=1, max 46, sd 0.0
       A5 O5           46
-# hold, n=1, max 0, sd 0.0
-     CLK DI            0
 # Reg Clk to Q, n=1, max 186, sd 0.0
      CLK O5          186
 # hold, n=1, max 93, sd 0.0
@@ -29315,8 +28277,8 @@ bel E5LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=1, max 91, sd 0.0
      CLK WA4          91
-# hold, n=2, max 93, sd 46.5
-     CLK WA5          46
+# hold, n=1, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 4, sd 0.0
      CLK WE            4
 
@@ -29395,8 +28357,6 @@ bel E6LUT_RAM@SLICEM in SLICEM
       A6 O6           13
 # hold, n=1, max 63, sd 0.0
      CLK DI           63
-# hold, n=2, max 0, sd 0.0
-     CLK DI2WE2        0
 # Reg Clk to Q, n=2, max 157, sd 0.0
      CLK O6          157
 # hold, n=2, max 93, sd 0.0
@@ -29407,8 +28367,8 @@ bel E6LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=2, max 91, sd 0.0
      CLK WA4          91
-# hold, n=3, max 93, sd 43.8
-     CLK WA5          62
+# hold, n=2, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 93, sd 0.0
      CLK WA6          93
 # hold, n=2, max 4, sd 0.0
@@ -29431,7 +28391,7 @@ bel E6LUT_SRL@SLICEM in SLICEM
 bel EFF@SLICEM in SLICEM
 # hold, n=1180, max 33, sd 0.0
      CLK CE           33
-# hold, n=2217, max 39, sd 0.8
+# hold, n=2216, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=2216, max 69, sd 0.0
      CLK Q            69
@@ -29493,8 +28453,6 @@ bel F5LUT_RAM@SLICEM in SLICEM
       A4 O5           63
 # combinational, n=1, max 45, sd 0.0
       A5 O5           45
-# hold, n=1, max 0, sd 0.0
-     CLK DI            0
 # Reg Clk to Q, n=1, max 184, sd 0.0
      CLK O5          184
 # hold, n=1, max 93, sd 0.0
@@ -29505,8 +28463,8 @@ bel F5LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=1, max 91, sd 0.0
      CLK WA4          91
-# hold, n=2, max 93, sd 46.5
-     CLK WA5          46
+# hold, n=1, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 4, sd 0.0
      CLK WE            4
 
@@ -29585,8 +28543,6 @@ bel F6LUT_RAM@SLICEM in SLICEM
       A6 O6           12
 # hold, n=201, max 62, sd 0.0
      CLK DI           62
-# hold, n=202, max 0, sd 0.0
-     CLK DI2WE2        0
 # Reg Clk to Q, n=202, max 158, sd 0.0
      CLK O6          158
 # hold, n=203, max 93, sd 0.0
@@ -29597,7 +28553,7 @@ bel F6LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=203, max 91, sd 0.0
      CLK WA4          91
-# hold, n=204, max 93, sd 6.5
+# hold, n=203, max 93, sd 0.0
      CLK WA5          93
 # hold, n=202, max 93, sd 0.0
      CLK WA6          93
@@ -29683,8 +28639,6 @@ bel G5LUT_RAM@SLICEM in SLICEM
       A4 O5           62
 # combinational, n=1, max 46, sd 0.0
       A5 O5           46
-# hold, n=1, max 0, sd 0.0
-     CLK DI            0
 # Reg Clk to Q, n=1, max 176, sd 0.0
      CLK O5          176
 # hold, n=1, max 93, sd 0.0
@@ -29695,8 +28649,8 @@ bel G5LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=1, max 91, sd 0.0
      CLK WA4          91
-# hold, n=2, max 93, sd 46.5
-     CLK WA5          46
+# hold, n=1, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 4, sd 0.0
      CLK WE            4
 
@@ -29775,8 +28729,6 @@ bel G6LUT_RAM@SLICEM in SLICEM
       A6 O6           12
 # hold, n=1, max 60, sd 0.0
      CLK DI           60
-# hold, n=2, max 0, sd 0.0
-     CLK DI2WE2        0
 # Reg Clk to Q, n=2, max 151, sd 0.0
      CLK O6          151
 # hold, n=2, max 93, sd 0.0
@@ -29787,8 +28739,8 @@ bel G6LUT_RAM@SLICEM in SLICEM
      CLK WA3          93
 # hold, n=2, max 91, sd 0.0
      CLK WA4          91
-# hold, n=3, max 93, sd 43.8
-     CLK WA5          62
+# hold, n=2, max 93, sd 0.0
+     CLK WA5          93
 # hold, n=1, max 93, sd 0.0
      CLK WA6          93
 # hold, n=2, max 4, sd 0.0
@@ -29811,7 +28763,7 @@ bel G6LUT_SRL@SLICEM in SLICEM
 bel GFF@SLICEM in SLICEM
 # hold, n=790, max 34, sd 0.0
      CLK CE           34
-# hold, n=1979, max 39, sd 1.2
+# hold, n=1977, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=1978, max 69, sd 0.0
      CLK Q            69
@@ -29881,10 +28833,8 @@ bel H5LUT_RAM@SLICEM in SLICEM
      CLK A3           93
 # hold, n=1, max 91, sd 0.0
      CLK A4           91
-# hold, n=2, max 93, sd 46.5
-     CLK A5           46
-# hold, n=1, max 0, sd 0.0
-     CLK DI            0
+# hold, n=1, max 93, sd 0.0
+     CLK A5           93
 # Reg Clk to Q, n=1, max 176, sd 0.0
      CLK O5          176
 # hold, n=1, max 4, sd 0.0
@@ -29971,12 +28921,10 @@ bel H6LUT_RAM@SLICEM in SLICEM
      CLK A3           93
 # hold, n=1, max 91, sd 0.0
      CLK A4           91
-# hold, n=2, max 93, sd 46.5
-     CLK A5           46
-# hold, n=202, max 57, sd 4.0
+# hold, n=1, max 93, sd 0.0
+     CLK A5           93
+# hold, n=201, max 57, sd 0.0
      CLK DI           57
-# hold, n=202, max 0, sd 0.0
-     CLK DI2WE2        0
 # Reg Clk to Q, n=202, max 153, sd 0.0
      CLK O6          153
 # hold, n=201, max 93, sd 0.0
@@ -30011,7 +28959,7 @@ bel H6LUT_SRL@SLICEM in SLICEM
 bel HFF@SLICEM in SLICEM
 # hold, n=302, max 34, sd 0.0
      CLK CE           34
-# hold, n=7257, max 39, sd 0.5
+# hold, n=7256, max 39, sd 0.0
      CLK D            39
 # Reg Clk to Q, n=7256, max 69, sd 0.0
      CLK Q            69
