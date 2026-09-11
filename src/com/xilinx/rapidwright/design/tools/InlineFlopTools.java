@@ -23,6 +23,7 @@
 package com.xilinx.rapidwright.design.tools;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -526,7 +527,15 @@ public class InlineFlopTools {
             for (SitePinInst spi : new ArrayList<>(si.getSitePinInsts())) {
                 Net net = spi.getNet();
                 if (net != null) {
-                    net.removePin(spi);
+                    if (net.isStaticNet()) {
+                        // The harness flops' CE/R pins hang off VCC/GND. Net.removePin(spi) would
+                        // unroute the entire static net (every in-pblock tie-off Vivado routed);
+                        // strip only the branch feeding this pin and keep the rest of the tree.
+                        DesignTools.unroutePins(net, Collections.singletonList(spi));
+                        net.removePin(spi, true);
+                    } else {
+                        net.removePin(spi);
+                    }
                 }
                 si.removePin(spi);
             }
