@@ -20,10 +20,14 @@
 
 package com.xilinx.rapidwright.timing.versal;
 
+import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.IntentCode;
+import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.Tile;
 import com.xilinx.rapidwright.device.SiteTypeEnum;
 import com.xilinx.rapidwright.timing.DelayModel;
 import com.xilinx.rapidwright.timing.DelayModelBuilder;
+import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -112,6 +116,48 @@ public class TestVersalTimingModel {
         // completely unknown pair records a miss and returns 0
         Assertions.assertEquals(0f, t.edgeDelay(IntentCode.NODE_GLOBAL_VDISTR, IntentCode.NODE_GLOBAL_LEAF, "LEAF", "LEAF", miss));
         Assertions.assertEquals(1, miss[0]);
+    }
+
+    @Test
+    public void testNodeDelayEstimator() {
+        Device device = Device.getDevice("xcv80");
+        VersalDelayEstimator est = new VersalDelayEstimator(device, false);
+        Assertions.assertTrue(est.chargesEveryNode());
+        // one node of each intent of interest from an INT tile in the middle of the device
+        Tile intTile = device.getTile("INT_X100Y200");
+        Assertions.assertNotNull(intTile);
+        Node vlong = null, hlong = null, inode = null, imux = null;
+        for (int w = 0; w < intTile.getWireCount(); w++) {
+            Node n = Node.getNode(intTile, w);
+            if (n == null || n.getTile() != intTile) continue;
+            switch (n.getIntentCode()) {
+                case NODE_VLONG12: if (vlong == null) vlong = n; break;
+                case NODE_HLONG10: if (hlong == null) hlong = n; break;
+                case NODE_INODE:   if (inode == null) inode = n; break;
+                case NODE_IMUX:    if (imux == null) imux = n; break;
+                default: break;
+            }
+        }
+        Assertions.assertNotNull(vlong);
+        Assertions.assertNotNull(hlong);
+        Assertions.assertNotNull(inode);
+        Assertions.assertNotNull(imux);
+        // marginals: a wire's own delay plus its typical load (node_delay_terms.txt)
+        short dv = est.getDelayOf(vlong), dh = est.getDelayOf(hlong), di = est.getDelayOf(inode), dm = est.getDelayOf(imux);
+        Assertions.assertTrue(dv > 60 && dv < 95, "VLONG12 " + dv);
+        Assertions.assertTrue(dh > 120 && dh < 220, "HLONG10 " + dh);
+        Assertions.assertTrue(di > 20 && di < 45, "INODE " + di);
+        Assertions.assertEquals(0, dm, "IMUX (Vivado books its delay on the pin node) " + dm);
+        // the long-wire helpers know the Versal intents
+        Assertions.assertTrue(DelayEstimatorBase.isLong(vlong));
+        Assertions.assertTrue(DelayEstimatorBase.isLong(hlong));
+        Assertions.assertFalse(DelayEstimatorBase.isLong(inode));
+        Assertions.assertEquals(Math.round(est.getLongToLongExtra()), DelayEstimatorBase.getExtraDelay(vlong, true));
+        Assertions.assertEquals(0, DelayEstimatorBase.getExtraDelay(vlong, false));
+        Assertions.assertEquals(0, DelayEstimatorBase.getExtraDelay(inode, true));
+        // the A* estimate: long wires are the fastest way across the device, so a few ps per tile
+        Assertions.assertTrue(est.getPsPerTileX() > 5 && est.getPsPerTileX() < 40, "ps/tile X " + est.getPsPerTileX());
+        Assertions.assertTrue(est.getPsPerTileY() > 2 && est.getPsPerTileY() < 20, "ps/tile Y " + est.getPsPerTileY());
     }
 
     @Test

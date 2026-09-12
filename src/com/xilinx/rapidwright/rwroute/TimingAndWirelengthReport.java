@@ -58,8 +58,7 @@ public class TimingAndWirelengthReport{
 
     public TimingAndWirelengthReport(Design design, RWRouteConfig config, boolean isPartialRouting) {
         this.design = design;
-        estimator = new DelayEstimatorBase<>(design.getDevice(),
-                new InterconnectInfo(), config.isUseUTurnNodes(), 0);
+        estimator = RouterHelper.createDelayEstimator(design, config);
         timingManager = new TimingManager(design, null, config, RWRoute.createClkTimingData(config), design.getNets(), isPartialRouting, estimator);
         wirelength = 0;
         usedNodes = 0;

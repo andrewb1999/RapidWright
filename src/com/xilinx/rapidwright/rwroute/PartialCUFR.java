@@ -85,8 +85,7 @@ public class PartialCUFR extends PartialRouter {
     protected RouteNodeGraph createRouteNodeGraph() {
         if (config.isTimingDriven()) {
             /* An instantiated delay estimator that is used to calculate delay of routing resources */
-            DelayEstimatorBase<InterconnectInfo> estimator = new DelayEstimatorBase<InterconnectInfo>(
-                    design.getDevice(), new InterconnectInfo(), config.isUseUTurnNodes(), 0);
+            DelayEstimatorBase<InterconnectInfo> estimator = RouterHelper.createDelayEstimator(design, config);
             return new RouteNodeGraphPartialCUFRTimingDriven(design, config, estimator);
         } else {
             return new RouteNodeGraphPartialCUFR(design, config);

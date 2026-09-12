@@ -79,16 +79,36 @@ public class DelayEstimatorBase<T extends InterconnectInfo> implements java.io.S
      * @param device target device.
      */
     public DelayEstimatorBase(Device device, T ictInfo, boolean useUTurnNodes, int verbose) {
+        this(device, ictInfo, useUTurnNodes, verbose, true);
+    }
+
+    /**
+     * Constructor for subclasses that bring their own delay data: with {@code loadTables} false the
+     * UltraScale+ {@link TimingModel} is not built and {@link #getDelayOf(Node)} must be overridden.
+     */
+    protected DelayEstimatorBase(Device device, T ictInfo, boolean useUTurnNodes, int verbose, boolean loadTables) {
         this.device = device;
         this.verbose = verbose;
         this.ictInfo = ictInfo;
         this.useUTurnNodes = useUTurnNodes;
-        TimingModel timingModel = new TimingModel(device);
-        timingModel.build();
-        buildDistanceArrays(timingModel);
-        loadInputSitePinDelay(timingModel);
+        if (loadTables) {
+            TimingModel timingModel = new TimingModel(device);
+            timingModel.build();
+            buildDistanceArrays(timingModel);
+            loadInputSitePinDelay(timingModel);
+        }
     }
 
+    /**
+     * Whether every node carries a delay of its own ({@link #getDelayOf(Node)} is meaningful for any
+     * node), or only the exit node of a node group as in the UltraScale+ estimator.
+     */
+    public boolean chargesEveryNode() {
+        return false;
+    }
+
+    /** Extra delay of a Versal long node entered from a long node (LONGLONG in the Versal node table). */
+    protected static short versalLongToLongExtra = 0;
 
     /**
      * Check if the node is a long node or not
@@ -97,7 +117,18 @@ public class DelayEstimatorBase<T extends InterconnectInfo> implements java.io.S
      * @return true if the node is a long node
      */
     public static boolean isLong(Node node) {
-        return node.getIntentCode() == IntentCode.NODE_VLONG || node.getIntentCode() == IntentCode.NODE_HLONG;
+        switch (node.getIntentCode()) {
+            case NODE_VLONG:
+            case NODE_HLONG:
+            // Versal
+            case NODE_HLONG6:
+            case NODE_HLONG10:
+            case NODE_VLONG7:
+            case NODE_VLONG12:
+                return true;
+            default:
+                return false;
+        }
     }
 
 
@@ -111,12 +142,19 @@ public class DelayEstimatorBase<T extends InterconnectInfo> implements java.io.S
     public static short getExtraDelay(Node child, boolean longParent) {
         if (!longParent) return 0;
 
-        IntentCode icChild = child.getIntentCode();
-        if ((icChild == IntentCode.NODE_VLONG) || (icChild == IntentCode.NODE_HLONG)) {
-            // TODO: this should come from a delay file
-            return 45;
+        switch (child.getIntentCode()) {
+            case NODE_VLONG:
+            case NODE_HLONG:
+                // TODO: this should come from a delay file
+                return 45;
+            case NODE_HLONG6:
+            case NODE_HLONG10:
+            case NODE_VLONG7:
+            case NODE_VLONG12:
+                return versalLongToLongExtra;
+            default:
+                return 0;
         }
-        return 0;
     }
 
 

@@ -64,6 +64,8 @@ import com.xilinx.rapidwright.edif.EDIFNetlist;
 import com.xilinx.rapidwright.edif.EDIFPortInst;
 import com.xilinx.rapidwright.edif.EDIFTools;
 import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
+import com.xilinx.rapidwright.timing.delayestimator.InterconnectInfo;
+import com.xilinx.rapidwright.timing.versal.VersalDelayEstimator;
 import com.xilinx.rapidwright.util.Pair;
 import com.xilinx.rapidwright.util.Utils;
 
@@ -617,10 +619,24 @@ public class RouterHelper {
      * @return The delay of the node.
      */
     public static short computeNodeDelay(DelayEstimatorBase estimator, Node node) {
-        if (RouteNode.isExitNode(node)) {
+        if (estimator.chargesEveryNode() || RouteNode.isExitNode(node)) {
             return estimator.getDelayOf(node);
         }
         return 0;
+    }
+
+    /**
+     * Creates the delay estimator of the design's series: the UltraScale+ {@link DelayEstimatorBase}
+     * or, on Versal, the {@link VersalDelayEstimator}.
+     * @param design The design to be routed.
+     * @param config The router configuration.
+     * @return The delay estimator.
+     */
+    public static DelayEstimatorBase<InterconnectInfo> createDelayEstimator(Design design, RWRouteConfig config) {
+        if (design.getSeries() == Series.Versal) {
+            return new VersalDelayEstimator(design.getDevice(), config.isUseUTurnNodes());
+        }
+        return new DelayEstimatorBase<>(design.getDevice(), new InterconnectInfo(), config.isUseUTurnNodes(), 0);
     }
 
     /**
