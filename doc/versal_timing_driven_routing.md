@@ -2,6 +2,11 @@
 
 Branch: `versal-timing-driven` (from `versal-timing-model` at e824ca3f).
 
+Status (Sep 12): steps 1-5 implemented and run; results and the table accuracy are in the
+project's NOTES.md ("Timing-driven RWRoute on Versal"). On the RapidSA 8x8, Vivado measures
+WNS -0.480 ns non-timing-driven and -0.189 ns timing-driven (383 -> 95 failing endpoints),
+against -0.179 for Vivado's own routing. Step 6 (clock skew) is not done.
+
 Goal: `RWRoute --timingDriven` on a Versal (xcv80) design with the same behaviour the flow has on
 UltraScale+: per-connection criticality from a static timing analysis of the design, a per-node
 delay in the A* cost, delay-weighted rerouting of the critical connections, and the critical path
