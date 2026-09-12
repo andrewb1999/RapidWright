@@ -80,6 +80,9 @@ public class RWRouteConfig {
     private boolean maskNodesCrossRCLK;
     /** true to allow possible usage of U-turn nodes at the device boundaries*/
     private boolean useUTurnNodes;
+    /** Versal only: true to re-evaluate the routed connections' delays with the full Versal interconnect model
+     *  after every iteration (fan-out, load and crossing terms), instead of the per-node sums */
+    private boolean versalExactNetDelay;
     /** true to display more info along the routing process */
     private boolean verbose;
     /** true to display connection span statistics */
@@ -132,6 +135,7 @@ public class RWRouteConfig {
         pessimismB = (short) 100;
         maskNodesCrossRCLK = false;
         useUTurnNodes = false;
+        versalExactNetDelay = true;
         verbose = false;
         printConnectionSpan = false;
         lutPinSwapping = false;
@@ -231,6 +235,12 @@ public class RWRouteConfig {
                 break;
             case "--useUTurnNodes":
                 setUseUTurnNodes(true);
+                break;
+            case "--versalExactNetDelay":
+                setVersalExactNetDelay(true);
+                break;
+            case "--noVersalExactNetDelay":
+                setVersalExactNetDelay(false);
                 break;
             case "--verbose":
                 setVerbose(true);
@@ -842,6 +852,24 @@ public class RWRouteConfig {
     }
 
     /**
+     * Versal timing-driven routing: whether the delays of the routed connections are re-evaluated with the
+     * full Versal interconnect model (fan-out, sibling load and crossing terms on the whole route tree)
+     * after every iteration, instead of keeping the per-node sums the search used.
+     * Default: true. Can be modified by "--noVersalExactNetDelay" / "--versalExactNetDelay". No effect on other series.
+     * @return true, if the routed connections' delays are refreshed with the full Versal model
+     */
+    public boolean isVersalExactNetDelay() {
+        return versalExactNetDelay;
+    }
+
+    /**
+     * Sets versalExactNetDelay, see {@link #isVersalExactNetDelay()}.
+     */
+    public void setVersalExactNetDelay(boolean versalExactNetDelay) {
+        this.versalExactNetDelay = versalExactNetDelay;
+    }
+
+    /**
      * Checks if verbose is enabled.
      * If enabled, there will be more info in the routing log file regarding design netlist, routing statistics, and timing report.
      * Default: false. Can be modified by adding "--verbose" to the arguments.
@@ -1066,6 +1094,7 @@ public class RWRouteConfig {
         }
         s.append(MessageGenerator.formatString("Mask nodes across RCLK: ", maskNodesCrossRCLK));
         s.append(MessageGenerator.formatString("Include U-turn nodes: ", useUTurnNodes));
+        if (timingDriven) s.append(MessageGenerator.formatString("Versal exact net delay: ", versalExactNetDelay));
         s.append(MessageGenerator.formatString("Initial present congestion factor: ", initialPresentCongestionFactor));
         s.append(MessageGenerator.formatString("Present congestion multiplier: ", presentCongestionMultiplier));
         s.append(MessageGenerator.formatString("Historical congestion factor: ", historicalCongestionFactor));

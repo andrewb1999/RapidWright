@@ -1256,6 +1256,21 @@ public class RouteNodeGraph {
         return null;
     }
 
+    /** Delay per tile of horizontal distance used by the A* estimate of the remaining delay (timing-driven graphs only). */
+    public float getEstimatedDelayPerTileX() {
+        return 0;
+    }
+
+    /** Delay per tile of vertical distance used by the A* estimate of the remaining delay (timing-driven graphs only). */
+    public float getEstimatedDelayPerTileY() {
+        return 0;
+    }
+
+    /** Constant of the pre-routing delay estimate of a connection (timing-driven graphs only). */
+    public short getPreRouteEstimateConstant() {
+        return 0;
+    }
+
     /**
      * Determine if the given nodes represent a SLICE routethru from an input site pin dedicated for SLLs
      * to the [A-H]Q or [A-H]Q2 output.

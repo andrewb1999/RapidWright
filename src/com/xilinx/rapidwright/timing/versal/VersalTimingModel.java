@@ -385,12 +385,9 @@ public class VersalTimingModel {
      * every reached node.
      */
     public Map<Node, float[]> calcNodeArrivalsAllCorners(Net net, Map<Node, Node> rootOf) {
-        int nc = corners.length;
-        Map<Node, float[]> arrivals = new LinkedHashMap<>();
         Map<Node, List<Node>> children = new HashMap<>();
         Map<Node, Node> parentOf = new HashMap<>();
         Set<Node> ends = new HashSet<>();
-        int[] misses = new int[1];   // per net, added to the shared counter at the end
         for (PIP pip : net.getPIPs()) {
             Node s = pip.getStartNode(), e = pip.getEndNode();
             if (s == null || e == null) continue;
@@ -402,6 +399,20 @@ public class VersalTimingModel {
         SitePinInst src = net.getSource();
         if (src != null && src.getConnectedNode() != null) roots.add(src.getConnectedNode());
         for (Node s : children.keySet()) if (!ends.contains(s) && !roots.contains(s)) roots.add(s);
+        return calcNodeArrivalsAllCorners(roots, children, parentOf, rootOf);
+    }
+
+    /**
+     * As {@link #calcNodeArrivalsAllCorners(Net, Map)} on a route tree given explicitly: {@code roots}
+     * (arrival 0 each), {@code children} (parent node -> its child nodes, in order) and
+     * {@code parentOf} (child -> parent). Used by the router, whose route trees are not yet PIPs of
+     * the net.
+     */
+    public Map<Node, float[]> calcNodeArrivalsAllCorners(List<Node> roots, Map<Node, List<Node>> children,
+                                                         Map<Node, Node> parentOf, Map<Node, Node> rootOf) {
+        int nc = corners.length;
+        Map<Node, float[]> arrivals = new LinkedHashMap<>();
+        int[] misses = new int[1];   // per net, added to the shared counter at the end
 
         Deque<Node> stack = new ArrayDeque<>();
         for (Node root : roots) {

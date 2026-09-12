@@ -33,6 +33,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
@@ -355,6 +357,50 @@ public class TestRWRoute {
             Assertions.assertEquals(0, rrs.netsWithRoutingErrors);
             Assertions.assertEquals(8, rrs.unroutedNets); // There are 8 nets driven from a blackbox cell;
                                                                     // these are marked as routable despite not being so
+        }
+    }
+
+    /**
+     * Tests timing-driven full routing on a Versal device: the Versal timing graph and per-node delay
+     * estimator stand in for the UltraScale+ timing model; the design routes completely and the
+     * router reports a critical path.
+     */
+    @Test
+    @LargeTest(max_memory_gb = 8)
+    public void testTimingDrivenRoutingOnVersalDevice() {
+        // Note: there are no global clocks in this design, just a local clock that doesn't use a BUFG
+        Design design = RapidWrightDCP.loadDCP("picoblaze_2022.2.dcp");
+        design.setTrackNetChanges(true);
+
+        PrintStream stdout = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(captured, true));
+        try {
+            RWRoute.routeDesignWithUserDefinedArguments(design, new String[] {"--timingDriven", "--verbose"});
+        } finally {
+            System.setOut(stdout);
+        }
+        String log = captured.toString();
+        System.out.print(log);
+
+        Assertions.assertEquals(290, design.getModifiedNets().size());
+        for (Net net : design.getModifiedNets()) {
+            assertAllPinsRouted(net);
+        }
+        assertAllSourcesRoutedFlagSet(design);
+
+        // the Versal timing graph was built and produced a critical path
+        Assertions.assertTrue(log.contains("Versal timing graph:"), "Versal timing graph not built");
+        Matcher m = Pattern.compile("Critical path delay \\(ps\\):\\s+(\\d+)").matcher(log);
+        Assertions.assertTrue(m.find(), "no critical path delay reported");
+        int criticalPathDelay = Integer.parseInt(m.group(1));
+        Assertions.assertTrue(criticalPathDelay > 500 && criticalPathDelay < 20000, "critical path delay " + criticalPathDelay);
+
+        if (FileTools.isVivadoOnPath()) {
+            ReportRouteStatusResult rrs = VivadoTools.reportRouteStatus(design);
+            Assertions.assertEquals(290, rrs.fullyRoutedNets);
+            Assertions.assertEquals(0, rrs.netsWithRoutingErrors);
+            Assertions.assertEquals(8, rrs.unroutedNets); // nets driven from a blackbox cell
         }
     }
 

@@ -121,13 +121,23 @@ public class VersalTimingGraph {
         public final float[] delay;
         public final Net net;          // null for logic arcs
         public final String kind;      // "logic", "net", "intrasite"
+        /** "net" edges: the sink site pin the edge is routed to, and the intra-site part of the delay
+         *  (driver BEL pin -> site pin plus site pin -> sink BEL pin, per corner); null otherwise */
+        public final SitePinInst sinkPin;
+        public final float[] intraSite;
 
         Edge(Vertex src, Vertex dst, float[] delay, Net net, String kind) {
+            this(src, dst, delay, net, kind, null, null);
+        }
+
+        Edge(Vertex src, Vertex dst, float[] delay, Net net, String kind, SitePinInst sinkPin, float[] intraSite) {
             this.src = src;
             this.dst = dst;
             this.delay = delay;
             this.net = net;
             this.kind = kind;
+            this.sinkPin = sinkPin;
+            this.intraSite = intraSite;
         }
     }
 
@@ -144,10 +154,23 @@ public class VersalTimingGraph {
     /** physical clock pin of every launch and endpoint vertex's cell */
     private final Map<Vertex, String> clockPin = new HashMap<>();
 
+    /** Whether a sink whose site pin is not routed still gets a "net" edge (interconnect 0, intra-site terms only). */
+    private final boolean edgesForUnroutedSinks;
+
     public VersalTimingGraph(Design design, VersalTimingModel model) {
+        this(design, model, false);
+    }
+
+    /**
+     * @param edgesForUnroutedSinks when true, a sink reached through a site pin that has no route yet
+     *        gets a "net" edge carrying only the intra-site terms (interconnect 0), so that a router can
+     *        fill in the route delay later; when false (the report), such a sink has no edge.
+     */
+    public VersalTimingGraph(Design design, VersalTimingModel model, boolean edgesForUnroutedSinks) {
         this.design = design;
         this.model = model;
         this.nc = model.getCornerCount();
+        this.edgesForUnroutedSinks = edgesForUnroutedSinks;
     }
 
     public VersalTimingModel getModel() {
@@ -188,7 +211,11 @@ public class VersalTimingGraph {
     }
 
     private void addEdge(Vertex s, Vertex d, float[] delay, Net net, String kind) {
-        Edge e = new Edge(s, d, delay, net, kind);
+        addEdge(s, d, delay, net, kind, null, null);
+    }
+
+    private void addEdge(Vertex s, Vertex d, float[] delay, Net net, String kind, SitePinInst sinkPin, float[] intraSite) {
+        Edge e = new Edge(s, d, delay, net, kind, sinkPin, intraSite);
         s.outs.add(e);
         edges.add(e);
     }
@@ -724,7 +751,7 @@ public class VersalTimingGraph {
             Vertex vs = vertex(p.srcCell, p.srcPhys);
             for (Object[] sk : p.sinks) {
                 Vertex vd = vertex((Cell) sk[0], (String) sk[1]);
-                if (sk[2] != null) addEdge(vs, vd, (float[]) sk[2], p.net, (String) sk[3]);
+                if (sk[2] != null) addEdge(vs, vd, (float[]) sk[2], p.net, (String) sk[3], (SitePinInst) sk[4], (float[]) sk[5]);
             }
         }
     }
@@ -750,21 +777,44 @@ public class VersalTimingGraph {
         // sinks reached through site pins
         Map<SitePinInst, VersalTimingModel.SinkDelay> sinkDelays =
                 net.getSource() != null ? model.calcNetDelays(net) : Collections.emptyMap();
-        Map<Cell, Map<String, float[]>> viaSitePin = new HashMap<>();
+        if (sinkDelays.isEmpty() && edgesForUnroutedSinks && !net.getSinkPins().isEmpty()) {
+            // no source pin yet (a router will create it): every sink is unrouted, intra-site terms only
+            sinkDelays = new LinkedHashMap<>();
+            for (SitePinInst sink : net.getSinkPins()) {
+                VersalTimingModel.SinkDelay sd = new VersalTimingModel.SinkDelay(nc);
+                sd.routed = false;
+                sd.sinkIntraSite = model.sinkIntraSiteDelays(sink);
+                sinkDelays.put(sink, sd);
+            }
+        }
+        // the driver-side intra-site term of an unrouted sink (calcNetDelays leaves it 0 without a route)
+        float[] unroutedDriver = null;
+        Map<Cell, Map<String, Object[]>> viaSitePin = new HashMap<>();   // {totals, intra-site, site pin}
         // hard-block sites (DSP58): the site pin's connected BEL pins are not the placed cell's; match
         // the sink site pin to the cell's BEL pin by name (C44 <-> C_44_)
-        Map<SiteInst, Map<String, VersalTimingModel.SinkDelay>> byName = new HashMap<>();
+        Map<SiteInst, Map<String, Object[]>> byName = new HashMap<>();
         for (Map.Entry<SitePinInst, VersalTimingModel.SinkDelay> e : sinkDelays.entrySet()) {
             SitePinInst spi = e.getKey();
             SiteInst si = spi.getSiteInst();
             if (si == null) continue;
-            byName.computeIfAbsent(si, k -> new HashMap<>()).put(spi.getName().replace("_", ""), e.getValue());
+            VersalTimingModel.SinkDelay sd = e.getValue();
+            if (!sd.routed) {
+                plan.unrouted++;
+                if (!edgesForUnroutedSinks) continue;
+                if (unroutedDriver == null) {
+                    unroutedDriver = net.getSource() != null ? model.driverIntraSiteDelays(net.getSource(), net) : new float[nc];
+                }
+                sd.driverIntraSite = unroutedDriver;
+            }
+            float[] intra = new float[nc];
+            for (int i = 0; i < nc; i++) intra[i] = sd.driverIntraSite[i] + sd.sinkIntraSite[i];
+            Object[] info = new Object[] {sd.getTotals(), intra, spi};
+            byName.computeIfAbsent(si, k -> new HashMap<>()).put(spi.getName().replace("_", ""), info);
             for (BELPin bp : DesignTools.getConnectedBELPins(spi)) {
                 if (!bp.isInput()) continue;
                 Cell c = si.getCell(bp.getBEL());
                 if (c == null) continue;
-                if (!e.getValue().routed) { plan.unrouted++; continue; }
-                viaSitePin.computeIfAbsent(c, k -> new HashMap<>()).put(bp.getName(), e.getValue().getTotals());
+                viaSitePin.computeIfAbsent(c, k -> new HashMap<>()).put(bp.getName(), info);
             }
         }
         for (EDIFHierPortInst sp : sinkPorts) {
@@ -776,19 +826,18 @@ public class VersalTimingGraph {
             if (dc == null || dc.getBEL() == null) continue;
             String dphys = dc.getPhysicalPinMapping(sp.getPortInst().getName());
             if (dphys == null) continue;
-            float[] viaPin = viaSitePin.getOrDefault(dc, Collections.emptyMap()).get(dphys);
+            Object[] viaPin = viaSitePin.getOrDefault(dc, Collections.emptyMap()).get(dphys);
             if (viaPin == null && dc.getSiteInst() != null && dc.getSiteInst() != srcCell.getSiteInst()) {
-                VersalTimingModel.SinkDelay sd = byName.getOrDefault(dc.getSiteInst(), Collections.emptyMap()).get(dphys.replace("_", ""));
-                if (sd != null && sd.routed) viaPin = sd.getTotals();
-                if (dbgSink) System.out.println("[debug sink]   by-name site pin " + dphys.replace("_", "") + " -> " + (sd == null ? "none" : "routed=" + sd.routed));
+                viaPin = byName.getOrDefault(dc.getSiteInst(), Collections.emptyMap()).get(dphys.replace("_", ""));
+                if (dbgSink) System.out.println("[debug sink]   by-name site pin " + dphys.replace("_", "") + " -> " + (viaPin == null ? "none" : viaPin[2]));
             }
             if (viaPin != null) {
-                plan.sinks.add(new Object[] {dc, dphys, viaPin, "net"});
+                plan.sinks.add(new Object[] {dc, dphys, viaPin[0], "net", viaPin[2], viaPin[1]});
             } else if (dc.getSiteInst() == srcCell.getSiteInst()) {
                 BELPin from = srcCell.getBEL().getPin(srcPhys), to = dc.getBEL().getPin(dphys);
-                plan.sinks.add(new Object[] {dc, dphys, model.intraSiteNetDelays(dc.getSiteInst(), from, to), "intrasite"});
+                plan.sinks.add(new Object[] {dc, dphys, model.intraSiteNetDelays(dc.getSiteInst(), from, to), "intrasite", null, null});
             } else {
-                plan.sinks.add(new Object[] {dc, dphys, null, null});
+                plan.sinks.add(new Object[] {dc, dphys, null, null, null, null});
                 plan.unrouted++;
             }
         }
@@ -815,6 +864,11 @@ public class VersalTimingGraph {
     /** Launch vertices (clock-to-output pins of sequential cells). */
     public List<Vertex> getLaunches() {
         return new ArrayList<>(clkToQ.keySet());
+    }
+
+    /** Clock-to-output delay (per corner) of a launch vertex, before any clock arrival; null for other vertices. */
+    public float[] getClkToQ(Vertex v) {
+        return clkToQ.get(v);
     }
 
     /**

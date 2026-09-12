@@ -53,6 +53,7 @@ import com.xilinx.rapidwright.timing.TimingManager;
 import com.xilinx.rapidwright.timing.TimingVertex;
 import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
 import com.xilinx.rapidwright.timing.delayestimator.InterconnectInfo;
+import com.xilinx.rapidwright.timing.versal.VersalRWTimingGraph;
 import com.xilinx.rapidwright.util.MessageGenerator;
 import com.xilinx.rapidwright.util.Pair;
 import com.xilinx.rapidwright.util.RuntimeTracker;
@@ -119,6 +120,9 @@ public class RWRoute {
     private float oneMinusWlWeight;
     /** Timing-driven weighting factor */
     private float timingWeight;
+    /** Delay per tile of distance for the A* estimate of the remaining delay (from the routing graph) */
+    private float estimatedDelayPerTileX;
+    private float estimatedDelayPerTileY;
     /** 1 - timingWeight */
     private float oneMinusTimingWeight;
     /** Flag for whether LUT pin swaps are to be considered */
@@ -298,8 +302,7 @@ public class RWRoute {
     protected RouteNodeGraph createRouteNodeGraph() {
         if (config.isTimingDriven()) {
             /* An instantiated delay estimator that is used to calculate delay of routing resources */
-            DelayEstimatorBase<InterconnectInfo> estimator = new DelayEstimatorBase<InterconnectInfo>(
-                    design.getDevice(), new InterconnectInfo(), config.isUseUTurnNodes(), 0);
+            DelayEstimatorBase<InterconnectInfo> estimator = RouterHelper.createDelayEstimator(design, config);
             return new RouteNodeGraphTimingDriven(design, config, estimator);
         } else {
             return new RouteNodeGraph(design, config);
@@ -796,6 +799,8 @@ public class RWRoute {
         wlWeight = config.getWirelengthWeight();
         oneMinusTimingWeight = 1 - timingWeight;
         oneMinusWlWeight = 1 - wlWeight;
+        estimatedDelayPerTileX = routingGraph.getEstimatedDelayPerTileX();
+        estimatedDelayPerTileY = routingGraph.getEstimatedDelayPerTileY();
         printIterationHeader(config.isTimingDriven());
 
         // On Versal only, reserve all uphills of NODE_(CLE|INTF)_CTRL sinks since
@@ -915,8 +920,9 @@ public class RWRoute {
                 source = connection.getSourceRnode();
             }
             short estDelay = (short) 10000;
+            final short constant = routingGraph.getPreRouteEstimateConstant();
             for (RouteNode child : children) {
-                short tmpDelay = 113;
+                short tmpDelay = constant;
                 tmpDelay += child.getDelay();
                 if (tmpDelay < estDelay) {
                     estDelay = tmpDelay;
@@ -1219,10 +1225,61 @@ public class RWRoute {
         updateTimingTimer.start();
         timingWeight = Math.min(timingWeight * config.getTimingMultiplier(), 1f);
         oneMinusTimingWeight = 1 - timingWeight;
+        if (config.isVersalExactNetDelay() && timingManager.getTimingGraph() instanceof VersalRWTimingGraph) {
+            refreshNetDelaysWithVersalModel();
+        }
         maxDelayAndTimingVertex = timingManager.calculateArrivalRequiredTimes();
         timingManager.calculateCriticality(sortedIndirectConnections,
                 MAX_CRITICALITY, config.getCriticalityExponent());
         updateTimingTimer.stop();
+    }
+
+    /**
+     * Versal: replaces the per-node route delay sums of the routed connections by the full Versal
+     * interconnect model evaluated on each net's current route tree (fan-out, sibling load and
+     * crossing terms included), so that the criticalities of the next iteration come from the same
+     * model as the final report. The tree is built from the connections' node lists, since the net's
+     * PIPs are written only at the end.
+     */
+    private void refreshNetDelaysWithVersalModel() {
+        VersalRWTimingGraph graph = (VersalRWTimingGraph) timingManager.getTimingGraph();
+        List<Node> roots = new ArrayList<>(2);
+        Map<Node, List<Node>> children = new HashMap<>();
+        Map<Node, Node> parentOf = new HashMap<>();
+        Set<Node> ends = new HashSet<>();
+        for (Entry<Net, NetWrapper> e : nets.entrySet()) {
+            NetWrapper netWrapper = e.getValue();
+            roots.clear(); children.clear(); parentOf.clear(); ends.clear();
+            boolean any = false;
+            for (Connection connection : netWrapper.getConnections()) {
+                if (connection.isDirect()) continue;
+                List<RouteNode> rnodes = connection.getRnodes();
+                if (rnodes.isEmpty()) continue;
+                any = true;
+                // rnodes are sink-first: rnodes[i] is driven by rnodes[i + 1]
+                for (int i = rnodes.size() - 2; i >= 0; i--) {
+                    Node parent = rnodes.get(i + 1), child = rnodes.get(i);
+                    if (parentOf.putIfAbsent(child, parent) == null) {
+                        children.computeIfAbsent(parent, k -> new ArrayList<>(2)).add(child);
+                    }
+                    ends.add(child);
+                }
+            }
+            if (!any) continue;
+            for (Node n : children.keySet()) {
+                if (!ends.contains(n)) roots.add(n);
+            }
+            Map<Node, float[]> arrivals = graph.calcNodeArrivals(roots, children, parentOf);
+            for (Connection connection : netWrapper.getConnections()) {
+                if (connection.isDirect() || connection.getRnodes().isEmpty()) continue;
+                float[] arr = arrivals.get(connection.getSinkRnode());
+                if (arr == null) {
+                    // the sink rnode is an alternate sink not driven by the tree walked above
+                    arr = arrivals.get(connection.getRnodes().get(0));
+                }
+                if (arr != null) connection.setTimingEdgesDelay(arr[0]);
+            }
+        }
     }
 
     /**
@@ -2167,7 +2224,7 @@ public class RWRoute {
         int distanceToSink = deltaX + deltaY;
         float newTotalPathCost = newPartialPathCost + state.estWlWeight * distanceToSink / sharingFactor;
         if (config.isTimingDriven()) {
-            newTotalPathCost += state.estDlyWeight * (deltaX * 0.32f + deltaY * 0.16f);
+            newTotalPathCost += state.estDlyWeight * (deltaX * estimatedDelayPerTileX + deltaY * estimatedDelayPerTileY);
         }
 
         push(state, childRnode, newPartialPathCost, newTotalPathCost, lookahead);

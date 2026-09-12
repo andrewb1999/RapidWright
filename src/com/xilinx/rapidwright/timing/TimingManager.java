@@ -34,6 +34,7 @@ import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.Series;
 import com.xilinx.rapidwright.edif.EDIFHierPortInst;
 import com.xilinx.rapidwright.rwroute.Connection;
 import com.xilinx.rapidwright.rwroute.NetWrapper;
@@ -42,6 +43,7 @@ import com.xilinx.rapidwright.rwroute.RouteNode;
 import com.xilinx.rapidwright.rwroute.RouterHelper;
 import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
 import com.xilinx.rapidwright.timing.delayestimator.InterconnectInfo;
+import com.xilinx.rapidwright.timing.versal.VersalRWTimingGraph;
 import com.xilinx.rapidwright.util.MessageGenerator;
 import com.xilinx.rapidwright.util.Pair;
 import com.xilinx.rapidwright.util.RuntimeTrackerTree;
@@ -102,11 +104,17 @@ public class TimingManager {
         verbose = config.isVerbose();
         setPessimismFactors(config.getPessimismA(), config.getPessimismB());
         routerTimer = timer;
-        timingModel = new TimingModel(design.getDevice());
-        timingGraph = new TimingGraph(design, routerTimer, clkTiming, config.getDspTimingDataFolder());
-        timingModel.setTimingManager(this);
+        if (design.getSeries() == Series.Versal) {
+            // the Versal data-path model supplies logic, intra-site and net delays; no TimingModel
+            timingModel = null;
+            timingGraph = new VersalRWTimingGraph(design, routerTimer);
+        } else {
+            timingModel = new TimingModel(design.getDevice());
+            timingGraph = new TimingGraph(design, routerTimer, clkTiming, config.getDspTimingDataFolder());
+            timingModel.setTimingManager(this);
+            timingGraph.setTimingModel(timingModel);
+        }
         timingGraph.setTimingManager(this);
-        timingGraph.setTimingModel(timingModel);
         device = design.getDevice();
         this.estimator = estimator;
         build(isPartialRouting, targetNets);
@@ -231,7 +239,7 @@ public class TimingManager {
                 // then the inter-site routing, then the hop taken inside the sink site.
                 // The intra-site hops are not held onto by the timing graph, so recover them here
                 // rather than describe every edge of it just to print this one path.
-                printIntraSiteDelayTerm(timingModel.getSourceIntraSiteDelayTerm(connection.getSource()));
+                if (timingModel != null) printIntraSiteDelayTerm(timingModel.getSourceIntraSiteDelayTerm(connection.getSource()));
                 // Nodes are ordered sink-first, so the driver of nodes[i] is nodes[i + 1]
                 List<Node> nodes = connection.getNodes();
                 if (nodes.isEmpty()) {
@@ -254,7 +262,7 @@ public class TimingManager {
                     }
                     System.out.printf(DELAY_LINE_FORMAT, delay, node.getIntentCode(), node);
                 }
-                printIntraSiteDelayTerm(timingModel.getSinkIntraSiteDelayTerm(connection.getSink()));
+                if (timingModel != null) printIntraSiteDelayTerm(timingModel.getSinkIntraSiteDelayTerm(connection.getSink()));
                 System.out.println();
             } else if (edge.getNet() != null) {
                 // No Connection means RWRoute never routed this edge: it must be an intra-site
@@ -262,9 +270,9 @@ public class TimingManager {
                 short intraSiteDelay = (short) edge.getIntraSiteDelay();
                 assert(edge.getNetDelay() == intraSiteDelay);
                 // A direct connection crosses a site pin at each end, so describe those hops
-                Pair<String,Short> sourceTerm = (edge.getFirstPin() != null) ?
+                Pair<String,Short> sourceTerm = (edge.getFirstPin() != null && timingModel != null) ?
                         timingModel.getSourceIntraSiteDelayTerm(edge.getFirstPin()) : null;
-                Pair<String,Short> sinkTerm = (edge.getSecondPin() != null) ?
+                Pair<String,Short> sinkTerm = (edge.getSecondPin() != null && timingModel != null) ?
                         timingModel.getSinkIntraSiteDelayTerm(edge.getSecondPin()) : null;
                 System.out.printf("net = %s, %s\n", edge.getNet(), edge);
                 int recovered = (sourceTerm != null ? sourceTerm.getSecond() : 0)
@@ -311,7 +319,7 @@ public class TimingManager {
             String fromBelPin = describeBELPin(source.getSecond());
             String toBelPin = describeBELPin(sink.getSecond());
             // Only describe the hop once it is confirmed to be the one charged for
-            Short delay = timingModel.lookupIntraSiteDelay(
+            Short delay = timingModel == null ? null : timingModel.lookupIntraSiteDelay(
                     source.getFirst().getSiteTypeEnum(), fromBelPin, toBelPin);
             if (delay != null && delay == intraSiteDelay) {
                 return new Pair<>(fromBelPin + " -> " + toBelPin, intraSiteDelay);
@@ -431,7 +439,7 @@ public class TimingManager {
      */
     private boolean build(boolean isPartialRouting, Collection<Net> targetNets) {
         if (routerTimer != null) routerTimer.createRuntimeTracker("build timing model", "Initialization").start();
-        timingModel.build();
+        if (timingModel != null) timingModel.build();
         if (routerTimer != null) routerTimer.getRuntimeTracker("build timing model").stop();
         
         if (routerTimer != null) routerTimer.createRuntimeTracker("build timing graph", "Initialization").start();

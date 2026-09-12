@@ -91,13 +91,13 @@ public class TimingGraph extends DefaultDirectedWeightedGraph<TimingVertex, Timi
     static HashSet<String> ramTypes;
 
     /** A map from TimingEdges to connections */
-    private Map<TimingEdge, Connection> timingEdgeConnectionMap = new HashMap<>();
+    protected Map<TimingEdge, Connection> timingEdgeConnectionMap = new HashMap<>();
     /** Mapping between each sink {@link SitePinInst} instance and its associated {@link TimingEdge} instances */
-    private Map<SitePinInst, List<TimingEdge>> sinkSitePinInstTimingEdges = new HashMap<>();
+    protected Map<SitePinInst, List<TimingEdge>> sinkSitePinInstTimingEdges = new HashMap<>();
     /** Mapping between a logic pin and a physical pin recognized by the timing graph builder */
     private Map<EDIFHierPortInst, SitePinInst> edifHPortMap = new HashMap<>();
-    private List<TimingVertex> orderedTimingVertices = new ArrayList<>();
-    private List<TimingVertex> reversedOrderedTimingVertices = new ArrayList<>();
+    protected List<TimingVertex> orderedTimingVertices = new ArrayList<>();
+    protected List<TimingVertex> reversedOrderedTimingVertices = new ArrayList<>();
     private ClkRouteTiming clkRouteTiming = null;
     private RuntimeTrackerTree routerTimer;
     
@@ -134,6 +134,11 @@ public class TimingGraph extends DefaultDirectedWeightedGraph<TimingVertex, Timi
     public TimingGraph(Design design) {
         super(TimingEdge.class);
         this.design = design;
+    }
+
+    /** The design this graph was built for. */
+    public Design getDesign() {
+        return design;
     }
     
     
@@ -880,7 +885,7 @@ public class TimingGraph extends DefaultDirectedWeightedGraph<TimingVertex, Timi
      * @return A reference to TimingVertex v if there is not a vertex with the same name already 
      * inserted, otherwise, it returns a reference to the existing TimingVertex with same name as v.
      */
-    TimingVertex safeAddVertex(TimingVertex v) {
+    protected TimingVertex safeAddVertex(TimingVertex v) {
         TimingVertex result = v;
         TimingVertex test = safeVertexCheck.get(v.getName());
         if  (v != null &&  v.getName() != null && test == null) {
@@ -905,7 +910,7 @@ public class TimingGraph extends DefaultDirectedWeightedGraph<TimingVertex, Timi
      * @return A reference to TimingEdge e if there is not an edge already inserted, otherwise, it 
      * returns a reference to the existing TimingEdge having the same vertices.
      */
-    boolean safeAddEdge(TimingVertex vs, TimingVertex vd, TimingEdge e) {
+    protected boolean safeAddEdge(TimingVertex vs, TimingVertex vd, TimingEdge e) {
         if (vs == null || vs.getName() == null || vd == null || vd.getName() == null) {
             System.err.println("Error: vs is null:" + vs + " or vd is null:" + vd);
             Exception newException = new Exception();

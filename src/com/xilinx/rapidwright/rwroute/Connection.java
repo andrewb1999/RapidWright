@@ -190,8 +190,11 @@ public class Connection implements Comparable<Connection>{
         }
 
         // Negative slacks are not supported, and should not occur if maxDelay was
-        // normalized correctly.
-        assert(minSlack >= 0);
+        // normalized correctly. A fraction of a picosecond below zero is float rounding between
+        // the forward arrival sum and the backward required-time subtraction along the critical
+        // path (the Versal delays are not whole picoseconds).
+        assert(minSlack >= -1f);
+        minSlack = Math.max(0f, minSlack);
 
         float tempCriticality  = (1 - minSlack / maxDelay);
 

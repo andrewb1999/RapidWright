@@ -30,6 +30,7 @@ import com.xilinx.rapidwright.device.Tile;
 import com.xilinx.rapidwright.device.TileTypeEnum;
 import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
 import com.xilinx.rapidwright.timing.delayestimator.InterconnectInfo;
+import com.xilinx.rapidwright.timing.versal.VersalDelayEstimator;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -44,6 +45,12 @@ public class RouteNodeGraphTimingDriven extends RouteNodeGraph {
     protected final DelayEstimatorBase<InterconnectInfo> delayEstimator;
     /** A flag to indicate if the routing resource exclusion should disable exclusion of nodes cross RCLK */
     protected final boolean maskNodesCrossRCLK;
+    /** Delay per tile of horizontal / vertical distance (ps, scaled by 1/100 like the known delay cost) used by
+     *  the A* estimate of the remaining delay; the UltraScale+ values unless the estimator provides its own */
+    protected final float estimatedDelayPerTileX;
+    protected final float estimatedDelayPerTileY;
+    /** Constant added to the source node and its first hop by the pre-routing delay estimate of a connection */
+    protected final short preRouteEstimateConstant;
 
     private static final Set<String> excludeAboveRclkString;
     private static final Set<String> excludeBelowRclkString;
@@ -77,6 +84,16 @@ public class RouteNodeGraphTimingDriven extends RouteNodeGraph {
         super(design, config);
         this.delayEstimator = delayEstimator;
         this.maskNodesCrossRCLK = config.isMaskNodesCrossRCLK();
+        if (delayEstimator instanceof VersalDelayEstimator) {
+            VersalDelayEstimator v = (VersalDelayEstimator) delayEstimator;
+            estimatedDelayPerTileX = v.getPsPerTileX() / 100f;
+            estimatedDelayPerTileY = v.getPsPerTileY() / 100f;
+            preRouteEstimateConstant = (short) Math.round(v.getSourceHopPs());
+        } else {
+            estimatedDelayPerTileX = 0.32f;
+            estimatedDelayPerTileY = 0.16f;
+            preRouteEstimateConstant = 113;
+        }
 
         excludeAboveRclk = new HashSet<>();
         excludeBelowRclk = new HashSet<>();
@@ -100,6 +117,21 @@ public class RouteNodeGraphTimingDriven extends RouteNodeGraph {
     @Override
     public DelayEstimatorBase<InterconnectInfo> getDelayEstimator() {
         return delayEstimator;
+    }
+
+    @Override
+    public float getEstimatedDelayPerTileX() {
+        return estimatedDelayPerTileX;
+    }
+
+    @Override
+    public float getEstimatedDelayPerTileY() {
+        return estimatedDelayPerTileY;
+    }
+
+    @Override
+    public short getPreRouteEstimateConstant() {
+        return preRouteEstimateConstant;
     }
 
     protected static class RouteNodeTimingDriven extends RouteNode {
