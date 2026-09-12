@@ -408,8 +408,16 @@ public class TimingManager {
                     constraint = constraint.substring(0, constraint.indexOf('#'));
                 }
                 if (constraint.contains("-period")) {
-                    int startIndex = constraint.indexOf("-period");
-                    treq = Math.max(treq, Float.parseFloat(constraint.substring(startIndex+7, startIndex+13)));
+                    // the value is the token after "-period" (e.g. "create_clock -period 2.0 -name clk ...")
+                    String[] tokens = constraint.trim().split("\\s+");
+                    for (int i = 0; i + 1 < tokens.length; i++) {
+                        if (!tokens[i].equals("-period")) continue;
+                        try {
+                            treq = Math.max(treq, Float.parseFloat(tokens[i + 1]));
+                        } catch (NumberFormatException e) {
+                            System.err.println("WARNING: cannot parse the clock period in constraint: " + constraint);
+                        }
+                    }
                 }
             }
         }
