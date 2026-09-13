@@ -202,7 +202,10 @@ public class InlineFlopTools {
 
                 Iterator<Site> siteItr = ECOPlacementHelper.spiralOutFrom(shiftedSite, keepOut, exclude).iterator();
                 siteItr.next(); // Skip the first site, as we are suggesting one inside the pblock
-                Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, null);
+                // Keep the proxy flop in the kernel's SLR: a kernel at the edge of an SLR would
+                // otherwise get proxies across the boundary, and Vivado then reaches the kernel
+                // through SLL round trips that leave LAG-pin inputs behind once the proxies go.
+                Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, start.getTile().getSLR());
                 if (loc == null) {
                     throw new RuntimeException("Failed to find valid placement location for flip-flop");
                 }
