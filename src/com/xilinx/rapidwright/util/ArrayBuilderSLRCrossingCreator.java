@@ -25,6 +25,7 @@ package com.xilinx.rapidwright.util;
 import com.xilinx.rapidwright.design.Cell;
 import com.xilinx.rapidwright.design.ConstraintGroup;
 import com.xilinx.rapidwright.design.Design;
+import com.xilinx.rapidwright.design.SiteInst;
 import com.xilinx.rapidwright.design.DesignTools;
 import com.xilinx.rapidwright.design.Module;
 import com.xilinx.rapidwright.design.Net;
@@ -35,11 +36,14 @@ import com.xilinx.rapidwright.design.blocks.PBlockSide;
 import com.xilinx.rapidwright.design.tools.ArrayBuilder;
 import com.xilinx.rapidwright.design.tools.InlineFlopTools;
 import com.xilinx.rapidwright.design.xdc.ConstraintTools;
+import com.xilinx.rapidwright.device.ClockRegion;
 import com.xilinx.rapidwright.device.IntentCode;
 import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.SLR;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.device.Tile;
+import com.xilinx.rapidwright.device.TileTypeEnum;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.edif.EDIFCellInst;
 import com.xilinx.rapidwright.edif.EDIFHierCellInst;
@@ -52,6 +56,8 @@ import joptsimple.OptionParser;
 import joptsimple.OptionSet;
 
 import java.io.IOException;
+import com.xilinx.rapidwright.util.FileTools;
+import com.xilinx.rapidwright.util.VivadoTools;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -157,10 +163,25 @@ public class ArrayBuilderSLRCrossingCreator {
     }
 
     private static void addPBlockToDesign(Design design, PBlock pblock) {
-        pblock.setContainRouting(true);
+        addPBlockToDesign(design, pblock, true);
+    }
+
+    /**
+     * @param containRouting whether the pblock also contains routing. Only the spanning
+     *        pblock should: a net between the two tiles has cells in both tile pblocks,
+     *        and Vivado then waives containment for it entirely, letting hold-fix detours
+     *        of the crossing nets wander into the neighbouring tiles' area.
+     */
+    private static void addPBlockToDesign(Design design, PBlock pblock, boolean containRouting) {
+        pblock.setContainRouting(containRouting);
         pblock.setIsSoft(false);
         for (String tclCmd : pblock.getTclConstraints()) {
             design.addXDCConstraint(ConstraintGroup.LATE, tclCmd);
+        }
+        if (!containRouting) {
+            // PBlock only emits IS_SOFT when it is set; Vivado's default is soft, and it was
+            // CONTAIN_ROUTING that used to force these pblocks hard.
+            design.addXDCConstraint(ConstraintGroup.LATE, "set_property IS_SOFT 0 [get_pblocks " + pblock.getName() + "]");
         }
     }
 
@@ -426,6 +447,103 @@ public class ArrayBuilderSLRCrossingCreator {
                                          String outputPath, PBlock pblockOverride,
                                          double clkPeriod, boolean reusePreviousResults,
                                          boolean disableHoldTiming, boolean noExplore) {
+        Options options = new Options()
+                .setClkPeriod(clkPeriod)
+                .setReusePreviousResults(reusePreviousResults)
+                .setDisableHoldTiming(disableHoldTiming)
+                .setNoExplore(noExplore);
+        createSLRCrossing(kernelDesign, topDesign, sideMap, topInstName, bottomInstName, outputPath,
+                pblockOverride, options);
+    }
+
+    /**
+     * Settings for one SLR-crossing variant. The defaults reproduce the historical
+     * behaviour: the crossing is built at the bottom of the first SLR of the
+     * kernel's placement grid, Vivado chooses the clock root, and the top-to-bottom
+     * paths carry the max/min delay guardband (hold checks are kept unless
+     * {@link #setDisableHoldTiming(boolean)} adds the hold false path).
+     * <p>
+     * A crossing that will sit some clock-region rows below the array's clock root
+     * sees a much larger launch-to-capture clock skew than one adjacent to the root
+     * (about 0.45-0.6 ns against 0.1 ns at the hold corner on xcv80). To make Vivado
+     * pad the crossing paths for that environment, build the variant at the matching
+     * SLR boundary ({@link #setTopSlrId(int)}) and reproduce the array's clock tree:
+     * Versal clock trees are templates chosen by the clock expansion window's span, each
+     * with a fixed set of legal roots, and the placer replaces a USER_CLOCK_ROOT that
+     * is not legal for the template (Place 30-1175). So the window is widened upward
+     * ({@link #setClockWindowRowsAboveTop(int)}) until the template whose root is the
+     * array's applies, and the root is pinned there ({@link #setClockRootRowsAboveTop(int)}).
+     * Hold timing stays enabled, and the routed design gets its own top cell name so
+     * it can coexist with the default variant in one array netlist.
+     */
+    public static class Options {
+        private double clkPeriod = 1.6;
+        private boolean reusePreviousResults;
+        private boolean disableHoldTiming;
+        private boolean noExplore;
+        private double maxDelay = DEFAULT_SLR_CROSSING_MAX_DELAY;
+        private double minDelay = DEFAULT_SLR_CROSSING_MIN_DELAY;
+        private int topSlrId = -1;
+        private int clockRootRowsAboveTop = -1;
+        private int clockWindowRowsAboveTop = -1;
+        private int clockRootColumnX = -1;
+        private String topCellName;
+
+        public double getClkPeriod() { return clkPeriod; }
+        public Options setClkPeriod(double clkPeriod) { this.clkPeriod = clkPeriod; return this; }
+        public boolean isReusePreviousResults() { return reusePreviousResults; }
+        public Options setReusePreviousResults(boolean reuse) { this.reusePreviousResults = reuse; return this; }
+        public boolean isDisableHoldTiming() { return disableHoldTiming; }
+        public Options setDisableHoldTiming(boolean disable) { this.disableHoldTiming = disable; return this; }
+        public boolean isNoExplore() { return noExplore; }
+        public Options setNoExplore(boolean noExplore) { this.noExplore = noExplore; return this; }
+        /** set_max_delay applied to every top-register to bottom-register path (ns). */
+        public double getMaxDelay() { return maxDelay; }
+        public Options setMaxDelay(double maxDelay) { this.maxDelay = maxDelay; return this; }
+        /**
+         * set_min_delay applied to every top-register to bottom-register path (ns). Vivado
+         * treats it as the ordinary hold check plus this margin, so it is the hold slack the
+         * crossing paths are padded to in the precompile's clock environment.
+         */
+        public double getMinDelay() { return minDelay; }
+        public Options setMinDelay(double minDelay) { this.minDelay = minDelay; return this; }
+        /** SLR whose bottom edge hosts the top tile; -1 picks the first SLR of the placement grid. */
+        public int getTopSlrId() { return topSlrId; }
+        public Options setTopSlrId(int topSlrId) { this.topSlrId = topSlrId; return this; }
+        /**
+         * When non-negative, pins USER_CLOCK_ROOT this many clock-region rows above the top
+         * tile's clock region. Needs a window ({@link #setClockWindowRowsAboveTop(int)}) tall
+         * enough for a template with that root, or the placer moves it.
+         */
+        public int getClockRootRowsAboveTop() { return clockRootRowsAboveTop; }
+        public Options setClockRootRowsAboveTop(int rows) { this.clockRootRowsAboveTop = rows; return this; }
+        /**
+         * When non-negative, sets USER_CLOCK_EXPANSION_WINDOW from the bottom tile's clock
+         * region up to this many rows above the top tile's, over the pblocks' columns.
+         */
+        public int getClockWindowRowsAboveTop() { return clockWindowRowsAboveTop; }
+        public Options setClockWindowRowsAboveTop(int rows) { this.clockWindowRowsAboveTop = rows; return this; }
+        /**
+         * Clock-region column of the pinned root; -1 uses the right-most column of the top
+         * pblock, which is the column Vivado's own root used here. A column without a
+         * vertical clock route from the clock source is rejected (Place 30-5145).
+         */
+        public int getClockRootColumnX() { return clockRootColumnX; }
+        public Options setClockRootColumnX(int x) { this.clockRootColumnX = x; return this; }
+        /** Renames the routed design's netlist and top cell before it is written; null keeps the name. */
+        public String getTopCellName() { return topCellName; }
+        public Options setTopCellName(String topCellName) { this.topCellName = topCellName; return this; }
+    }
+
+    public static void createSLRCrossing(Design kernelDesign, Design topDesign,
+                                         Map<EDIFPort, PBlockSide> sideMap,
+                                         String topInstName, String bottomInstName,
+                                         String outputPath, PBlock pblockOverride,
+                                         Options options) {
+        double clkPeriod = options.getClkPeriod();
+        boolean reusePreviousResults = options.isReusePreviousResults();
+        boolean disableHoldTiming = options.isDisableHoldTiming();
+        boolean noExplore = options.isNoExplore();
         if (!kernelDesign.getDevice().getName().equals("xcv80")) {
             System.out.println("SLRCrossing creator currently only tested for xcv80");
         }
@@ -478,9 +596,17 @@ public class ArrayBuilderSLRCrossingCreator {
             throw new RuntimeException("Instance name " + bottomInstName + " is invalid");
         }
 
-        PBlock topPBlock = createTopPBlockAtBottomOfSLR(pblock, firstSLR);
+        SLR topSLR = firstSLR;
+        if (options.getTopSlrId() >= 0) {
+            topSLR = kernelDesign.getDevice().getSLR(options.getTopSlrId());
+            if (topSLR == null) {
+                throw new RuntimeException("No SLR with id " + options.getTopSlrId() + " on "
+                        + kernelDesign.getDevice().getName());
+            }
+        }
+        PBlock topPBlock = createTopPBlockAtBottomOfSLR(pblock, topSLR);
         topPBlock.setName("pblock_0");
-        System.out.println("[SLR-CROSSING] firstSLR=" + firstSLR.getId()
+        System.out.println("[SLR-CROSSING] firstSLR=" + firstSLR.getId() + " topSLR=" + topSLR.getId()
                 + " moduleAnchor=" + module.getAnchor()
                 + " topPBlockRows=" + topPBlock.getTopLeftTile().getRow()
                 + ".." + topPBlock.getBottomLeftTile().getRow());
@@ -493,9 +619,9 @@ public class ArrayBuilderSLRCrossingCreator {
         PBlock overallPBlock = createSpanningPBlock(topPBlock, bottomPBlock);
         overallPBlock.setName("pblock_2");
 
-        addPBlockToDesign(topDesign, overallPBlock);
-        addPBlockToDesign(topDesign, topPBlock);
-        addPBlockToDesign(topDesign, bottomPBlock);
+        addPBlockToDesign(topDesign, overallPBlock, true);
+        addPBlockToDesign(topDesign, topPBlock, false);
+        addPBlockToDesign(topDesign, bottomPBlock, false);
 
         topDesign.addXDCConstraint(ConstraintGroup.LATE, "add_cells_to_pblock pblock_2 -top");
         topDesign.addXDCConstraint(ConstraintGroup.LATE, "add_cells_to_pblock pblock_0 [get_cells " + topInstName + "]");
@@ -543,22 +669,59 @@ public class ArrayBuilderSLRCrossingCreator {
 
         insertPEClockBUFGCE(topDesign);
         EDIFTools.ensurePreservedInterfaceVivado(topDesign.getNetlist());
-        addSLRCrossingTimingGuardbandConstraint(topDesign, topInstName, bottomInstName);
+        addSLRCrossingTimingGuardbandConstraint(topDesign, topInstName, bottomInstName,
+                options.getMaxDelay(), options.getMinDelay());
         if (disableHoldTiming) {
             addSLRCrossingHoldFalsePathConstraint(topDesign, topInstName, bottomInstName);
         }
         addNoReplicateConstraintsForSLRCrossingNets(topDesign, topInstName, bottomInstName);
+        addClockTreeConstraints(topDesign, topPBlock, bottomPBlock, options);
 
         String runDirectory = Paths.get(outputPath).getParent().resolve(PE_RUN_DIR).toString();
         explorePerformance(topDesign, runDirectory, reusePreviousResults, clkPeriod, noExplore);
         Design bestDesign = Design.readCheckpoint(Paths.get(runDirectory, "pblock0_best.dcp").toString());
+        List<String> spilled = netsLeavingRectangle(bestDesign, overallPBlock);
+        if (!spilled.isEmpty()) {
+            bestDesign = rerouteSpilledNetsWithoutHoldPadding(runDirectory, spilled);
+        }
         EDIFTools.removeVivadoBusPreventionAnnotations(bestDesign.getNetlist());
         removePEClockBUFGCE(bestDesign);
         InlineFlopTools.removeInlineFlops(bestDesign);
         NetTools.unrouteTopLevelNetsThatLeavePBlock(bestDesign, topPBlock);
         NetTools.unrouteTopLevelNetsThatLeavePBlock(bestDesign, bottomPBlock);
+        List<String> stillSpilled = netsLeavingRectangle(bestDesign, overallPBlock);
+        if (!stillSpilled.isEmpty()) {
+            // Last resort: an unrouted crossing net cannot be completed by RWRoute (it does not
+            // route through the SLL), so this should not happen after the re-route pass.
+            int unrouted = 0, kept = 0;
+            for (String name : stillSpilled) {
+                Net n = bestDesign.getNet(name);
+                boolean crossesSlr = false;
+                for (PIP p : n.getPIPs()) {
+                    if (p.getTile().getTileTypeEnum() == TileTypeEnum.SLL) {
+                        crossesSlr = true;
+                        break;
+                    }
+                }
+                if (crossesSlr) {
+                    kept++;
+                } else {
+                    n.unroute();
+                    unrouted++;
+                }
+            }
+            System.out.println("[SLR-CROSSING] WARNING: " + stillSpilled.size()
+                    + " nets still route outside the spanning pblock after the re-route pass: unrouted " + unrouted
+                    + ", kept " + kept + " SLR-crossing nets routed (their routes may stray a little into the neighbouring tiles): "
+                    + stillSpilled.subList(0, Math.min(8, stillSpilled.size())));
+        }
         DesignTools.createPossiblePinsToStaticNets(bestDesign);
         DesignTools.createMissingSitePinInsts(bestDesign);
+        removeConstraintsContaining(bestDesign, USER_CLOCK_ROOT);
+        removeConstraintsContaining(bestDesign, USER_CLOCK_EXPANSION_WINDOW);
+        if (options.getTopCellName() != null) {
+            bestDesign.getNetlist().renameNetlistAndTopCell(options.getTopCellName());
+        }
 
         bestDesign.writeCheckpoint(outputPath);
     }
@@ -621,17 +784,153 @@ public class ArrayBuilderSLRCrossingCreator {
     }
 
     private static void addSLRCrossingTimingGuardbandConstraint(Design design, String topInstName,
-                                                                 String bottomInstName) {
+                                                                 String bottomInstName,
+                                                                 double maxDelay, double minDelay) {
         String topRegs = "[get_cells -hier -quiet -filter {NAME =~ " + topInstName
                 + "/* && IS_SEQUENTIAL}]";
         String bottomRegs = "[get_cells -hier -quiet -filter {NAME =~ " + bottomInstName
                 + "/* && IS_SEQUENTIAL}]";
         design.addXDCConstraint(ConstraintGroup.LATE,
-                "set_max_delay " + DEFAULT_SLR_CROSSING_MAX_DELAY
+                "set_max_delay " + maxDelay
                         + " -from " + topRegs + " -to " + bottomRegs);
         design.addXDCConstraint(ConstraintGroup.LATE,
-                "set_min_delay " + DEFAULT_SLR_CROSSING_MIN_DELAY
+                "set_min_delay " + minDelay
                         + " -from " + topRegs + " -to " + bottomRegs);
+    }
+
+    /**
+     * Names of the routed, non-static, non-clock nets that have PIPs outside the tile
+     * rectangle of the given pblock. Vivado's hold-fix detours do not always respect
+     * CONTAIN_ROUTING: with hold timing enabled across the crossing, some padded nets
+     * wander outside the spanning pblock's columns, where they would collide with the
+     * neighbouring tiles once the module is relocated into an array (and break Module
+     * relocation altogether).
+     */
+    /**
+     * Rows the crossing's routing may extend beyond the spanning pblock: the SLL tiles the
+     * crossing goes through sit at the SLR boundary and, depending on where the boundary
+     * falls relative to the tile rows, a few of them lie just outside the pblock. Columns
+     * get no tolerance, since the neighbouring array columns abut the pblock.
+     */
+    private static final int ROUTING_ROW_TOLERANCE = 8;
+
+    private static List<String> netsLeavingRectangle(Design design, PBlock pblock) {
+        int minCol = Integer.MAX_VALUE, maxCol = Integer.MIN_VALUE, minRow = Integer.MAX_VALUE, maxRow = Integer.MIN_VALUE;
+        for (Tile t : pblock.getAllTiles()) {
+            minCol = Math.min(minCol, t.getColumn());
+            maxCol = Math.max(maxCol, t.getColumn());
+            minRow = Math.min(minRow, t.getRow());
+            maxRow = Math.max(maxRow, t.getRow());
+        }
+        minRow -= ROUTING_ROW_TOLERANCE;
+        maxRow += ROUTING_ROW_TOLERANCE;
+        List<String> names = new ArrayList<>();
+        for (Net n : design.getNets()) {
+            if (n.isStaticNet() || n.isClockNet() || !n.hasPIPs()) continue;
+            for (PIP p : n.getPIPs()) {
+                Tile t = p.getTile();
+                if (t.getColumn() < minCol || t.getColumn() > maxCol || t.getRow() < minRow || t.getRow() > maxRow) {
+                    names.add(n.getName());
+                    break;
+                }
+            }
+        }
+        System.out.println("[SLR-CROSSING] " + names.size() + " nets route outside the spanning pblock (cols "
+                + minCol + ".." + maxCol + ", rows " + minRow + ".." + maxRow + ")"
+                + (names.isEmpty() ? "" : ": " + names.subList(0, Math.min(8, names.size()))));
+        return names;
+    }
+
+    /**
+     * Re-routes the spilled nets in Vivado with their hold checks false-pathed, so they
+     * get short, contained routes (their hold is then left to the array's hold fixer);
+     * every other net keeps its routing. Returns the re-read design.
+     */
+    private static Design rerouteSpilledNetsWithoutHoldPadding(String runDirectory, List<String> spilled) {
+        Path in = Paths.get(runDirectory, "pblock0_best.dcp");
+        Path out = Paths.get(runDirectory, "pblock0_best_contained.dcp");
+        Path script = Paths.get(runDirectory, "contain_spilled_nets.tcl");
+        Path log = Paths.get(runDirectory, "contain_spilled_nets.log");
+        List<String> tcl = new ArrayList<>();
+        tcl.add("open_checkpoint " + in);
+        tcl.add("set names [list]");
+        for (String name : spilled) {
+            tcl.add("lappend names {" + name + "}");
+        }
+        tcl.add("set bad [get_nets -hier -quiet $names]");
+        tcl.add("puts \"spilled nets resolved: [llength $bad] of " + spilled.size() + "\"");
+        tcl.add("route_design -unroute -nets $bad");
+        tcl.add("set_false_path -hold -through $bad");
+        tcl.add("route_design -nets $bad");
+        tcl.add("report_route_status");
+        tcl.add("write_checkpoint -force " + out);
+        FileTools.writeLinesToTextFile(tcl, script.toString());
+        System.out.println("[SLR-CROSSING] re-routing " + spilled.size()
+                + " spilled nets in Vivado with hold false-pathed (log " + log + ")");
+        VivadoTools.runTcl(log, script, true);
+        if (!out.toFile().exists()) {
+            throw new RuntimeException("Vivado re-route of spilled nets did not produce " + out);
+        }
+        return Design.readCheckpoint(out.toString());
+    }
+
+    private static final String USER_CLOCK_ROOT = "USER_CLOCK_ROOT";
+    private static final String USER_CLOCK_EXPANSION_WINDOW = "USER_CLOCK_EXPANSION_WINDOW";
+
+    private static ClockRegion clockRegionOf(Tile t) {
+        ClockRegion cr = t.getClockRegion();
+        if (cr == null) {
+            throw new RuntimeException("No clock region for pblock corner tile " + t);
+        }
+        return cr;
+    }
+
+    /**
+     * Reproduces the array's clock tree in the PE run: the expansion window spans from
+     * the bottom tile's clock region up to the requested rows above the top tile's, and
+     * the root is pinned the requested rows above the top tile. See {@link Options}.
+     */
+    private static void addClockTreeConstraints(Design design, PBlock topPBlock, PBlock bottomPBlock,
+                                                Options options) {
+        if (options.getClockRootRowsAboveTop() < 0 && options.getClockWindowRowsAboveTop() < 0) {
+            return;
+        }
+        // Clock-region extents of every placed clock load (tile cells and port flops), which
+        // is what Vivado derives its own window from; the global buffer is excluded.
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, minY = Integer.MAX_VALUE, topY = Integer.MIN_VALUE;
+        for (SiteInst si : design.getSiteInsts()) {
+            if (si.getSite() == null || si.getSiteTypeEnum().name().startsWith("BUFG")) continue;
+            ClockRegion cr = si.getTile().getClockRegion();
+            if (cr == null) continue;
+            minX = Math.min(minX, cr.getInstanceX());
+            maxX = Math.max(maxX, cr.getInstanceX());
+            minY = Math.min(minY, cr.getInstanceY());
+            topY = Math.max(topY, cr.getInstanceY());
+        }
+        if (minX > maxX) {
+            throw new RuntimeException("No placed clock loads to derive the clock expansion window from");
+        }
+        ClockRegion topLeft = clockRegionOf(topPBlock.getTopLeftTile());
+        int numRows = design.getDevice().getNumOfClockRegionRows();
+        if (options.getClockWindowRowsAboveTop() >= 0) {
+            int maxY = Math.min(numRows - 1, topY + options.getClockWindowRowsAboveTop());
+            String window = "CLOCKREGION_X" + minX + "Y" + minY + ":CLOCKREGION_X" + maxX + "Y" + maxY;
+            System.out.println("[SLR-CROSSING] " + USER_CLOCK_EXPANSION_WINDOW + " " + window);
+            design.addXDCConstraint(ConstraintGroup.LATE,
+                    "set_property " + USER_CLOCK_EXPANSION_WINDOW + " " + window + " [get_nets clk]");
+        }
+        if (options.getClockRootRowsAboveTop() >= 0) {
+            int x = options.getClockRootColumnX() >= 0 ? options.getClockRootColumnX() : maxX;
+            int y = topY + options.getClockRootRowsAboveTop();
+            String root = "X" + x + "Y" + y;
+            if (design.getDevice().getClockRegion(root) == null) {
+                throw new RuntimeException("Clock region " + root + " does not exist");
+            }
+            System.out.println("[SLR-CROSSING] " + USER_CLOCK_ROOT + " " + root + " (top tile clock region "
+                    + topLeft.getName() + ")");
+            design.addXDCConstraint(ConstraintGroup.LATE,
+                    "set_property " + USER_CLOCK_ROOT + " " + root + " [get_nets clk]");
+        }
     }
 
     private static void addSLRCrossingHoldFalsePathConstraint(Design design, String topInstName,

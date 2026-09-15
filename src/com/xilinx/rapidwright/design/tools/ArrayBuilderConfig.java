@@ -23,6 +23,7 @@
 
 package com.xilinx.rapidwright.design.tools;
 
+import com.xilinx.rapidwright.router.VTreeType;
 import com.xilinx.rapidwright.design.Design;
 import com.xilinx.rapidwright.device.Part;
 import com.xilinx.rapidwright.device.PartNameTools;
@@ -55,6 +56,16 @@ public class ArrayBuilderConfig {
     private Design slrCrossing;
 
     private Design slrCrossingSynth;
+
+    /**
+     * Optional second SLR-crossing implementation, precompiled for a boundary that
+     * lies below the array's clock root (see ArrayBuilderSLRCrossingCreator.Options);
+     * ArrayBuilder uses it for such boundaries and {@link #getSlrCrossing()} for the rest.
+     */
+    private Design slrCrossingBelowRoot;
+
+    /** Clock tree type the top clock will be routed with; decides where the clock root lands. */
+    private VTreeType clockVTreeType = VTreeType.BALANCED;
 
     private String slrCrossingTopInstName;
 
@@ -548,6 +559,22 @@ public class ArrayBuilderConfig {
 
     public Design getSlrCrossingSynth() {
         return slrCrossingSynth;
+    }
+
+    public Design getSlrCrossingBelowRoot() {
+        return slrCrossingBelowRoot;
+    }
+
+    public void setSlrCrossingBelowRoot(Design slrCrossingBelowRoot) {
+        this.slrCrossingBelowRoot = slrCrossingBelowRoot;
+    }
+
+    public VTreeType getClockVTreeType() {
+        return clockVTreeType;
+    }
+
+    public void setClockVTreeType(VTreeType clockVTreeType) {
+        this.clockVTreeType = clockVTreeType == null ? VTreeType.BALANCED : clockVTreeType;
     }
 
     public void setSlrCrossingSynth(Design slrCrossingSynth) {

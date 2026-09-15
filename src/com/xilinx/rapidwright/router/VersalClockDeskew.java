@@ -71,7 +71,13 @@ public class VersalClockDeskew {
     private static final String[] GCLK_IGNORE_ATTRS = {
             "IGNORE_TOP", "IGNORE_BOT", "IGNORE_LEFT", "IGNORE_RIGHT" };
 
-    public static final int MAX_TAPS = 15;
+    /**
+     * Largest CLK_DLY_VAL Vivado honours. The field is 4 bits, but measured on xcv80 (Vivado
+     * 2026.1) the timer credits 0..8 taps linearly (about 50 ps each above the DELAY-mode base),
+     * 9 adds only ~15 ps more, and 10..15 are silently timed as if the slice were in BYPASS:
+     * not even the DELAY-mode base delay is applied.
+     */
+    public static final int MAX_TAPS = 8;
 
     /**
      * Programs the leaf clock delay of a single SLICE: all flops in the slice

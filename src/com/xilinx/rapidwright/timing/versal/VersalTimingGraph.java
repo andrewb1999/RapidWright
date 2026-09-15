@@ -20,15 +20,20 @@
 
 package com.xilinx.rapidwright.timing.versal;
 
+import com.xilinx.rapidwright.design.BELAttr;
 import com.xilinx.rapidwright.design.Cell;
 import com.xilinx.rapidwright.design.Design;
 import com.xilinx.rapidwright.design.DesignTools;
 import com.xilinx.rapidwright.design.Net;
 import com.xilinx.rapidwright.design.NetType;
+import com.xilinx.rapidwright.design.SiteConfig;
 import com.xilinx.rapidwright.design.SiteInst;
 import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.design.tools.LUTTools;
+import com.xilinx.rapidwright.device.BEL;
 import com.xilinx.rapidwright.device.BELPin;
+import com.xilinx.rapidwright.device.PIP;
+import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.edif.EDIFHierNet;
 import com.xilinx.rapidwright.edif.EDIFHierPortInst;
 import com.xilinx.rapidwright.edif.EDIFHierCellInst;
@@ -38,6 +43,7 @@ import com.xilinx.rapidwright.timing.DelayModel;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
@@ -46,6 +52,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * A data-path timing graph for a placed and routed Versal design, built from a
@@ -125,6 +132,8 @@ public class VersalTimingGraph {
          *  (driver BEL pin -> site pin plus site pin -> sink BEL pin, per corner); null otherwise */
         public final SitePinInst sinkPin;
         public final float[] intraSite;
+        /** set when the net's edges were replaced by {@link #refreshNets()}: no longer in its source's outs, skipped in {@link #getEdges()} scans */
+        public boolean removed;
 
         Edge(Vertex src, Vertex dst, float[] delay, Net net, String kind) {
             this(src, dst, delay, net, kind, null, null);
@@ -153,6 +162,18 @@ public class VersalTimingGraph {
     private final Map<Vertex, float[]> clkToQ = new HashMap<>();
     /** physical clock pin of every launch and endpoint vertex's cell */
     private final Map<Vertex, String> clockPin = new HashMap<>();
+    private boolean built = false;
+    /** true between a propagation and the next change of the graph or its seeds */
+    private boolean arrivalsValid = false;
+    /** the edges of every net that has some, for replacing them when the net's routing changes */
+    private final Map<Net, List<Edge>> netEdges = new HashMap<>();
+    /** routing signature ({@link #signatureOf}) of every data net at the build or the last refresh */
+    private final Map<Net, Long> netSignature = new HashMap<>();
+    private int removedEdges = 0;
+    /** {clock arrival, group} every launch was last seeded with (arrival null: unseeded), to restore it after a reset */
+    private final Map<Vertex, Object[]> seeds = new HashMap<>();
+    /** FF_CLK_MOD attributes per slice at the last {@link #refreshClockLeaves()} */
+    private Map<Site, String> leafSnapshot = null;
 
     /** Whether a sink whose site pin is not routed still gets a "net" edge (interconnect 0, intra-site terms only). */
     private final boolean edgesForUnroutedSinks;
@@ -210,14 +231,15 @@ public class VersalTimingGraph {
         });
     }
 
-    private void addEdge(Vertex s, Vertex d, float[] delay, Net net, String kind) {
-        addEdge(s, d, delay, net, kind, null, null);
+    private Edge addEdge(Vertex s, Vertex d, float[] delay, Net net, String kind) {
+        return addEdge(s, d, delay, net, kind, null, null);
     }
 
-    private void addEdge(Vertex s, Vertex d, float[] delay, Net net, String kind, SitePinInst sinkPin, float[] intraSite) {
+    private Edge addEdge(Vertex s, Vertex d, float[] delay, Net net, String kind, SitePinInst sinkPin, float[] intraSite) {
         Edge e = new Edge(s, d, delay, net, kind, sinkPin, intraSite);
         s.outs.add(e);
         edges.add(e);
+        return e;
     }
 
     public static boolean isFlipFlop(Cell c) {
@@ -318,6 +340,19 @@ public class VersalTimingGraph {
         phaseMs[1] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
         buildNetEdges();
         phaseMs[2] = System.currentTimeMillis() - t;
+        leafSnapshot = leafSettings();
+        built = true;
+        arrivalsValid = false;
+    }
+
+    /** Whether {@link #build()} has run. */
+    public boolean isBuilt() {
+        return built;
+    }
+
+    /** Whether the arrivals reflect the current graph and seeds (a propagation ran and nothing changed since). */
+    public boolean hasArrivals() {
+        return arrivalsValid;
     }
 
     /** cell name + "/" + physical pin -> constant value (0/1) for pins Vivado would treat as constant. */
@@ -332,23 +367,36 @@ public class VersalTimingGraph {
     private void propagateConstants() {
         Map<String, Cell> lutByOutNet = new HashMap<>();       // net name -> LUT cell driving it
         Map<String, List<String>> netSinks = new HashMap<>();  // net name -> sink "cell/physPin"
-        for (Net net : design.getNets()) {
+        // phase 1 (parallel): per net, its driving LUT and its sink pins, read off the netlist
+        List<Net> nets = new ArrayList<>(design.getNets());
+        Object[][] found = new Object[nets.size()][];   // {LUT cell or null, sink keys}
+        java.util.stream.IntStream range = java.util.stream.IntStream.range(0, nets.size());
+        (parallelNets() ? range.parallel() : range).forEach(i -> {
+            Net net = nets.get(i);
             EDIFHierNet hnet = design.getNetlist().getHierNetFromName(net.getName());
-            if (hnet == null) continue;
-            boolean isConst = net.isStaticNet();
+            if (hnet == null) return;
+            Cell lut = null;
+            List<String> sinks = new ArrayList<>();
             for (EDIFHierPortInst p : hnet.getLeafHierPortInsts(true, true)) {
                 Cell c = p.getPhysicalCell(design);
                 if (c == null || c.getBEL() == null) continue;
                 String phys = c.getPhysicalPinMapping(p.getPortInst().getName());
                 if (phys == null) continue;
-                String key = c.getName() + "/" + phys;
                 if (p.isOutput()) {
-                    if (c.getType() != null && c.getType().startsWith("LUT")) lutByOutNet.put(net.getName(), c);
-                } else {
-                    netSinks.computeIfAbsent(net.getName(), k -> new ArrayList<>()).add(key);
-                    if (isConst) constantPins.put(key, net.isVCCNet() ? 1 : 0);
-                }
+                    if (c.getType() != null && c.getType().startsWith("LUT")) lut = c;
+                } else sinks.add(c.getName() + "/" + phys);
             }
+            found[i] = new Object[] {lut, sinks};
+        });
+        // phase 2 (sequential, net order)
+        for (int i = 0; i < nets.size(); i++) {
+            if (found[i] == null) continue;
+            Net net = nets.get(i);
+            Cell lut = (Cell) found[i][0];
+            @SuppressWarnings("unchecked") List<String> sinks = (List<String>) found[i][1];
+            if (lut != null) lutByOutNet.put(net.getName(), lut);
+            if (!sinks.isEmpty()) netSinks.computeIfAbsent(net.getName(), k -> new ArrayList<>()).addAll(sinks);
+            if (net.isStaticNet()) for (String key : sinks) constantPins.put(key, net.isVCCNet() ? 1 : 0);
         }
         boolean changed = true;
         Set<String> constNets = new HashSet<>();
@@ -724,7 +772,33 @@ public class VersalTimingGraph {
         /** {sink cell, physical pin, delays or null when unrouted, kind}: in sink port order, unrouted sinks included (their vertex is still created) */
         final List<Object[]> sinks = new ArrayList<>();
         int unrouted, skipped;
+        long signature;
         NetPlan(Net net) { this.net = net; }
+    }
+
+    /** The data nets the graph times: every WIRE net that is neither static nor a clock. */
+    private List<Net> dataNets() {
+        List<Net> nets = new ArrayList<>();
+        for (Net net : design.getNets()) {
+            if (net.getType() != NetType.WIRE || net.isStaticNet() || net.isClockNet()) continue;
+            nets.add(net);
+        }
+        return nets;
+    }
+
+    /**
+     * A hash of what the net's edges depend on: its PIPs in order, its pins (by site and name) and
+     * their routed flags. Two states of a net with equal signatures get equal edges.
+     */
+    static long signatureOf(Net net) {
+        long h = 1469598103934665603L;
+        for (PIP p : net.getPIPs()) h = (h ^ p.hashCode()) * 1099511628211L;
+        h = (h ^ 0x5bd1e995L) * 1099511628211L;
+        for (SitePinInst p : net.getPins()) {
+            int k = p.getName().hashCode() * 31 + (p.getSite() == null ? 0 : p.getSite().hashCode());
+            h = (h ^ k ^ (p.isRouted() ? 0x10000 : 0)) * 1099511628211L;
+        }
+        return h;
     }
 
     /** Whether the per-net resolution runs across threads (RW_PARALLEL honoured; serial under DEBUG_SINK to keep its output in order). */
@@ -733,11 +807,7 @@ public class VersalTimingGraph {
     }
 
     private void buildNetEdges() {
-        List<Net> nets = new ArrayList<>();
-        for (Net net : design.getNets()) {
-            if (net.getType() != NetType.WIRE || net.isStaticNet() || net.isClockNet()) continue;
-            nets.add(net);
-        }
+        List<Net> nets = dataNets();
         // phase 1 (parallel): pure lookups against the design, the device and the model's tables
         NetPlan[] plans = new NetPlan[nets.size()];
         java.util.stream.IntStream range = java.util.stream.IntStream.range(0, nets.size());
@@ -747,17 +817,114 @@ public class VersalTimingGraph {
         for (NetPlan p : plans) {
             netsSkipped += p.skipped;
             unroutedSinks += p.unrouted;
-            if (p.srcCell == null) continue;
-            Vertex vs = vertex(p.srcCell, p.srcPhys);
-            for (Object[] sk : p.sinks) {
-                Vertex vd = vertex((Cell) sk[0], (String) sk[1]);
-                if (sk[2] != null) addEdge(vs, vd, (float[]) sk[2], p.net, (String) sk[3], (SitePinInst) sk[4], (float[]) sk[5]);
+            applyNetPlan(p, null);
+        }
+    }
+
+    /** Adds a net's vertices and edges to the graph; {@code touched} (when given) collects the sink vertices. */
+    private void applyNetPlan(NetPlan p, Set<Vertex> touched) {
+        netSignature.put(p.net, p.signature);
+        if (p.srcCell == null) return;
+        Vertex vs = vertex(p.srcCell, p.srcPhys);
+        List<Edge> list = null;
+        for (Object[] sk : p.sinks) {
+            Vertex vd = vertex((Cell) sk[0], (String) sk[1]);
+            if (touched != null) touched.add(vd);
+            if (sk[2] != null) {
+                if (list == null) list = new ArrayList<>(p.sinks.size());
+                list.add(addEdge(vs, vd, (float[]) sk[2], p.net, (String) sk[3], (SitePinInst) sk[4], (float[]) sk[5]));
             }
         }
+        if (list != null) netEdges.put(p.net, list);
+    }
+
+    /** Takes a net's edges out of the graph; {@code touched} collects their sink vertices. */
+    private void dropNetEdges(Net net, Set<Vertex> touched) {
+        List<Edge> old = netEdges.remove(net);
+        if (old == null) return;
+        for (Edge e : old) {
+            e.removed = true;
+            e.src.outs.remove(e);
+            touched.add(e.dst);
+            removedEdges++;
+        }
+    }
+
+    /**
+     * Re-plans every data net whose routing or pins changed since the build or the last refresh
+     * ({@link #signatureOf}), and drops the edges of nets no longer in the design. Returns the vertices
+     * whose incoming edges changed, the starting set for {@link #propagateFrom}.
+     */
+    public Set<Vertex> refreshNets() {
+        List<Net> nets = dataNets();
+        long[] sig = new long[nets.size()];
+        java.util.stream.IntStream range = java.util.stream.IntStream.range(0, nets.size());
+        (parallelNets() ? range.parallel() : range).forEach(i -> sig[i] = signatureOf(nets.get(i)));
+        List<Integer> changed = new ArrayList<>();
+        for (int i = 0; i < sig.length; i++) {
+            Long old = netSignature.get(nets.get(i));
+            if (old == null || old != sig[i]) changed.add(i);
+        }
+        Set<Vertex> touched = new HashSet<>();
+        // nets gone from the design: known nets outnumber the known ones still present
+        int knownPresent = nets.size() - changed.size();
+        for (int i : changed) if (netSignature.containsKey(nets.get(i))) knownPresent++;
+        if (netSignature.size() > knownPresent) {
+            Set<Net> present = new HashSet<>(nets);
+            for (Net n : new ArrayList<>(netSignature.keySet())) if (!present.contains(n)) { dropNetEdges(n, touched); netSignature.remove(n); }
+        }
+        NetPlan[] plans = new NetPlan[changed.size()];
+        java.util.stream.IntStream crange = java.util.stream.IntStream.range(0, changed.size());
+        (parallelNets() ? crange.parallel() : crange).forEach(k -> plans[k] = planNet(nets.get(changed.get(k))));
+        for (NetPlan p : plans) {
+            dropNetEdges(p.net, touched);
+            applyNetPlan(p, touched);
+        }
+        if (removedEdges > edges.size() / 8) { edges.removeIf(e -> e.removed); removedEdges = 0; }
+        lastNetsRefreshed = changed.size();
+        if (!changed.isEmpty()) arrivalsValid = false;
+        return touched;
+    }
+
+    /** nets re-planned by the last {@link #refreshNets()} */
+    private int lastNetsRefreshed = 0;
+    public int getLastNetsRefreshed() { return lastNetsRefreshed; }
+
+    /** FF_CLK_MOD attributes of every slice that has any, as one string per site. */
+    private Map<Site, String> leafSettings() {
+        Map<Site, String> out = new HashMap<>();
+        Map<Site, SiteConfig> attrs = design.getBELAttrs();
+        if (attrs == null) return out;
+        for (Map.Entry<Site, SiteConfig> e : attrs.entrySet()) {
+            BEL mod = e.getKey().getBEL("FF_CLK_MOD");
+            if (mod == null || e.getValue().getBELAttributes() == null) continue;
+            Map<String, BELAttr> m = e.getValue().getBELAttributes().get(mod);
+            if (m == null || m.isEmpty()) continue;
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, BELAttr> a : new TreeMap<>(m).entrySet()) sb.append(a.getKey()).append('=').append(a.getValue().getValue()).append(';');
+            out.put(e.getKey(), sb.toString());
+        }
+        return out;
+    }
+
+    /**
+     * The slices whose leaf clock delay (FF_CLK_MOD attributes) changed since the build or the last
+     * call: their launches need re-seeding and their endpoints new capture arrivals.
+     */
+    public Set<Site> refreshClockLeaves() {
+        Map<Site, String> now = leafSettings();
+        Set<Site> changed = new HashSet<>();
+        if (leafSnapshot != null) {
+            for (Map.Entry<Site, String> e : now.entrySet()) if (!e.getValue().equals(leafSnapshot.get(e.getKey()))) changed.add(e.getKey());
+            for (Site s : leafSnapshot.keySet()) if (!now.containsKey(s)) changed.add(s);
+        }
+        leafSnapshot = now;
+        return changed;
     }
 
     private NetPlan planNet(Net net) {
         NetPlan plan = new NetPlan(net);
+        plan.signature = signatureOf(net);
         EDIFHierNet hnet = design.getNetlist().getHierNetFromName(net.getName());
         if (hnet == null) { plan.skipped++; return plan; }
         EDIFHierPortInst srcPort = null;
@@ -849,10 +1016,30 @@ public class VersalTimingGraph {
      * seeding the launches with clock arrivals).
      */
     public void resetArrivals() {
-        for (Vertex v : vertices.values()) {
-            if (v.launch) continue;
-            for (int i = 0; i < nc; i++) { v.arrival[i] = unset(i); v.pred[i] = null; }
-            v.tags = null;
+        for (Vertex v : vertices.values()) resetVertex(v);
+        arrivalsValid = false;
+    }
+
+    /**
+     * Puts a vertex back to its state before any propagation: unset for ordinary vertices; for a launch,
+     * its last seed (clock arrival plus clock-to-output in that seed's group), or clock-to-output alone in
+     * the default group when it was never seeded, or unset when it was unseeded.
+     */
+    private void resetVertex(Vertex v) {
+        for (int i = 0; i < nc; i++) { v.arrival[i] = unset(i); v.pred[i] = null; }
+        v.tags = null;
+        if (!v.launch) return;
+        float[] q = clkToQ.get(v);
+        Object[] s = seeds.get(v);
+        if (s == null) {
+            System.arraycopy(q, 0, v.arrival, 0, nc);
+            v.tags = new ArrayList<>(1);
+            v.tags.add(launchTag(v, null));
+        } else if (s[0] != null) {
+            float[] clock = (float[]) s[0];
+            for (int i = 0; i < nc; i++) v.arrival[i] = clock[i] + q[i];
+            v.tags = new ArrayList<>(1);
+            v.tags.add(launchTag(v, s[1]));
         }
     }
 
@@ -879,6 +1066,8 @@ public class VersalTimingGraph {
     public void unseedLaunch(Vertex v) {
         for (int i = 0; i < nc; i++) v.arrival[i] = unset(i);
         v.tags = null;
+        seeds.put(v, new Object[] {null, null});
+        arrivalsValid = false;
     }
 
     public void seedLaunch(Vertex v, float[] clockArrival) {
@@ -892,6 +1081,8 @@ public class VersalTimingGraph {
         for (int i = 0; i < nc; i++) v.arrival[i] = clockArrival[i] + q[i];
         v.tags = new ArrayList<>(1);
         v.tags.add(launchTag(v, tag));
+        seeds.put(v, new Object[] {clockArrival, tag});
+        arrivalsValid = false;
     }
 
     private Tagged launchTag(Vertex v, Object tag) {
@@ -921,7 +1112,7 @@ public class VersalTimingGraph {
     public List<Vertex> computeArrivals() {
         // Kahn topological order restricted to the reachable graph
         Map<Vertex, Integer> indeg = new HashMap<>();
-        for (Edge e : edges) indeg.merge(e.dst, 1, Integer::sum);
+        for (Edge e : edges) if (!e.removed) indeg.merge(e.dst, 1, Integer::sum);
         Deque<Vertex> queue = new ArrayDeque<>();
         for (Vertex v : vertices.values()) if (!indeg.containsKey(v)) queue.add(v);
         // launches never seeded through seedLaunch (clock-to-Q only) form the default group
@@ -931,32 +1122,7 @@ public class VersalTimingGraph {
             Vertex v = queue.poll();
             visited++;
             for (Edge e : v.outs) {
-                // a launch vertex can also be the output of a combinational arc (an SRL or LUT-RAM output
-                // reached from its address pins, a bypassed DSP register): its arrival is the extreme of its
-                // own clock-to-Q and the paths into it, so edges into launches are relaxed like any other
-                {
-                    for (int i = 0; i < nc; i++) {
-                        if (!isSet(v.arrival[i])) continue;
-                        float a = v.arrival[i] + e.delay[i];
-                        if (better(i, a, e.dst.arrival[i])) { e.dst.arrival[i] = a; e.dst.pred[i] = e; }
-                    }
-                    if (v.tags != null) {
-                        for (Tagged s : v.tags) {
-                            Tagged d = getTag(e.dst, s.tag);
-                            if (d == null) {
-                                d = new Tagged(s.tag, nc);
-                                for (int i = 0; i < nc; i++) d.arrival[i] = unset(i);
-                                if (e.dst.tags == null) e.dst.tags = new ArrayList<>(1);
-                                e.dst.tags.add(d);
-                            }
-                            for (int i = 0; i < nc; i++) {
-                                if (!isSet(s.arrival[i])) continue;
-                                float a = s.arrival[i] + e.delay[i];
-                                if (better(i, a, d.arrival[i])) { d.arrival[i] = a; d.pred[i] = e; }
-                            }
-                        }
-                    }
-                }
+                relax(e);
                 int d = indeg.merge(e.dst, -1, Integer::sum);
                 if (d == 0) queue.add(e.dst);
             }
@@ -964,7 +1130,78 @@ public class VersalTimingGraph {
         if (visited != vertices.size()) {
             System.err.println("WARNING: timing graph has a combinational loop; " + (vertices.size() - visited) + " vertices not visited");
         }
+        arrivalsValid = true;
         return getEndpointsSorted(0);
+    }
+
+    /**
+     * Relaxes one edge: the sink's arrival and per-group arrivals take the source's when better. A
+     * launch vertex can also be the output of a combinational arc (an SRL or LUT-RAM output reached
+     * from its address pins, a bypassed DSP register): its arrival is the extreme of its own
+     * clock-to-Q and the paths into it, so edges into launches are relaxed like any other.
+     */
+    private void relax(Edge e) {
+        Vertex v = e.src;
+        for (int i = 0; i < nc; i++) {
+            if (!isSet(v.arrival[i])) continue;
+            float a = v.arrival[i] + e.delay[i];
+            if (better(i, a, e.dst.arrival[i])) { e.dst.arrival[i] = a; e.dst.pred[i] = e; }
+        }
+        if (v.tags == null) return;
+        for (Tagged s : v.tags) {
+            Tagged d = getTag(e.dst, s.tag);
+            if (d == null) {
+                d = new Tagged(s.tag, nc);
+                for (int i = 0; i < nc; i++) d.arrival[i] = unset(i);
+                if (e.dst.tags == null) e.dst.tags = new ArrayList<>(1);
+                e.dst.tags.add(d);
+            }
+            for (int i = 0; i < nc; i++) {
+                if (!isSet(s.arrival[i])) continue;
+                float a = s.arrival[i] + e.delay[i];
+                if (better(i, a, d.arrival[i])) { d.arrival[i] = a; d.pred[i] = e; }
+            }
+        }
+    }
+
+    /**
+     * Re-propagates after some edges or seeds changed, without touching the rest of the graph: every
+     * vertex reachable from the given ones (the cone) is reset and relaxed again, first from its
+     * predecessors outside the cone (whose arrivals are current), then in topological order inside it.
+     * The launches among the given vertices must already carry their new seed. Returns the cone; its
+     * endpoints are the ones whose arrivals may have changed.
+     */
+    public Set<Vertex> propagateFrom(Collection<Vertex> from) {
+        Set<Vertex> cone = new HashSet<>();
+        Deque<Vertex> stack = new ArrayDeque<>();
+        for (Vertex v : from) if (cone.add(v)) stack.push(v);
+        while (!stack.isEmpty()) {
+            Vertex v = stack.pop();
+            for (Edge e : v.outs) if (cone.add(e.dst)) stack.push(e.dst);
+        }
+        for (Vertex v : cone) resetVertex(v);
+        Map<Vertex, Integer> indeg = new HashMap<>();
+        for (Edge e : edges) {
+            if (e.removed || !cone.contains(e.dst)) continue;
+            if (cone.contains(e.src)) indeg.merge(e.dst, 1, Integer::sum);
+            else relax(e);
+        }
+        Deque<Vertex> queue = new ArrayDeque<>();
+        for (Vertex v : cone) if (!indeg.containsKey(v)) queue.add(v);
+        int visited = 0;
+        while (!queue.isEmpty()) {
+            Vertex v = queue.poll();
+            visited++;
+            for (Edge e : v.outs) {
+                relax(e);
+                if (indeg.merge(e.dst, -1, Integer::sum) == 0) queue.add(e.dst);
+            }
+        }
+        if (visited != cone.size()) {
+            System.err.println("WARNING: timing graph has a combinational loop; " + (cone.size() - visited) + " vertices of the update cone not visited");
+        }
+        arrivalsValid = true;
+        return cone;
     }
 
     /** Endpoints reached at a corner, worst first (longest arrival at max corners, shortest at min corners). */
@@ -1127,17 +1364,17 @@ public class VersalTimingGraph {
     public String describeFanin(Vertex v) {
         StringBuilder sb = new StringBuilder();
         for (Edge e : edges) {
-            if (e.dst == v) sb.append(String.format("[%s %s arr=%.0f d=%.0f] ", e.kind, e.src, e.src.arrival[0], e.delay[0]));
+            if (!e.removed && e.dst == v) sb.append(String.format("[%s %s arr=%.0f d=%.0f] ", e.kind, e.src, e.src.arrival[0], e.delay[0]));
         }
         if (sb.length() == 0) return "(no fanin edges)";
         // follow the first unreached predecessor back to where the chain breaks
         Vertex cur = v;
         for (int depth = 0; depth < 12; depth++) {
             Vertex next = null;
-            for (Edge e : edges) if (e.dst == cur && Float.isInfinite(e.src.arrival[0])) { next = e.src; break; }
+            for (Edge e : edges) if (!e.removed && e.dst == cur && Float.isInfinite(e.src.arrival[0])) { next = e.src; break; }
             if (next == null) break;
             boolean any = false;
-            for (Edge e : edges) if (e.dst == next) any = true;
+            for (Edge e : edges) if (!e.removed && e.dst == next) any = true;
             sb.append(String.format(" <- %s (%s@%s)%s", next, next.cell.getType(), next.cell.getBELName(), any ? "" : " NO FANIN"));
             cur = next;
         }
@@ -1159,6 +1396,7 @@ public class VersalTimingGraph {
         short[] idx = belIndices(c);
         return idx == null ? null : logicDelays(idx, in, out);
     }
+    /** Every edge added so far; skip those with {@link Edge#removed} set. */
     public List<Edge> getEdges() { return edges; }
     public java.util.Collection<Vertex> getVertices() { return vertices.values(); }
 }

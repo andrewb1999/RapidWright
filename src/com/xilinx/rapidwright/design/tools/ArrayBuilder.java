@@ -62,6 +62,7 @@ import com.xilinx.rapidwright.edif.EDIFTools;
 import com.xilinx.rapidwright.placer.blockplacer.Point;
 import com.xilinx.rapidwright.edif.EDIFValueType;
 import com.xilinx.rapidwright.rwroute.PartialCUFR;
+import com.xilinx.rapidwright.router.VersalClockRouting;
 import com.xilinx.rapidwright.rwroute.PartialRouter;
 import com.xilinx.rapidwright.tests.CodePerfTracker;
 import com.xilinx.rapidwright.util.FileTools;
@@ -142,6 +143,12 @@ public class ArrayBuilder {
     private List<Module> modules;
 
     private Module slrCrossingModule;
+
+    /** Module of {@link ArrayBuilderConfig#getSlrCrossingBelowRoot()}, null when not provided. */
+    private Module slrCrossingBelowRootModule;
+
+    /** Crossing module chosen per top-SLR id, so the choice is made (and logged) once per boundary. */
+    private final Map<Integer, Module> slrCrossingModuleByTopSlr = new HashMap<>();
 
     private List<String> modInstNames;
 
@@ -459,6 +466,154 @@ public class ArrayBuilder {
         return placementGrid;
     }
 
+    /**
+     * Drops the references to the kernel and SLR-crossing module designs once the array
+     * is placed and flattened, so their memory can be reclaimed before routing and timing
+     * analysis; the placement results ({@link #getArray()}, bounding boxes, centroid and
+     * merged-tile maps) stay available.
+     */
+    public void releaseModuleDesigns() {
+        slrCrossing = null;
+        slrCrossingSynth = null;
+        slrCrossingModule = null;
+        slrCrossingBelowRootModule = null;
+        slrCrossingModuleByTopSlr.clear();
+        modules = null;
+        kernelDesign = null;
+    }
+
+    /**
+     * {@link Module#calculateAllValidPlacements(Device)} lets a single failing anchor abort
+     * the whole computation, and {@code Module.getCorrespondingTile} throws for SLL tiles at
+     * a few anchors near the device edge (seen with an SLR-crossing module that uses SLL
+     * tiles just outside its pblock). Fall back to checking each compatible anchor on its
+     * own and skipping the ones that throw.
+     */
+    private void calculateValidPlacementsTolerant(Module module, String label) {
+        try {
+            module.calculateAllValidPlacements(getDevice());
+            return;
+        } catch (RuntimeException e) {
+            System.out.println("[ArrayBuilder] calculateAllValidPlacements failed for " + label + " ("
+                    + (e.getCause() != null ? e.getCause() : e) + "); checking anchors one by one");
+        }
+        ArrayList<Site> valid = new ArrayList<>();
+        int failed = 0;
+        for (Site s : getDevice().getAllCompatibleSites(module.getAnchor().getSiteTypeEnum())) {
+            try {
+                if (module.isValidPlacement(s, array)) {
+                    valid.add(s);
+                }
+            } catch (RuntimeException e) {
+                failed++;
+            }
+        }
+        module.setValidPlacements(valid);
+        System.out.println("[ArrayBuilder] " + label + ": " + valid.size() + " valid placements, " + failed
+                + " anchors skipped");
+    }
+
+    private List<Module> slrCrossingModules() {
+        List<Module> list = new ArrayList<>();
+        if (slrCrossingModule != null) list.add(slrCrossingModule);
+        if (slrCrossingBelowRootModule != null) list.add(slrCrossingBelowRootModule);
+        return list;
+    }
+
+    /**
+     * Picks the SLR-crossing implementation for the boundary below the given SLR. The
+     * launch-to-capture clock skew across a boundary depends on where it sits relative
+     * to the clock root: a boundary adjacent to the root sees ~0.1 ns, one some rows below
+     * it 0.4-0.6 ns (xcv80, hold corner), so a crossing padded for the latter is used there
+     * when the config provides one. The root row comes from the Versal clock tree tables
+     * for the clock-region span the array will occupy: the rows already placed above (from
+     * the column's top anchor), and below the row being placed the remaining rows at the
+     * pitch measured so far plus one crossing module per SLR boundary that could still
+     * follow, with one region added on each side for the peripheral tiles.
+     *
+     * @param topSlr        SLR of the tile above the boundary.
+     * @param anchorTile    anchor tile of that tile.
+     * @param topAnchorTile anchor tile of logical row 0 in the same column.
+     * @param y             logical row of the tile above the boundary.
+     * @param arrayHeight   number of kernel rows in the array.
+     * @param kernel        the kernel module (for its height when no pitch can be measured).
+     */
+    private Module chooseSlrCrossingModule(SLR topSlr, Tile anchorTile, Tile topAnchorTile, int y, int arrayHeight,
+                                           Module kernel) {
+        if (slrCrossingBelowRootModule == null) {
+            return slrCrossingModule;
+        }
+        Module cached = slrCrossingModuleByTopSlr.get(topSlr.getId());
+        if (cached != null) {
+            return cached;
+        }
+        Module chosen = slrCrossingModule;
+        String why;
+        Device dev = getDevice();
+        RelocatableTileRectangle kb = kernel.getBoundingBox();
+        RelocatableTileRectangle xb = slrCrossingModule.getBoundingBox();
+        int kernelRows = kb.getMaxRow() - kb.getMinRow() + 1;
+        int crossingRows = xb.getMaxRow() - xb.getMinRow() + 1;
+        int col = anchorTile.getColumn();
+        double pitch = y > 0 ? (anchorTile.getRow() - topAnchorTile.getRow()) / (double) y : kernelRows;
+        int topRow = Math.min(anchorTile.getRow(), topAnchorTile.getRow());
+        int rowsBelow = Math.max(0, arrayHeight - 1 - y);
+        int bottomRow = (int) Math.min(dev.getRows() - 1, anchorTile.getRow() + rowsBelow * pitch
+                + Math.max(0, topSlr.getId()) * Math.max(0, crossingRows - 2 * pitch));
+        ClockRegion crTop = clockRegionNear(dev, 0, col, topRow);
+        ClockRegion crBot = clockRegionNear(dev, 0, col, bottomRow);
+        SLR lower = topSlr.getId() > 0 ? dev.getSLR(topSlr.getId() - 1) : null;
+        ClockRegion crBoundary = lower == null ? null : clockRegionNear(dev, 0, col, lower.getUpperLeft().getRow());
+        if (crTop == null || crBot == null || crBoundary == null) {
+            why = "clock regions around the array unknown";
+        } else {
+            int minY = Math.min(crTop.getInstanceY(), crBot.getInstanceY());
+            int maxY = Math.max(crTop.getInstanceY(), crBot.getInstanceY());
+            int numRows = dev.getNumOfClockRegionRows();
+            Integer rootY = null;
+            int spanMin = minY, spanMax = maxY;
+            for (int pad = 1; pad >= 0 && rootY == null; pad--) {
+                spanMin = Math.max(0, minY - pad);
+                spanMax = Math.min(numRows - 1, maxY + pad);
+                rootY = VersalClockRouting.getPreferredClockRootYCoord(dev, spanMin, spanMax,
+                        config.getClockVTreeType());
+            }
+            if (rootY == null) {
+                why = "no clock tree table entry for clock-region rows Y" + minY + "..Y" + maxY;
+            } else {
+                int boundaryRow = crBoundary.getInstanceY();
+                int offset = rootY - boundaryRow;
+                if (offset > 0) {
+                    chosen = slrCrossingBelowRootModule;
+                }
+                why = "clock root Y" + rootY + " for rows Y" + spanMin + "..Y" + spanMax + " ("
+                        + config.getClockVTreeType().getVivadoName() + "; tile rows " + topRow + ".." + bottomRow
+                        + ", pitch " + String.format("%.1f", pitch) + "), first row below the boundary Y"
+                        + boundaryRow + ", root " + offset + " rows above it";
+            }
+        }
+        System.out.println("[SLR-CROSSING] boundary SLR" + topSlr.getId() + "->SLR" + (topSlr.getId() - 1)
+                + ": using " + (chosen == slrCrossingBelowRootModule ? "below-root" : "default")
+                + " crossing (" + why + ")");
+        slrCrossingModuleByTopSlr.put(topSlr.getId(), chosen);
+        return chosen;
+    }
+
+    /** Clock region of the tile at (row, col), searching nearby columns when that tile has none. */
+    private static ClockRegion clockRegionNear(Device dev, int unused, int col, int row) {
+        row = Math.max(0, Math.min(dev.getRows() - 1, row));
+        for (int d = 0; d < 40; d++) {
+            for (int c : new int[] {col - d, col + d}) {
+                if (c < 0 || c >= dev.getColumns()) continue;
+                Tile t = dev.getTile(row, c);
+                if (t == null) continue;
+                ClockRegion cr = t.getClockRegion();
+                if (cr != null) return cr;
+            }
+        }
+        return null;
+    }
+
     public static Map<SLR, List<Site>> getValidSLRCrossings(Module module) {
         Map<SLR, List<Site>> slrCrossingMap = new HashMap<>();
         List<Site> validPlacements = module.getAllValidPlacements();
@@ -613,9 +768,25 @@ public class ArrayBuilder {
         if (getSlrCrossing() != null) {
             removeBUFGs(slrCrossing);
             slrCrossingModule = new Module(slrCrossing);
-            slrCrossingModule.calculateAllValidPlacements(getDevice());
+            calculateValidPlacementsTolerant(slrCrossingModule, "slrCrossing");
             filterValidPlacementsToTargetSLR(slrCrossingModule, "slrCrossing");
             debugPrintSlrCrossingBboxExtent(slrCrossingModule, slrCrossing);
+            Design belowRoot = config.getSlrCrossingBelowRoot();
+            if (belowRoot != null) {
+                removeBUFGs(belowRoot);
+                // Design groups modules by name (ModuleImpls) and requires one netlist per name;
+                // a checkpoint read back carries its file name, so name the variant after its top cell.
+                String variantName = belowRoot.getTopEDIFCell().getName();
+                if (variantName.equals(slrCrossing.getTopEDIFCell().getName())) {
+                    variantName = variantName + "_below_root";
+                }
+                belowRoot.setName(variantName);
+                slrCrossingBelowRootModule = new Module(belowRoot);
+                slrCrossingBelowRootModule.setName(variantName);
+                calculateValidPlacementsTolerant(slrCrossingBelowRootModule, "slrCrossingBelowRoot");
+                filterValidPlacementsToTargetSLR(slrCrossingBelowRootModule, "slrCrossingBelowRoot");
+                debugPrintSlrCrossingBboxExtent(slrCrossingBelowRootModule, belowRoot);
+            }
         }
         return idealPlacement;
     }
@@ -860,9 +1031,14 @@ public class ArrayBuilder {
         RelocatableTileRectangle boundingBox = module.getBoundingBox();
         List<RelocatableTileRectangle> boundingBoxes = new ArrayList<>();
         List<List<Site>> validPlacementGrid = getValidPlacementGrid(module);
+        // Module overrides equals/hashCode, so the two crossing variants are kept apart by identity.
         Map<SLR, List<Site>> slrCrossingPlacementGrid = null;
+        Map<SLR, List<Site>> slrCrossingBelowRootPlacementGrid = null;
         if (getSlrCrossing() != null) {
             slrCrossingPlacementGrid = getValidSLRCrossings(slrCrossingModule);
+            if (slrCrossingBelowRootModule != null) {
+                slrCrossingBelowRootPlacementGrid = getValidSLRCrossings(slrCrossingBelowRootModule);
+            }
         }
         List<Pair<Pair<Integer, Integer>, String>> idealPlacementList = idealPlacement.getRowColumnOrderList();
         Set<Pair<Integer, Integer>> alreadyPlaced = new HashSet<>();
@@ -922,14 +1098,20 @@ public class ArrayBuilder {
                                     new Pair<>(mergedInst, config.getSlrCrossingTopInstName() + "_"));
                             mergedTileMap.put(bottomInst,
                                     new Pair<>(mergedInst, config.getSlrCrossingBottomInstName() + "_"));
-                            ModuleInst curr = array.createModuleInst(mergedCellInst.getFullHierarchicalInstName(), slrCrossingModule);
-                            List<Site> slrCrossingSites = slrCrossingPlacementGrid.get(anchor.getTile().getSLR());
+                            Pair<Integer, Integer> topLoc = idealToPhysicalPlacementMap.get(new Pair<>(x, 0));
+                            Tile topAnchorTile = topLoc == null ? anchor.getTile()
+                                    : validPlacementGrid.get(topLoc.getSecond()).get(topLoc.getFirst()).getTile();
+                            Module crossingModule = chooseSlrCrossingModule(anchor.getTile().getSLR(),
+                                    anchor.getTile(), topAnchorTile, y, idealPlacement.getArrayHeight(), module);
+                            ModuleInst curr = array.createModuleInst(mergedCellInst.getFullHierarchicalInstName(), crossingModule);
+                            List<Site> slrCrossingSites = (crossingModule == slrCrossingBelowRootModule
+                                    ? slrCrossingBelowRootPlacementGrid : slrCrossingPlacementGrid).get(anchor.getTile().getSLR());
                             int slrCrossingIdx = config.isFlipPlacementHorizontally()
                                     ? slrCrossingSites.size() - 1 - x - config.getColumnOffset()
                                     : x + config.getColumnOffset();
                             Site slrCrossingAnchor = slrCrossingSites.get(slrCrossingIdx);
-                            RelocatableTileRectangle slrCrossingBoundingBox = slrCrossingModule.getBoundingBox()
-                                    .getCorresponding(slrCrossingAnchor.getTile(), slrCrossingModule.getAnchor().getTile());
+                            RelocatableTileRectangle slrCrossingBoundingBox = crossingModule.getBoundingBox()
+                                    .getCorresponding(slrCrossingAnchor.getTile(), crossingModule.getAnchor().getTile());
                             if (curr.place(slrCrossingAnchor, false, false)) {
                                 placed = true;
                                 boundingBoxes.add(newBoundingBox);
@@ -1014,10 +1196,10 @@ public class ArrayBuilder {
 
         // Diagnostic: report the rightmost placed SLR-crossing module's bbox so
         // we can confirm getCorresponding() relocates the bbox to the correct tiles.
-        if (slrCrossingModule != null) {
+        for (Module xm : slrCrossingModules()) {
             ModuleInst rightmost = null;
             for (ModuleInst mi : array.getModuleInsts()) {
-                if (mi.isPlaced() && mi.getModule() == slrCrossingModule) {
+                if (mi.isPlaced() && mi.getModule() == xm) {
                     if (rightmost == null
                             || mi.getPlacement().getTile().getColumn()
                                 > rightmost.getPlacement().getTile().getColumn()) {
@@ -1027,9 +1209,9 @@ public class ArrayBuilder {
             }
             if (rightmost != null) {
                 Site placedAnchor = rightmost.getPlacement();
-                RelocatableTileRectangle placedBb = slrCrossingModule.getBoundingBox()
+                RelocatableTileRectangle placedBb = xm.getBoundingBox()
                         .getCorresponding(placedAnchor.getTile(),
-                                slrCrossingModule.getAnchor().getTile());
+                                xm.getAnchor().getTile());
                 System.out.println("[SLR-CROSSING PLACED] rightmost inst='" + rightmost.getName()
                         + "' anchor=" + placedAnchor
                         + " bbox: minCol=" + placedBb.getMinColumn()
@@ -1298,7 +1480,12 @@ public class ArrayBuilder {
         return bufgce;
     }
 
-    private static boolean boundingBoxStraddlesClockRegion(RelocatableTileRectangle boundingBox) {
+    /**
+     * True when the rectangle's corner tiles are not all in one clock region. Under a
+     * Versal clock tree the arrival can step by several hundred ps between clock-region
+     * rows, so a module straddling a row boundary gets that as intra-module skew.
+     */
+    public static boolean boundingBoxStraddlesClockRegion(RelocatableTileRectangle boundingBox) {
         ClockRegion cr0 = boundingBox.getMaxColumnTile().getClockRegion();
         ClockRegion cr1 = boundingBox.getMinColumnTile().getClockRegion();
         ClockRegion cr2 = boundingBox.getMaxRowTile().getClockRegion();

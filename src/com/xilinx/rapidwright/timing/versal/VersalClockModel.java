@@ -791,6 +791,8 @@ public class VersalClockModel {
                 String mode = (String) leaf[0];
                 int taps = (Integer) leaf[1];
                 if (mode.isEmpty() || taps < 0) return d;
+                // Vivado times CLK_DLY_VAL above 9 as BYPASS (measured: 10..15 add nothing, not even the DELAY base)
+                if (mode.equals("DELAY") && taps > 9) return d;
                 float[] tap = clkTap.get(mode + "\t" + taps);
                 if (tap == null) {
                     // unseen tap count: extrapolate from the two largest known counts of this mode

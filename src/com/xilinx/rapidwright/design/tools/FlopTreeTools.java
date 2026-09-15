@@ -30,6 +30,9 @@ import com.xilinx.rapidwright.design.SiteInst;
 import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.design.Unisim;
 import com.xilinx.rapidwright.device.BEL;
+import com.xilinx.rapidwright.device.Device;
+import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.Wire;
 import com.xilinx.rapidwright.device.SLR;
 import com.xilinx.rapidwright.device.Series;
 import com.xilinx.rapidwright.device.Site;
@@ -576,23 +579,29 @@ public class FlopTreeTools {
             throw new RuntimeException("Failed to find centroid of sinks for net " + net.getName());
         }
 
-        double srcCol = sourceSite.getTile().getColumn();
-        double srcRow = sourceSite.getTile().getRow();
-        double dstCol = portInstCentroid.getTile().getColumn();
-        double dstRow = portInstCentroid.getTile().getRow();
+        int srcCol = sourceSite.getTile().getColumn();
+        int srcRow = sourceSite.getTile().getRow();
+        int dstCol = portInstCentroid.getTile().getColumn();
+        int dstRow = portInstCentroid.getTile().getRow();
+
+        List<Point> targets = chainStageTargets(design.getDevice(), net.getName(), srcRow, srcCol, dstRow, dstCol, depth);
 
         Net currentNet = net;
         EDIFNetlist netlist = design.getNetlist();
         for (int i = 0; i < depth; i++) {
-            // Place flop at evenly spaced point: (i+1)/(depth+1) of the way from source to destination
-            double frac = (double) (i + 1) / (depth + 1);
-            int col = (int) Math.round(srcCol + frac * (dstCol - srcCol));
-            int row = (int) Math.round(srcRow + frac * (dstRow - srcRow));
+            Point pt = targets.get(i);
+            Site target = getNearestValidSite(design, pt.y, pt.x);
 
-            Site target = getNearestValidSite(design, row, col);
-
-            Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGoBboxes);
+            // Prefer slices nothing else uses, so two chains placed along the same line (e.g. a
+            // request and its reply) never share a slice: the deskew must be able to move each
+            // stage on its own. Fall back to any free flop BEL if no empty slice is in reach.
+            Iterator<Site> siteItr = applyNoGoFilter(unusedSitesOnly(design,
+                    ECOPlacementHelper.spiralOutFrom(target).iterator()), noGoBboxes);
             Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, null);
+            if (loc == null) {
+                siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGoBboxes);
+                loc = nextAvailFlopPlacement(design, siteItr, null);
+            }
 
             if (loc == null) {
                 throw new RuntimeException("Failed to find location to place chain flop " + i
@@ -608,6 +617,172 @@ public class FlopTreeTools {
         }
 
         return currentNet;
+    }
+
+    /** Wraps a site iterator so it only yields sites with no SiteInst in the design. */
+    private static Iterator<Site> unusedSitesOnly(Design design, Iterator<Site> base) {
+        return new Iterator<Site>() {
+            private Site nextSite;
+            private boolean exhausted = false;
+            private void advance() {
+                while (nextSite == null && !exhausted) {
+                    if (!base.hasNext()) { exhausted = true; return; }
+                    Site s = base.next();
+                    if (design.getSiteInstFromSite(s) == null) nextSite = s;
+                }
+            }
+            @Override public boolean hasNext() { advance(); return nextSite != null; }
+            @Override public Site next() {
+                advance();
+                if (nextSite == null) throw new NoSuchElementException();
+                Site s = nextSite; nextSite = null; return s;
+            }
+        };
+    }
+
+    /** Fallback tile-row span of one SLL when the device query finds no crossing UBUMP node. */
+    private static final int DEFAULT_SLL_SPAN_ROWS = 94;
+
+    private static SLR slrOfRow(Device dev, int row) {
+        for (SLR slr : dev.getSLRs()) {
+            if (row >= slr.getUpperLeft().getRow() && row <= slr.getLowerRight().getRow()) return slr;
+        }
+        return null;
+    }
+
+    /**
+     * Stage positions (x = tile column, y = tile row) for a {@code depth}-stage chain from
+     * (srcRow, srcCol) to (dstRow, dstCol). Within one SLR the stages are evenly spaced along
+     * the straight line. Where the line crosses an SLR boundary, two consecutive stages are
+     * pinned to the two ends of an SLL: one next to the SLL column on the near side, the next
+     * exactly one SLL span away on the far side, so the crossing hop is the SLL itself plus a
+     * few local hops rather than the SLL wrapped in tens of rows of ordinary routing. The
+     * remaining stages are spread evenly over the rest of the line on each side.
+     */
+    static List<Point> chainStageTargets(Device dev, String netName, int srcRow, int srcCol,
+                                         int dstRow, int dstCol, int depth) {
+        List<Point> out = new ArrayList<>();
+        int dir = Integer.signum(dstRow - srcRow);
+        // boundaries the line crosses, as the last near-side row, in walking order
+        List<Integer> nearRows = new ArrayList<>();
+        if (dir != 0) {
+            SLR prev = slrOfRow(dev, srcRow);
+            for (int r = srcRow + dir; r != dstRow + dir; r += dir) {
+                SLR cur = slrOfRow(dev, r);
+                if (cur != null && prev != null && cur != prev) nearRows.add(r - dir);
+                if (cur != null) prev = cur;
+            }
+        }
+        if (nearRows.isEmpty() || depth < 2 * nearRows.size()) {
+            if (!nearRows.isEmpty()) {
+                System.out.println("[FlopChain] " + netName + ": " + nearRows.size() + " SLR crossing(s) but only "
+                        + depth + " stages; falling back to even spacing");
+            }
+            for (int i = 0; i < depth; i++) {
+                double frac = (double) (i + 1) / (depth + 1);
+                out.add(new Point((int) Math.round(srcCol + frac * (dstCol - srcCol)),
+                                  (int) Math.round(srcRow + frac * (dstRow - srcRow))));
+            }
+            return out;
+        }
+
+        int placed = 0;
+        double posRow = srcRow;
+        for (int b = 0; b < nearRows.size(); b++) {
+            int nearRow = nearRows.get(b);
+            int remainingCross = nearRows.size() - b;
+            int remainingStages = depth - placed;
+            // hops left: remainingStages + 1 (to dst), of which remainingCross are SLLs
+            int plainHops = remainingStages + 1 - remainingCross;
+            double h = Math.max(0, (Math.abs(dstRow - posRow) - remainingCross * DEFAULT_SLL_SPAN_ROWS)) / Math.max(1, plainHops);
+            // choose the launch as the evenly spaced position whose distance to the boundary is
+            // closest to half an SLL span, so launch and landing sit symmetrically about it
+            int stagesToBoundary = Math.max(1, (int) Math.round(Math.abs(nearRow - posRow) / Math.max(1e-6, h)));
+            int bestK = -1; double bestScore = Double.MAX_VALUE;
+            for (int k = 1; k <= Math.min(stagesToBoundary + 1, remainingStages - 1 - 2 * (remainingCross - 1)); k++) {
+                double launch = posRow + dir * k * h;
+                double dist = Math.abs(nearRow - launch) + 0.5;   // rows from the launch to the far side
+                if (dir * (nearRow - launch) < 0 || dist > DEFAULT_SLL_SPAN_ROWS - 1) continue;
+                double score = Math.abs(dist - DEFAULT_SLL_SPAN_ROWS / 2.0);
+                if (score < bestScore) { bestScore = score; bestK = k; }
+            }
+            if (bestK < 0) bestK = 1;
+            double launchRowIdeal = Math.min(Math.max(posRow + dir * bestK * h, Math.min(posRow, nearRow)), Math.max(posRow, nearRow));
+            // stages before the launch, evenly spaced from the current position to the launch
+            for (int k = 1; k < bestK; k++) {
+                double frac = (double) k / bestK;
+                out.add(new Point((int) Math.round(colAt(srcRow, srcCol, dstRow, dstCol, posRow + (launchRowIdeal - posRow) * frac)),
+                                  (int) Math.round(posRow + (launchRowIdeal - posRow) * frac)));
+                placed++;
+            }
+            // the SLL: nearest SLL column to the line at the launch row, actual span from the device
+            int lineCol = (int) Math.round(colAt(srcRow, srcCol, dstRow, dstCol, launchRowIdeal));
+            int[] sll = findSLL(dev, (int) Math.round(launchRowIdeal), lineCol, dir, nearRow);
+            int launchRow = sll[0], landRow = sll[1], sllCol = sll[2];
+            System.out.printf("[FlopChain] %s: SLR crossing %d/%d at rows %d->%d (boundary after row %d), SLL column %d, span %d rows; stages %d and %d%n",
+                    netName, b + 1, nearRows.size(), launchRow, landRow, nearRow, sllCol, Math.abs(landRow - launchRow), placed, placed + 1);
+            out.add(new Point(sllCol, launchRow)); placed++;
+            out.add(new Point(sllCol, landRow)); placed++;
+            posRow = landRow;
+            // after the last crossing the columns drift back towards the line from the SLL column
+            if (b == nearRows.size() - 1) {
+                int rest = depth - placed;
+                for (int k = 1; k <= rest; k++) {
+                    double frac = (double) k / (rest + 1);
+                    out.add(new Point((int) Math.round(sllCol + frac * (dstCol - sllCol)),
+                                      (int) Math.round(posRow + frac * (dstRow - posRow))));
+                    placed++;
+                }
+            } else {
+                srcRow = landRow; srcCol = sllCol;   // the line to the next boundary starts at the landing
+            }
+        }
+        return out;
+    }
+
+    private static double colAt(int r0, int c0, int r1, int c1, double row) {
+        if (r1 == r0) return c0;
+        return c0 + (c1 - c0) * (row - r0) / (double) (r1 - r0);
+    }
+
+    /**
+     * Finds an SLL crossing the boundary after {@code nearRow} in the SLL column nearest to
+     * {@code col}, launching from a tile at or near {@code wantRow} on the near side. Returns
+     * {launchRow, landingRow, sllColumn}; falls back to the default span if the device query
+     * finds no UBUMP node there.
+     */
+    private static int[] findSLL(Device dev, int wantRow, int col, int dir, int nearRow) {
+        int sllCol = -1;
+        for (int d = 0; d < 400 && sllCol < 0; d++) {
+            for (int c : new int[] {col - d, col + d}) {
+                Tile t = dev.getTile(nearRow, c);
+                if (t != null && t.getName().startsWith("SLL_")) { sllCol = c; break; }
+            }
+        }
+        SLR near = slrOfRow(dev, nearRow);
+        if (sllCol >= 0) {
+            // search rows around the wanted launch row, staying on the near side
+            for (int d = 0; d < DEFAULT_SLL_SPAN_ROWS; d++) {
+                for (int r : new int[] {wantRow - d, wantRow + d}) {
+                    if (slrOfRow(dev, r) != near) continue;
+                    Tile t = dev.getTile(r, sllCol);
+                    if (t == null || !t.getName().startsWith("SLL_")) continue;
+                    for (int w = 0; w < t.getWireCount(); w++) {
+                        if (!t.getWireName(w).startsWith("UBUMP")) continue;
+                        Node n = Node.getNode(t, w);
+                        if (n == null) continue;
+                        for (Wire x : n.getAllWiresInNode()) {
+                            Tile xt = x.getTile();
+                            if (xt.getSLR() != near && Integer.signum(xt.getRow() - r) == dir) {
+                                return new int[] {r, xt.getRow(), sllCol};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        int launch = wantRow;
+        return new int[] {launch, launch + dir * DEFAULT_SLL_SPAN_ROWS, sllCol >= 0 ? sllCol : col};
     }
 
     /**
