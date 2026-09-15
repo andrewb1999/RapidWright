@@ -25,11 +25,15 @@ import com.xilinx.rapidwright.design.Design;
 import com.xilinx.rapidwright.design.Net;
 import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.Site;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Setup and hold slack of every register endpoint of a placed and routed Versal design, from the
@@ -94,7 +98,7 @@ public class VersalSlackAnalysis {
     }
 
     /** {slow, fast} min-corner clock delay to the nearest common node of a launch and a capture pin (Vivado's CCD); 0 across clock nets. */
-    private final Map<SitePinInst, Map<SitePinInst, float[]>> pairCcd = new HashMap<>();
+    private final Map<SitePinInst, Map<SitePinInst, float[]>> pairCcd;
     private float[] commonDelayMin(VersalClockModel.ClockTree tree, SitePinInst lp, SitePinInst cap) {
         if (lp == null || cap == null || lp.getNet() != cap.getNet()) return new float[2];
         return pairCcd.computeIfAbsent(lp, k -> new HashMap<>()).computeIfAbsent(cap, c -> {
@@ -108,30 +112,63 @@ public class VersalSlackAnalysis {
     private final VersalTimingGraph graph;
     private final VersalClockModel clockModel;
     private final float periodPs, setupUncertaintyPs, holdUncertaintyPs;
-    private final Map<Net, VersalClockModel.ClockTree> trees = new HashMap<>();
-    private final Map<VersalTimingGraph.Vertex, SitePinInst> clockPinOf = new HashMap<>();
+    private final Map<Net, VersalClockModel.ClockTree> trees;
+    private final Map<VersalTimingGraph.Vertex, SitePinInst> clockPinOf;
     private static final boolean DEBUG_CLKARC = System.getenv("DEBUG_CLKARC") != null;
     private int debugClkArc = 0;
     private final int iSlowMax, iSlowMin, iFastMax, iFastMin;
     private int unclockedLaunches = 0, unclockedEndpoints = 0;
-    private final List<Result> results = new ArrayList<>();
+    /** per endpoint, its {slow, fast} results (an endpoint with no result at a process is absent) */
+    private final Map<VersalTimingGraph.Vertex, Result[]> byEndpoint = new LinkedHashMap<>();
+    private List<Result> results = null;   // flattened byEndpoint, rebuilt on demand
     private Result worstSetup, worstHold;
+    private boolean analysed = false;
 
     public VersalSlackAnalysis(Design design, VersalTimingModel model, VersalClockModel clockModel,
                                float periodPs, float setupUncertaintyPs, float holdUncertaintyPs) {
+        this(design, model, clockModel, new VersalTimingGraph(design, model), periodPs, setupUncertaintyPs, holdUncertaintyPs,
+                new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>());
+    }
+
+    /**
+     * An analysis with other uncertainties over an existing analysis's graph and clock caches (the
+     * data-path arrivals and clock arrivals do not depend on the uncertainties): its {@link #run()}
+     * skips the build and, when the base's arrivals are current, the propagation as well. The two
+     * analyses share the graph, so only one of them may be updated from then on.
+     */
+    public VersalSlackAnalysis(VersalSlackAnalysis base, float setupUncertaintyPs, float holdUncertaintyPs) {
+        this(base.design, base.model, base.clockModel, base.graph, base.periodPs, setupUncertaintyPs, holdUncertaintyPs,
+                base.trees, base.clockPinOf, base.arrivalOf, base.pairCcd, base.pairCpr, base.pairVariantsSetup, base.pairVariantsHold);
+        unclockedLaunches = base.unclockedLaunches;
+        unclockedEndpoints = base.unclockedEndpoints;
+    }
+
+    private VersalSlackAnalysis(Design design, VersalTimingModel model, VersalClockModel clockModel, VersalTimingGraph graph,
+                                float periodPs, float setupUncertaintyPs, float holdUncertaintyPs,
+                                Map<Net, VersalClockModel.ClockTree> trees, Map<VersalTimingGraph.Vertex, SitePinInst> clockPinOf,
+                                Map<SitePinInst, Map<Cell, float[]>> arrivalOf, Map<SitePinInst, Map<SitePinInst, float[]>> pairCcd,
+                                Map<SitePinInst, Map<SitePinInst, float[][]>> pairCpr,
+                                Map<SitePinInst, Map<SitePinInst, float[][]>> pairVariantsSetup, Map<SitePinInst, Map<SitePinInst, float[][]>> pairVariantsHold) {
         this.design = design;
         this.model = model;
         this.clockModel = clockModel;
+        this.graph = graph;
         this.periodPs = periodPs;
         this.setupUncertaintyPs = setupUncertaintyPs;
         this.holdUncertaintyPs = holdUncertaintyPs;
+        this.trees = trees;
+        this.clockPinOf = clockPinOf;
+        this.arrivalOf = arrivalOf;
+        this.pairCcd = pairCcd;
+        this.pairCpr = pairCpr;
+        this.pairVariantsSetup = pairVariantsSetup;
+        this.pairVariantsHold = pairVariantsHold;
         iSlowMax = model.indexOf(VersalCorner.SLOW_MAX);
         iSlowMin = model.indexOf(VersalCorner.SLOW_MIN);
         iFastMax = model.indexOf(VersalCorner.FAST_MAX);
         iFastMin = model.indexOf(VersalCorner.FAST_MIN);
         if (iSlowMax < 0 || iSlowMin < 0 || iFastMax < 0 || iFastMin < 0)
             throw new IllegalArgumentException("slack analysis needs a model with all four corners");
-        graph = new VersalTimingGraph(design, model);
     }
 
     public float getSetupUncertainty() { return setupUncertaintyPs; }
@@ -171,7 +208,7 @@ public class VersalSlackAnalysis {
     }
 
     /** Clock arrival at (site pin, cell), computed once: the same pin is asked for as a launch, as a capture and in every pessimism check against it. */
-    private final Map<SitePinInst, Map<Cell, float[]>> arrivalOf = new HashMap<>();
+    private final Map<SitePinInst, Map<Cell, float[]>> arrivalOf;
     private static final float[] NO_ARRIVAL = new float[0];
 
     private float[] clockArrival(SitePinInst spi, Cell cell) {
@@ -235,75 +272,187 @@ public class VersalSlackAnalysis {
      */
     /** Wall time of the analysis phases after the build: clock seeding, arrival propagation, slack (ms). */
     public final long[] phaseMs = new long[3];
+    /** Wall time of the last {@link #update()}'s phases: net refresh, clock leaves, propagation, slack (ms). */
+    public final long[] updateMs = new long[4];
+    /** What the last {@link #update()} did: nets re-planned, clock sites changed, cone vertices, endpoints re-timed. */
+    public final int[] updateCounts = new int[4];
+    /** VERSAL_TIMING_VERIFY set: every {@link #update()} is checked against a fresh full analysis (memory for two graphs needed) */
+    private static final boolean VERIFY = System.getenv("VERSAL_TIMING_VERIFY") != null;
 
+    /**
+     * The full analysis: builds the graph if this analysis (or the one it shares the graph with) has not,
+     * seeds every launch with its clock arrival, propagates, and times every endpoint. On a graph whose
+     * arrivals are already current (a second analysis with other uncertainties) only the slacks are computed.
+     */
     public void run() {
-        graph.build();
-        long t = System.currentTimeMillis();
-        for (VersalTimingGraph.Vertex q : graph.getLaunches()) {
-            SitePinInst spi = clockSitePin(q);
-            float[] arr = clockArrival(spi, q.cell);
-            if (arr == null) { unclockedLaunches++; graph.unseedLaunch(q); continue; }
-            graph.seedLaunch(q, arr, launchGroup(spi));
+        if (!graph.isBuilt()) graph.build();
+        if (!graph.hasArrivals()) {
+            long t = System.currentTimeMillis();
+            graph.resetArrivals();
+            unclockedLaunches = 0;
+            for (VersalTimingGraph.Vertex q : graph.getLaunches()) if (!seed(q)) unclockedLaunches++;
+            phaseMs[0] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
+            graph.computeArrivals();
+            phaseMs[1] = System.currentTimeMillis() - t;
         }
-        phaseMs[0] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
-        graph.computeArrivals();
-        phaseMs[1] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
+        long t = System.currentTimeMillis();
+        byEndpoint.clear();
+        unclockedEndpoints = 0;
         for (VersalTimingGraph.Vertex v : graph.getEndpoints()) {
-            SitePinInst cap = clockSitePin(v);
-            float[] capArr = clockArrival(cap, v.cell);
-            if (capArr == null) { unclockedEndpoints++; continue; }
-            List<VersalTimingGraph.Tagged> tags = VersalTimingGraph.getTags(v);
-            if (tags.isEmpty()) continue;
-            VersalClockModel.ClockTree tree = getClockTree(cap.getNet());
-            Map<VersalTimingGraph.Vertex, float[][]> cprOf = new HashMap<>();   // launch -> {setup {slow, fast}, hold {slow, fast}}
-            for (boolean fast : new boolean[] {false, true}) {
-                int iMax = fast ? iFastMax : iSlowMax, iMin = fast ? iFastMin : iSlowMin;
-                Result r = new Result();
-                r.endpoint = v;
-                r.fast = fast;
-                r.captureClockMax = capArr[iMax];
-                r.captureClockMin = capArr[iMin];
-                r.setupCheck = v.check[iMax];
-                r.holdCheck = v.check[iMin];
-                r.setupSlack = Float.POSITIVE_INFINITY;
-                r.holdSlack = Float.POSITIVE_INFINITY;
-                for (VersalTimingGraph.Tagged tg : tags) {
-                    // setup: the group's latest arrival at the max corner, with its launch's pessimism removal
-                    if (!Float.isInfinite(tg.arrival[iMax])) {
-                        VersalTimingGraph.Vertex launch = launchOf(v, iMax, tg.tag);
-                        float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
-                        float slr = crossesSlr(launch, v) ? (r.captureClockMin - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
-                        float slack = periodPs + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival[iMax] - slr;
-                        if (slack < r.setupSlack) {
-                            r.setupSlack = slack; r.launch = launch; r.setupTag = tg.tag; r.dataMax = tg.arrival[iMax]; r.setupPessimism = cpr[0][fast ? 1 : 0]; r.setupSlrComp = slr;
-                        }
-                    }
-                    // hold: the group's earliest arrival at the min corner
-                    if (!Float.isInfinite(tg.arrival[iMin])) {
-                        VersalTimingGraph.Vertex launch = launchOf(v, iMin, tg.tag);
-                        float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
-                        float slr = crossesSlr(launch, v) ? (tg.arrival[iMin] - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
-                        float slack = tg.arrival[iMin] - (r.captureClockMax - cpr[1][fast ? 1 : 0] + holdUncertaintyPs + r.holdCheck) - slr;
-                        if (slack < r.holdSlack) {
-                            r.holdSlack = slack; r.holdLaunch = launch; r.holdTag = tg.tag; r.dataMin = tg.arrival[iMin]; r.holdPessimism = cpr[1][fast ? 1 : 0]; r.holdSlrComp = slr;
-                        }
+            Result[] r = computeSlack(v);
+            if (r != null) byEndpoint.put(v, r);
+        }
+        finishResults();
+        phaseMs[2] = System.currentTimeMillis() - t;
+        analysed = true;
+    }
+
+    /**
+     * Brings the analysis up to date with the design after nets were rerouted or slices' leaf clock delays
+     * changed, re-timing only what those changes reach: the changed nets' edges are replaced, the launches
+     * of the changed slices re-seeded, arrivals re-propagated through the cone downstream of both, and the
+     * endpoints in that cone or in a changed slice re-timed. Everything else keeps its result. Runs the full
+     * analysis when none has run yet.
+     */
+    public void update() {
+        if (!analysed) { run(); return; }
+        long t = System.currentTimeMillis();
+        Set<VersalTimingGraph.Vertex> touched = graph.refreshNets();
+        updateCounts[0] = graph.getLastNetsRefreshed();
+        updateMs[0] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
+        Set<Site> sites = graph.refreshClockLeaves();
+        Set<VersalTimingGraph.Vertex> retime = new HashSet<>();
+        if (!sites.isEmpty()) {
+            arrivalOf.keySet().removeIf(spi -> spi.getSite() != null && sites.contains(spi.getSite()));
+            for (VersalTimingGraph.Vertex q : graph.getLaunches()) if (sites.contains(q.cell.getSite())) { seed(q); touched.add(q); }
+            for (VersalTimingGraph.Vertex v : graph.getEndpoints()) if (sites.contains(v.cell.getSite())) retime.add(v);
+        }
+        updateCounts[1] = sites.size();
+        updateMs[1] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
+        Set<VersalTimingGraph.Vertex> cone = graph.propagateFrom(touched);
+        for (VersalTimingGraph.Vertex v : cone) if (v.endpoint) retime.add(v);
+        updateCounts[2] = cone.size();
+        updateMs[2] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
+        for (VersalTimingGraph.Vertex v : retime) {
+            Result[] r = computeSlack(v);
+            if (r == null) byEndpoint.remove(v); else byEndpoint.put(v, r);
+        }
+        finishResults();
+        updateCounts[3] = retime.size();
+        updateMs[3] = System.currentTimeMillis() - t;
+        if (VERIFY) verifyAgainstFull();
+    }
+
+    /** One line on what the last {@link #update()} did and what it cost. */
+    public String describeUpdate() {
+        return String.format("incremental: %d nets re-planned, %d clock sites changed, cone %d vertices, %d endpoints re-timed (refresh %d, clock %d, propagate %d, slack %d ms)",
+                updateCounts[0], updateCounts[1], updateCounts[2], updateCounts[3], updateMs[0], updateMs[1], updateMs[2], updateMs[3]);
+    }
+
+    /** Debug check: a fresh full analysis of the same design must give every endpoint the same slacks. */
+    private void verifyAgainstFull() {
+        VersalSlackAnalysis full = new VersalSlackAnalysis(design, model, clockModel, periodPs, setupUncertaintyPs, holdUncertaintyPs);
+        full.run();
+        Map<String, float[]> mine = new HashMap<>(), theirs = new HashMap<>();
+        for (Result r : getResults()) mine.put(r.endpoint.getName() + (r.fast ? "/f" : "/s"), new float[] {r.setupSlack, r.holdSlack});
+        for (Result r : full.getResults()) theirs.put(r.endpoint.getName() + (r.fast ? "/f" : "/s"), new float[] {r.setupSlack, r.holdSlack});
+        float worst = 0; String where = null; int mismatches = 0, shown = 0;
+        for (Map.Entry<String, float[]> e : theirs.entrySet()) {
+            float[] m = mine.get(e.getKey());
+            float d = m == null ? Float.POSITIVE_INFINITY : Math.max(Math.abs(m[0] - e.getValue()[0]), Math.abs(m[1] - e.getValue()[1]));
+            if (d > 0.5f) {
+                mismatches++;
+                if (shown++ < 5) System.out.printf("[Timing verify]   %s: incremental %s, full %s%n", e.getKey(), m == null ? "missing" : String.format("setup %.1f hold %.1f", m[0], m[1]), String.format("setup %.1f hold %.1f", e.getValue()[0], e.getValue()[1]));
+            }
+            if (d > worst && !Float.isInfinite(d)) { worst = d; where = e.getKey(); }
+        }
+        int extra = 0;
+        for (String k : mine.keySet()) if (!theirs.containsKey(k)) extra++;
+        System.out.printf("[Timing verify] %d endpoints: %d differ by more than 0.5 ps, %d only in the incremental result; worst %.2f ps at %s; WNS %.1f vs %.1f, WHS %.1f vs %.1f%n",
+                theirs.size(), mismatches, extra, worst, where, getWNS(), full.getWNS(), getWHS(), full.getWHS());
+    }
+
+    /** Seeds a launch with its clock arrival (or unseeds it when its clock is unknown); returns whether it is clocked. */
+    private boolean seed(VersalTimingGraph.Vertex q) {
+        SitePinInst spi = clockSitePin(q);
+        float[] arr = clockArrival(spi, q.cell);
+        if (arr == null) { graph.unseedLaunch(q); return false; }
+        graph.seedLaunch(q, arr, launchGroup(spi));
+        return true;
+    }
+
+    /** Rebuilds the worst results and invalidates the flattened list after the per-endpoint results changed. */
+    private void finishResults() {
+        results = null;
+        worstSetup = null; worstHold = null;
+        for (Result[] rs : byEndpoint.values()) for (Result r : rs) {
+            if (r == null) continue;
+            if (worstSetup == null || r.setupSlack < worstSetup.setupSlack) worstSetup = r;
+            if (worstHold == null || r.holdSlack < worstHold.holdSlack) worstHold = r;
+        }
+    }
+
+    /**
+     * Times one endpoint at both processes from the current arrivals: per process the worst slack over
+     * the arrival groups, each with the pessimism removal of its own launch. Null when the endpoint is
+     * unclocked or unreached; otherwise {slow, fast} with a null entry for a process without a result.
+     */
+    private Result[] computeSlack(VersalTimingGraph.Vertex v) {
+        SitePinInst cap = clockSitePin(v);
+        float[] capArr = clockArrival(cap, v.cell);
+        if (capArr == null) { unclockedEndpoints++; return null; }
+        List<VersalTimingGraph.Tagged> tags = VersalTimingGraph.getTags(v);
+        if (tags.isEmpty()) return null;
+        VersalClockModel.ClockTree tree = getClockTree(cap.getNet());
+        Map<VersalTimingGraph.Vertex, float[][]> cprOf = new HashMap<>();   // launch -> {setup {slow, fast}, hold {slow, fast}}
+        Result[] out = new Result[2];
+        boolean any = false;
+        for (boolean fast : new boolean[] {false, true}) {
+            int iMax = fast ? iFastMax : iSlowMax, iMin = fast ? iFastMin : iSlowMin;
+            Result r = new Result();
+            r.endpoint = v;
+            r.fast = fast;
+            r.captureClockMax = capArr[iMax];
+            r.captureClockMin = capArr[iMin];
+            r.setupCheck = v.check[iMax];
+            r.holdCheck = v.check[iMin];
+            r.setupSlack = Float.POSITIVE_INFINITY;
+            r.holdSlack = Float.POSITIVE_INFINITY;
+            for (VersalTimingGraph.Tagged tg : tags) {
+                // setup: the group's latest arrival at the max corner, with its launch's pessimism removal
+                if (!Float.isInfinite(tg.arrival[iMax])) {
+                    VersalTimingGraph.Vertex launch = launchOf(v, iMax, tg.tag);
+                    float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
+                    float slr = crossesSlr(launch, v) ? (r.captureClockMin - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
+                    float slack = periodPs + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival[iMax] - slr;
+                    if (slack < r.setupSlack) {
+                        r.setupSlack = slack; r.launch = launch; r.setupTag = tg.tag; r.dataMax = tg.arrival[iMax]; r.setupPessimism = cpr[0][fast ? 1 : 0]; r.setupSlrComp = slr;
                     }
                 }
-                if (Float.isInfinite(r.setupSlack) || Float.isInfinite(r.holdSlack)) continue;
-                SitePinInst lp = clockSitePin(r.launch);
-                float[] lArr = clockArrival(lp, r.launch.cell);
-                r.launchClockMax = lArr == null ? 0 : lArr[iMax];
-                if (lp != null && lp.getNet() == cap.getNet()) { float[][] pv = pairVariants(tree, lp, cap, false); for (int vv = 0; vv < 6; vv++) r.setupPessimismVariants[vv] = pv[vv][fast ? 1 : 0]; }
-                SitePinInst hlp = clockSitePin(r.holdLaunch);
-                float[] hlArr = clockArrival(hlp, r.holdLaunch.cell);
-                r.launchClockMin = hlArr == null ? 0 : hlArr[iMin];
-                if (hlp != null && hlp.getNet() == cap.getNet()) { float[][] pv = pairVariants(tree, hlp, cap, true); for (int vv = 0; vv < 6; vv++) r.holdPessimismVariants[vv] = pv[vv][fast ? 1 : 0]; }
-                results.add(r);
-                if (worstSetup == null || r.setupSlack < worstSetup.setupSlack) worstSetup = r;
-                if (worstHold == null || r.holdSlack < worstHold.holdSlack) worstHold = r;
+                // hold: the group's earliest arrival at the min corner
+                if (!Float.isInfinite(tg.arrival[iMin])) {
+                    VersalTimingGraph.Vertex launch = launchOf(v, iMin, tg.tag);
+                    float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
+                    float slr = crossesSlr(launch, v) ? (tg.arrival[iMin] - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
+                    float slack = tg.arrival[iMin] - (r.captureClockMax - cpr[1][fast ? 1 : 0] + holdUncertaintyPs + r.holdCheck) - slr;
+                    if (slack < r.holdSlack) {
+                        r.holdSlack = slack; r.holdLaunch = launch; r.holdTag = tg.tag; r.dataMin = tg.arrival[iMin]; r.holdPessimism = cpr[1][fast ? 1 : 0]; r.holdSlrComp = slr;
+                    }
+                }
             }
+            if (Float.isInfinite(r.setupSlack) || Float.isInfinite(r.holdSlack)) continue;
+            SitePinInst lp = clockSitePin(r.launch);
+            float[] lArr = clockArrival(lp, r.launch.cell);
+            r.launchClockMax = lArr == null ? 0 : lArr[iMax];
+            if (lp != null && lp.getNet() == cap.getNet()) { float[][] pv = pairVariants(tree, lp, cap, false); for (int vv = 0; vv < 6; vv++) r.setupPessimismVariants[vv] = pv[vv][fast ? 1 : 0]; }
+            SitePinInst hlp = clockSitePin(r.holdLaunch);
+            float[] hlArr = clockArrival(hlp, r.holdLaunch.cell);
+            r.launchClockMin = hlArr == null ? 0 : hlArr[iMin];
+            if (hlp != null && hlp.getNet() == cap.getNet()) { float[][] pv = pairVariants(tree, hlp, cap, true); for (int vv = 0; vv < 6; vv++) r.holdPessimismVariants[vv] = pv[vv][fast ? 1 : 0]; }
+            out[fast ? 1 : 0] = r;
+            any = true;
         }
-        phaseMs[2] = System.currentTimeMillis() - t;
+        return any ? out : null;
     }
 
     /** The launch at the head of an arrival group's path into an endpoint at a corner (the endpoint itself if none). */
@@ -342,14 +491,14 @@ public class VersalSlackAnalysis {
     }
 
     /** {setup {slow, fast}, hold {slow, fast}} per (launch pin, capture pin), computed once: the same pair recurs for every endpoint of a site. */
-    private final Map<SitePinInst, Map<SitePinInst, float[][]>> pairCpr = new HashMap<>();
+    private final Map<SitePinInst, Map<SitePinInst, float[][]>> pairCpr;
     private float[][] pairPessimism(VersalClockModel.ClockTree tree, SitePinInst lp, SitePinInst cap) {
         return pairCpr.computeIfAbsent(lp, k -> new HashMap<>()).computeIfAbsent(cap,
                 c -> new float[][] {clockModel.pessimism(tree, lp, c), clockModel.holdPessimism(tree, lp, c)});
     }
 
     /** The six pessimism variants ({@link VersalClockModel#pessimism(VersalClockModel.ClockTree, SitePinInst, SitePinInst, int, boolean)}) per (launch pin, capture pin), [variant][slow, fast]. */
-    private final Map<SitePinInst, Map<SitePinInst, float[][]>> pairVariantsSetup = new HashMap<>(), pairVariantsHold = new HashMap<>();
+    private final Map<SitePinInst, Map<SitePinInst, float[][]>> pairVariantsSetup, pairVariantsHold;
     private float[][] pairVariants(VersalClockModel.ClockTree tree, SitePinInst lp, SitePinInst cap, boolean hold) {
         return (hold ? pairVariantsHold : pairVariantsSetup).computeIfAbsent(lp, k -> new HashMap<>()).computeIfAbsent(cap, c -> {
             float[][] out = new float[6][];
@@ -405,8 +554,19 @@ public class VersalSlackAnalysis {
         return sb.toString();
     }
 
+    /** Every endpoint's results, slow process then fast, in endpoint order (rebuilt after each update). */
     public List<Result> getResults() {
+        if (results == null) {
+            List<Result> list = new ArrayList<>(byEndpoint.size() * 2);
+            for (Result[] rs : byEndpoint.values()) for (Result r : rs) if (r != null) list.add(r);
+            results = list;
+        }
         return results;
+    }
+
+    /** The {slow, fast} results of one endpoint (entries null when that process has none), or null. */
+    public Result[] getResults(VersalTimingGraph.Vertex endpoint) {
+        return byEndpoint.get(endpoint);
     }
 
     public Result getWorstSetup() {
