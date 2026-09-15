@@ -1948,7 +1948,7 @@ public class RWRoute {
      * @param state State from the connection that is being routed.
      * @param rnode The rnode popped out from the queue.
      */
-    private void exploreAndExpand(ConnectionState state, RouteNode rnode) {
+    protected void exploreAndExpand(ConnectionState state, RouteNode rnode) {
         final boolean longParent = config.isTimingDriven() && DelayEstimatorBase.isLong(rnode);
         final Connection connection = state.connection;
         final int sequence = state.sequence;

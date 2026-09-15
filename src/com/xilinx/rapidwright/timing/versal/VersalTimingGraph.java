@@ -373,7 +373,7 @@ public class VersalTimingGraph {
         java.util.stream.IntStream range = java.util.stream.IntStream.range(0, nets.size());
         (parallelNets() ? range.parallel() : range).forEach(i -> {
             Net net = nets.get(i);
-            EDIFHierNet hnet = design.getNetlist().getHierNetFromName(net.getName());
+            EDIFHierNet hnet = hierNetOf(net);
             if (hnet == null) return;
             Cell lut = null;
             List<String> sinks = new ArrayList<>();
@@ -922,10 +922,23 @@ public class VersalTimingGraph {
         return changed;
     }
 
+    /**
+     * The hierarchical net of a physical net. The netlist's name lookups fill shared caches and are
+     * not safe to call from several threads at once (a parallel phase hit "Tried to create absolute
+     * EDIFHierCellInst, but is not rooted at top instance"), so they are serialised here; the heavy
+     * per-net work stays parallel.
+     */
+    private EDIFHierNet hierNetOf(Net net) {
+        com.xilinx.rapidwright.edif.EDIFNetlist netlist = design.getNetlist();
+        synchronized (netlist) {
+            return netlist.getHierNetFromName(net.getName());
+        }
+    }
+
     private NetPlan planNet(Net net) {
         NetPlan plan = new NetPlan(net);
         plan.signature = signatureOf(net);
-        EDIFHierNet hnet = design.getNetlist().getHierNetFromName(net.getName());
+        EDIFHierNet hnet = hierNetOf(net);
         if (hnet == null) { plan.skipped++; return plan; }
         EDIFHierPortInst srcPort = null;
         List<EDIFHierPortInst> sinkPorts = new ArrayList<>();
