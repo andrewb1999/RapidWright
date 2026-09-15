@@ -116,6 +116,39 @@ public class TestHoldFixRouter {
         }
     }
 
+    /**
+     * A single SLR-crossing connection on xcv80 (SLICE_X95Y621 CQ -> SLICE_X93Y546 LAG_N, 75 tiles across
+     * the boundary, as in TestRWRoute's crossing test): routed plainly first, then re-routed with a
+     * budget of +300..+900 ps over that delay. The budgeted search must reach the sink across the SLL.
+     */
+    @Test
+    public void testDelayBudgetCrossSlr() {
+        Design design = new Design("top", "xcv80");
+        Net net = design.createNet("net");
+        SitePinInst src = net.createPin("CQ", design.createSiteInst("SLICE_X95Y621"));
+        SitePinInst dst = net.createPin("LAG_N", design.createSiteInst("SLICE_X93Y546"));
+        List<SitePinInst> pins = new ArrayList<>();
+        pins.add(dst);
+        PartialRouter.routeDesignPartialNonTimingDriven(design, pins, false);
+        Assertions.assertTrue(dst.isRouted());
+
+        RWRouteConfig config = new RWRouteConfig(new String[] {"--fixBoundingBox", "--useUTurnNodes", "--nonTimingDriven"});
+        HoldFixRouter router = new HoldFixRouter(design, config, pins, false, new ArrayList<>());
+        float lb = router.routeDelay(net, dst);
+        Assertions.assertFalse(Float.isNaN(lb));
+        router.setDelayBudget(dst, lb + 300f, lb + 900f, lb);
+        DesignTools.unroutePins(net, pins);
+        router.initialize();
+        router.route();
+        long[] stats = router.getBudgetedSearchStats();
+        Float achieved = router.getAchievedDelay(dst);
+        System.out.printf("cross-SLR: before %.0f, achieved %s, %d popped, %d fallbacks%n", lb, achieved, stats[0], stats[3]);
+        Assertions.assertTrue(dst.isRouted());
+        Assertions.assertEquals(0, stats[3], "the budgeted search fell back to the plain search");
+        Assertions.assertNotNull(achieved);
+        Assertions.assertTrue(achieved >= lb + 290f && achieved <= lb + 920f, "achieved " + achieved + " for " + lb);
+    }
+
     /** Without budgets the router behaves as before: the excluded node types are the series' quads and longs. */
     @Test
     public void testDefaultDisallowedNodeTypes() {

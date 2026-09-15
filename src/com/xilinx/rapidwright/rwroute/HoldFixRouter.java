@@ -137,6 +137,20 @@ public class HoldFixRouter extends PartialRouter {
     private int maxRetries = 2;
     /** A connection this far (ps) or more below its minimum after routing is retried with a heavier delay cost. */
     private float retryToleranceUnder = 10f;
+    /** Whether SLR-crossing connections take budgets too (the detour then sits on either side of the SLL). */
+    private boolean budgetCrossSlr = true;
+    /** A partial path may exceed the maximum budget by this much (ps) before the search drops it. */
+    private float capTolerancePs = 20f;
+    /** A budgeted search that pops this many entries without reaching the sink gives up (the window is empty or unreachable). */
+    private int maxPopsPerSearch = 100000;
+    /** Delay per tile (ps) the budgeted search expects for the rest of the way to the sink (single/double wires). */
+    private float holdPsPerTile = 35f;
+    /** What one SLL crossing costs in the estimate (Versal SLL_INPUT marginal). */
+    public static final float SLL_DELAY_PS = 500f;
+    /** The full model's setup delay of a detour against the router's marginal sum (32x8: median 1.10, p90 1.37). */
+    public static final float SETUP_ROOM_SAFETY = 1.15f;
+    /** budgeted connections whose window held no route and which fell back to the plain search */
+    private int fallbacks = 0;
 
     private final Map<SitePinInst, DelayBudget> budgetOfSink = new HashMap<>();
     private final Map<Connection, DelayBudget> budgetOfConnection = new HashMap<>();
@@ -156,6 +170,12 @@ public class HoldFixRouter extends PartialRouter {
     private final PriorityQueue<Entry> holdQueue = new PriorityQueue<>((a, b) -> Float.compare(a.total, b.total));
     private final Map<RouteNode, Entry> bestEntry = new HashMap<>();
     private Entry currentEntry;
+    /** the cheapest entry that reached a target so far in the current search */
+    private Entry bestSinkEntry;
+    private long capPrunes, loopRejects;
+    private int fallbackDiagnostics = 0;
+    /** budgeted searches that ran out of pops and took the best route that had reached the sink */
+    private int partialSinks = 0;
     private DelayBudget currentBudget;
     private float currentWeight;
     private int holdSequence = 0;
@@ -208,6 +228,9 @@ public class HoldFixRouter extends PartialRouter {
     public void setTilesPer100ps(float t) { tilesPer100ps = t; }
     public void setBoundingBoxMargin(int tiles) { boundingBoxMargin = tiles; }
     public void setMaxRetries(int n) { maxRetries = n; }
+    public void setBudgetCrossSlr(boolean b) { budgetCrossSlr = b; }
+    public void setMaxPopsPerSearch(int n) { maxPopsPerSearch = n; }
+    public void setHoldPsPerTile(float ps) { holdPsPerTile = ps; }
 
     /**
      * The delay of an existing route to a sink in the router's units (the sum of the timing-driven
@@ -346,17 +369,33 @@ public class HoldFixRouter extends PartialRouter {
     @Override
     protected void routeIndirectConnection(Connection connection) {
         DelayBudget budget = budgetOfConnection.get(connection);
-        if (budget == null || connection.isCrossSLR()) {
+        if (budget == null || (connection.isCrossSLR() && !budgetCrossSlr)) {
             super.routeIndirectConnection(connection);
             return;
         }
         float weight = delayCostWeight;
         for (int attempt = 0; ; attempt++) {
             routeBudgetedConnection(connection, budget, weight);
-            float achieved = connection.isRouted() ? routeDelayOf(connection) : Float.NaN;
+            if (!connection.isRouted()) {
+                // no route inside the window (the cap, congestion, or the box): the plain search, so the
+                // connection is at least routed; its endpoints keep their hold violation
+                fallbacks++;
+                if (fallbackDiagnostics++ < 25) {
+                    ConnectionState st = getConnectionState();
+                    System.out.printf("[HoldFixRouter] fallback %s: crossSLR %b, budget [%.0f, %.0f] from %.0f, %d pops, %d cap prunes, %d loop rejects, sink seen %b, box x %d..%d y %d..%d, sink (%d,%d) source (%d,%d)%n",
+                            connection.getSink(), connection.isCrossSLR(), budget.min, budget.max, budget.lowerBound, st.nodesPopped, capPrunes, loopRejects,
+                            bestSinkEntry != null, connection.getXMinBB(), connection.getXMaxBB(), connection.getYMinBB(), connection.getYMaxBB(),
+                            connection.getSinkRnode().getBeginTileXCoordinate(), connection.getSinkRnode().getBeginTileYCoordinate(),
+                            connection.getSourceRnode().getEndTileXCoordinate(), connection.getSourceRnode().getEndTileYCoordinate());
+                }
+                super.routeIndirectConnection(connection);
+                achievedDelay.put(connection, connection.isRouted() ? routeDelayOf(connection) : Float.NaN);
+                return;
+            }
+            float achieved = routeDelayOf(connection);
             achievedDelay.put(connection, achieved);
-            if (!connection.isRouted() || achieved >= budget.min - retryToleranceUnder || attempt >= maxRetries) {
-                if (connection.isRouted() && achieved < budget.min - retryToleranceUnder) {
+            if (achieved >= budget.min - retryToleranceUnder || attempt >= maxRetries) {
+                if (achieved < budget.min - retryToleranceUnder) {
                     System.out.printf("WARNING: HoldFixRouter: %s routed at %.0f ps, below its minimum budget %.0f ps after %d attempts%n",
                             connection.getSink(), achieved, budget.min, attempt + 1);
                 }
@@ -404,13 +443,17 @@ public class HoldFixRouter extends PartialRouter {
         currentEntry = null;
         holdQueue.clear();
         bestEntry.clear();
+        capPrunes = 0;
+        loopRejects = 0;
 
         prepareRouteConnection(state);   // rips up, marks the targets, pushes the source (through push())
 
         Entry sinkEntry = null;
+        bestSinkEntry = null;
         Entry e;
         while ((e = holdQueue.poll()) != null) {
             if (bestEntry.get(e.node) != e) { holdStaleSkipped++; continue; }   // a cheaper path reached this node since
+            if (state.nodesPopped >= maxPopsPerSearch) break;
             state.nodesPopped++;
             if (e.node.isTarget()) { sinkEntry = e; break; }
             currentEntry = e;
@@ -419,6 +462,12 @@ public class HoldFixRouter extends PartialRouter {
             state.earlyTermination = false;
             state.queue.clear();
             exploreAndExpand(state, e.node);
+        }
+        if (sinkEntry == null && bestSinkEntry != null && bestEntry.get(bestSinkEntry.node) == bestSinkEntry) {
+            // out of pops before the sink came to the top of the queue: the cheapest route that did reach it
+            // (below its minimum, or the search would have ended on it) still improves the hold slack
+            sinkEntry = bestSinkEntry;
+            partialSinks++;
         }
         holdNodesPopped += state.nodesPopped;
         holdNodesPushed += state.nodesPopped + holdQueue.size();
@@ -476,17 +525,28 @@ public class HoldFixRouter extends PartialRouter {
         } else {
             // no loops: the entry chain becomes the route
             for (Entry x = parent; x != null; x = x.prev) {
-                if (x.node == childRnode) { restorePrev(childRnode); return; }
+                if (x.node == childRnode) { loopRejects++; restorePrev(childRnode); return; }
             }
             upstreamDelay = parent.upstreamDelay + childRnode.getDelay()
                     + DelayEstimatorBase.getExtraDelay(childRnode, DelayEstimatorBase.isLong(parent.node));
         }
+        // the maximum budget is a hard cap: a path already past it is not extended (setup is at stake)
+        if (upstreamDelay > currentBudget.max + capTolerancePs) { capPrunes++; restorePrev(childRnode); return; }
         // expected total delay of a route through this node: what is behind plus the estimate to the sink
         RouteNode sinkRnode = connection.getSinkRnode();
         int deltaX = Math.abs(childRnode.getEndTileXCoordinate() - sinkRnode.getBeginTileXCoordinate());
         int deltaY = Math.abs(childRnode.getEndTileYCoordinate() - sinkRnode.getBeginTileYCoordinate());
-        float expected = upstreamDelay + 100f * (deltaX * routingGraph.getEstimatedDelayPerTileX() + deltaY * routingGraph.getEstimatedDelayPerTileY());
-        float total = newTotalPathCost + currentWeight * valleyCost(currentBudget, expected);
+        // the remaining delay to the sink: not the base search's optimistic long-wire rate (a detour near the
+        // sink runs on singles and doubles, 50-80 ps a hop), an accurate estimate keeps the valley honest;
+        // an SLR still to cross is one SLL hop for its tiles
+        float remaining;
+        if (connection.isCrossSLR() && childRnode.getSLRIndex(routingGraph) != sinkRnode.getSLRIndex(routingGraph)) {
+            remaining = SLL_DELAY_PS + (deltaX + Math.max(0, deltaY - routingGraph.SUPER_LONG_LINE_LENGTH_IN_TILES)) * holdPsPerTile;
+        } else {
+            remaining = (deltaX + deltaY) * holdPsPerTile;
+        }
+        float expected = upstreamDelay + remaining;
+        float total = newTotalPathCost + currentWeight * valleyCost(currentBudget, expected, upstreamDelay);
 
         Entry best = bestEntry.get(childRnode);
         if (best != null && total >= best.total) { restorePrev(childRnode); return; }
@@ -495,6 +555,7 @@ public class HoldFixRouter extends PartialRouter {
         Entry entry = new Entry(childRnode, total, upstreamDelay, parent);
         bestEntry.put(childRnode, entry);
         holdQueue.add(entry);
+        if (childRnode.isTarget() && (bestSinkEntry == null || total < bestSinkEntry.total)) bestSinkEntry = entry;
     }
 
     /** evaluateCostAndPush sets the child's prev before costing; a rejected push puts the best path's parent back. */
@@ -505,23 +566,25 @@ public class HoldFixRouter extends PartialRouter {
 
     /**
      * The delay part of the cost (RCV eq. 14, in units of 100 ps): linear towards the target from
-     * both sides, quadratic outside the window.
+     * both sides and quadratic below the minimum on the expected total delay; quadratic above the
+     * maximum on the known upstream delay only (the estimate to the sink is rough over long
+     * distances, and the hard cap bounds the upstream delay anyway).
      */
-    float valleyCost(DelayBudget b, float expected) {
+    float valleyCost(DelayBudget b, float expected, float upstream) {
         float target = b.target();
         float shortCrit = target > 0 ? (float) Math.pow(Math.max(0f, target - b.lowerBound) / target, SHORT_PATH_EXPONENT) : 0f;
         float longCrit = longPathCriticality;
         float cost = longCrit * expected;
         cost += (shortCrit + longCrit) * Math.max(0f, target - expected);
-        float over = Math.max(0f, expected - b.max);
+        float over = Math.max(0f, upstream - b.max);
         float under = Math.max(0f, b.min - expected);
         cost += over * over / QUADRATIC_NORM_PS + under * under / QUADRATIC_NORM_PS;
         return cost / 100f;
     }
 
-    /** Statistics of the budgeted searches of the last {@link #route()}: nodes popped, nodes pushed, stale entries skipped. */
+    /** Statistics of the budgeted searches of the last {@link #route()}: nodes popped, nodes pushed, stale entries skipped, fallbacks to the plain search. */
     public long[] getBudgetedSearchStats() {
-        return new long[] {holdNodesPopped, holdNodesPushed, holdStaleSkipped};
+        return new long[] {holdNodesPopped, holdNodesPushed, holdStaleSkipped, fallbacks, partialSinks};
     }
 
     /** Budgeted connections whose route ended below the minimum budget (by more than the tolerance) or unrouted. */
@@ -558,16 +621,20 @@ public class HoldFixRouter extends PartialRouter {
     public static class Outcome {
         public float whsBefore, whsAfter, wnsBefore, wnsAfter;
         public int violatingBefore, violatingAfter, belowMarginBefore, belowMarginAfter;
-        public int endpointsTargeted, sinksBudgeted, skippedNoNetEdge, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet;
+        public int endpointsTargeted, sinksBudgeted, skippedNoNetEdge, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks;
+        /** endpoints (any, not only targets) whose setup slack the detours pushed under the floor, before and after the revert */
+        public int setupPushedUnderFloor, setupPushedUnderFloorAfterRevert, netsReverted, sinksReverted, sinksNotSlower;
         public long pipsBefore, pipsAfter;
         public long analysisMs, routeMs;
         @Override
         public String toString() {
             return String.format("hold: WHS %.0f -> %.0f ps, endpoints below 0: %d -> %d, below margin: %d -> %d; setup: WNS %.0f -> %.0f ps; "
                     + "%d endpoints targeted -> %d sinks budgeted (%d without a net edge, %d without setup room, %d without a route delay); "
-                    + "%d routed, %d met their minimum; PIPs on the touched nets %d -> %d; analysis %d ms, route %d ms",
+                    + "%d routed, %d met their minimum, %d fell back to the plain search; setup pushed under the floor on %d endpoints, "
+                    + "%d sinks no slower than before; %d nets (%d sinks) reverted, %d endpoints under the floor after; PIPs on the touched nets %d -> %d; analysis %d ms, route %d ms",
                     whsBefore, whsAfter, violatingBefore, violatingAfter, belowMarginBefore, belowMarginAfter, wnsBefore, wnsAfter,
-                    endpointsTargeted, sinksBudgeted, skippedNoNetEdge, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet,
+                    endpointsTargeted, sinksBudgeted, skippedNoNetEdge, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks,
+                    setupPushedUnderFloor, sinksNotSlower, netsReverted, sinksReverted, setupPushedUnderFloorAfterRevert,
                     pipsBefore, pipsAfter, analysisMs, routeMs);
         }
     }
@@ -601,8 +668,10 @@ public class HoldFixRouter extends PartialRouter {
         // targets: the last net edge on each violating endpoint's worst hold path
         Map<SitePinInst, float[]> want = new HashMap<>();   // sink -> {deficit, setup room} at the hold corner (ps)
         Map<SitePinInst, List<VersalSlackAnalysis.Result>> endpointsOfSink = new HashMap<>();
+        Map<VersalTimingGraph.Vertex, Float> setupBefore = new HashMap<>();
         for (VersalSlackAnalysis.Result r : sa.getResults()) {
             if (r.fast) continue;
+            setupBefore.put(r.endpoint, r.setupSlack);
             if (r.holdSlack < 0) out.violatingBefore++;
             if (r.holdSlack >= marginPs) continue;
             out.belowMarginBefore++;
@@ -638,30 +707,69 @@ public class HoldFixRouter extends PartialRouter {
             if (sd != null && sd.routed && sd.interconnect[iMin] > 0f) {
                 ratio = Math.max(1f, Math.min(3f, sd.interconnect[iMax] / sd.interconnect[iMin]));
             }
+            // the hold deficit is at the hold corner and needs the ratio; the setup room is slow-max already
+            // (the router's units), and the full model charges a detour about 1.1x the marginal sum
             float extra = e.getValue()[0] * ratio;
-            float maxExtra = Math.min(e.getValue()[1] * ratio, extra + maxExtraPs);
+            float maxExtra = Math.min(e.getValue()[1] / SETUP_ROOM_SAFETY, extra + maxExtraPs);
+            if (maxExtra < extra) { out.skippedSetupRoom++; continue; }
             router.setDelayBudget(sink, lb + extra, lb + maxExtra, lb);
             byNet.computeIfAbsent(net, n -> new ArrayList<>()).add(sink);
         }
         out.sinksBudgeted = router.getDelayBudgets().size();
-        for (Net net : byNet.keySet()) out.pipsBefore += net.getPIPs().size();
+        Map<Net, List<PIP>> pipsBefore = new HashMap<>();
+        for (Net net : byNet.keySet()) { out.pipsBefore += net.getPIPs().size(); pipsBefore.put(net, new ArrayList<>(net.getPIPs())); }
         for (Map.Entry<Net, List<SitePinInst>> e : byNet.entrySet()) DesignTools.unroutePins(e.getKey(), e.getValue());
 
         t0 = System.currentTimeMillis();
         router.initialize();
         router.route();
         out.routeMs = System.currentTimeMillis() - t0;
-        for (Net net : byNet.keySet()) out.pipsAfter += net.getPIPs().size();
         for (Map.Entry<SitePinInst, DelayBudget> e : router.getDelayBudgets().entrySet()) {
             Float a = router.getAchievedDelay(e.getKey());
             if (a != null && !Float.isNaN(a)) { out.routed++; if (a >= e.getValue().min - 10f) out.budgetMet++; }
         }
 
+        long[] stats = router.getBudgetedSearchStats();
+        out.fallbacks = (int) stats[3];
+
         t0 = System.currentTimeMillis();
         sa.update();
+        // setup check over every endpoint: a net whose detours pushed an endpoint's worst setup path under
+        // the floor is put back as it was (its targets keep their hold violation); one pass
+        Set<Net> revert = new HashSet<>();
+        for (VersalSlackAnalysis.Result r : sa.getResults()) {
+            if (r.fast || r.setupSlack >= setupFloorPs) continue;
+            Float before = setupBefore.get(r.endpoint);
+            if (before == null || before < setupFloorPs) continue;
+            out.setupPushedUnderFloor++;
+            for (VersalTimingGraph.Edge e : sa.getGraph().getPath(r.endpoint, iMax)) {
+                if ("net".equals(e.kind) && e.net != null && pipsBefore.containsKey(e.net)) revert.add(e.net);
+            }
+        }
+        // a sink that came out no slower than before (a search that fell back to the plain route, which can
+        // even be faster than the original) is put back too: nothing gained, and the original was known-good
+        for (Map.Entry<SitePinInst, DelayBudget> e : router.getDelayBudgets().entrySet()) {
+            Float a = router.getAchievedDelay(e.getKey());
+            if (a == null || Float.isNaN(a) || a < e.getValue().lowerBound + 10f) { revert.add(e.getKey().getNet()); out.sinksNotSlower++; }
+        }
+        for (Net net : revert) {
+            net.setPIPs(pipsBefore.get(net));
+            for (SitePinInst p : net.getSinkPins()) p.setRouted(true);
+            out.sinksReverted += byNet.get(net).size();
+        }
+        out.netsReverted = revert.size();
+        if (!revert.isEmpty()) {
+            sa.update();
+            for (VersalSlackAnalysis.Result r : sa.getResults()) {
+                if (r.fast || r.setupSlack >= setupFloorPs) continue;
+                Float before = setupBefore.get(r.endpoint);
+                if (before != null && before >= setupFloorPs) out.setupPushedUnderFloorAfterRevert++;
+            }
+        }
         out.analysisMs += System.currentTimeMillis() - t0;
         out.whsAfter = sa.getWHS();
         out.wnsAfter = sa.getWNS();
+        for (Net net : byNet.keySet()) out.pipsAfter += net.getPIPs().size();
         for (VersalSlackAnalysis.Result r : sa.getResults()) {
             if (r.fast) continue;
             if (r.holdSlack < 0) out.violatingAfter++;
@@ -674,8 +782,8 @@ public class HoldFixRouter extends PartialRouter {
         for (SitePinInst sink : sinks) {
             DelayBudget b = router.getDelayBudgets().get(sink);
             Float a = router.getAchievedDelay(sink);
-            sb.append(String.format("%-45s budget [%.0f, %.0f] from %.0f, routed %s;", sink, b.min, b.max, b.lowerBound,
-                    a == null ? "-" : Float.isNaN(a) ? "unrouted" : String.format("%.0f", a)));
+            sb.append(String.format("%-45s budget [%.0f, %.0f] from %.0f, routed %s%s;", sink, b.min, b.max, b.lowerBound,
+                    a == null ? "-" : Float.isNaN(a) ? "unrouted" : String.format("%.0f", a), revert.contains(sink.getNet()) ? " (reverted)" : ""));
             for (VersalSlackAnalysis.Result before : endpointsOfSink.getOrDefault(sink, Collections.emptyList())) {
                 VersalSlackAnalysis.Result[] now = sa.getResults(before.endpoint);
                 VersalSlackAnalysis.Result after = now == null ? null : now[0];
@@ -685,8 +793,7 @@ public class HoldFixRouter extends PartialRouter {
             sb.append('\n');
         }
         System.out.print(sb);
-        long[] stats = router.getBudgetedSearchStats();
-        System.out.printf("[HoldFixRouter] budgeted search: %d popped, %d pushed, %d stale skipped%n", stats[0], stats[1], stats[2]);
+        System.out.printf("[HoldFixRouter] budgeted search: %d popped, %d pushed, %d stale skipped, %d fallbacks, %d searches out of pops took the best route seen%n", stats[0], stats[1], stats[2], stats[3], stats[4]);
         System.out.println("[HoldFixRouter] " + out);
         return out;
     }
