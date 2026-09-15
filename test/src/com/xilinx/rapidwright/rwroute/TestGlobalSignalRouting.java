@@ -369,7 +369,7 @@ public class TestGlobalSignalRouting {
         }
     }
 
-    private static Cell createBUFGCE(Design design, EDIFCell parent, String name, Site location) {
+    static Cell createBUFGCE(Design design, EDIFCell parent, String name, Site location) {
         // TODO - An improved version of this method is coming in ArrayBuilder
         Cell bufgce = design.createAndPlaceCell(parent, name, Unisim.BUFGCE, location, location.getBEL("BUFCE"));
 

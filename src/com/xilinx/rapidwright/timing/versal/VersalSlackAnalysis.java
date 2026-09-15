@@ -88,23 +88,12 @@ public class VersalSlackAnalysis {
      */
     public static final float SLR_PRORATING = 0.1f;
 
-    /** The launch and the endpoint sit in different SLRs (the data path crosses an SLL). */
     private static boolean crossesSlr(VersalTimingGraph.Vertex launch, VersalTimingGraph.Vertex v) {
-        if (launch == null || v == null || launch.cell == null || v.cell == null) return false;
-        com.xilinx.rapidwright.device.Site a = launch.cell.getSite(), b = v.cell.getSite();
-        if (a == null || b == null) return false;
-        com.xilinx.rapidwright.device.SLR sa = a.getTile().getSLR(), sb = b.getTile().getSLR();
-        return sa != null && sb != null && sa.getId() != sb.getId();
+        return VersalClockArrivals.crossesSlr(launch, v);
     }
 
-    /** {slow, fast} min-corner clock delay to the nearest common node of a launch and a capture pin (Vivado's CCD); 0 across clock nets. */
-    private final Map<SitePinInst, Map<SitePinInst, float[]>> pairCcd;
     private float[] commonDelayMin(VersalClockModel.ClockTree tree, SitePinInst lp, SitePinInst cap) {
-        if (lp == null || cap == null || lp.getNet() != cap.getNet()) return new float[2];
-        return pairCcd.computeIfAbsent(lp, k -> new HashMap<>()).computeIfAbsent(cap, c -> {
-            float[] d = clockModel.commonClockDelay(tree, lp, c);
-            return d == null ? new float[2] : new float[] {d[1], d[3]};
-        });
+        return clocks.commonDelayMin(tree, lp, cap);
     }
 
     private final Design design;
@@ -112,10 +101,8 @@ public class VersalSlackAnalysis {
     private final VersalTimingGraph graph;
     private final VersalClockModel clockModel;
     private final float periodPs, setupUncertaintyPs, holdUncertaintyPs;
-    private final Map<Net, VersalClockModel.ClockTree> trees;
-    private final Map<VersalTimingGraph.Vertex, SitePinInst> clockPinOf;
-    private static final boolean DEBUG_CLKARC = System.getenv("DEBUG_CLKARC") != null;
-    private int debugClkArc = 0;
+    /** clock trees, clock pins, arrivals and pessimism (shared with an analysis derived from this one) */
+    private final VersalClockArrivals clocks;
     private final int iSlowMax, iSlowMin, iFastMax, iFastMin;
     private int unclockedLaunches = 0, unclockedEndpoints = 0;
     /** per endpoint, its {slow, fast} results (an endpoint with no result at a process is absent) */
@@ -126,8 +113,7 @@ public class VersalSlackAnalysis {
 
     public VersalSlackAnalysis(Design design, VersalTimingModel model, VersalClockModel clockModel,
                                float periodPs, float setupUncertaintyPs, float holdUncertaintyPs) {
-        this(design, model, clockModel, new VersalTimingGraph(design, model), periodPs, setupUncertaintyPs, holdUncertaintyPs,
-                new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashMap<>());
+        this(design, model, clockModel, new VersalTimingGraph(design, model), periodPs, setupUncertaintyPs, holdUncertaintyPs, null);
     }
 
     /**
@@ -137,18 +123,13 @@ public class VersalSlackAnalysis {
      * analyses share the graph, so only one of them may be updated from then on.
      */
     public VersalSlackAnalysis(VersalSlackAnalysis base, float setupUncertaintyPs, float holdUncertaintyPs) {
-        this(base.design, base.model, base.clockModel, base.graph, base.periodPs, setupUncertaintyPs, holdUncertaintyPs,
-                base.trees, base.clockPinOf, base.arrivalOf, base.pairCcd, base.pairCpr, base.pairVariantsSetup, base.pairVariantsHold);
+        this(base.design, base.model, base.clockModel, base.graph, base.periodPs, setupUncertaintyPs, holdUncertaintyPs, base.clocks);
         unclockedLaunches = base.unclockedLaunches;
         unclockedEndpoints = base.unclockedEndpoints;
     }
 
     private VersalSlackAnalysis(Design design, VersalTimingModel model, VersalClockModel clockModel, VersalTimingGraph graph,
-                                float periodPs, float setupUncertaintyPs, float holdUncertaintyPs,
-                                Map<Net, VersalClockModel.ClockTree> trees, Map<VersalTimingGraph.Vertex, SitePinInst> clockPinOf,
-                                Map<SitePinInst, Map<Cell, float[]>> arrivalOf, Map<SitePinInst, Map<SitePinInst, float[]>> pairCcd,
-                                Map<SitePinInst, Map<SitePinInst, float[][]>> pairCpr,
-                                Map<SitePinInst, Map<SitePinInst, float[][]>> pairVariantsSetup, Map<SitePinInst, Map<SitePinInst, float[][]>> pairVariantsHold) {
+                                float periodPs, float setupUncertaintyPs, float holdUncertaintyPs, VersalClockArrivals clocks) {
         this.design = design;
         this.model = model;
         this.clockModel = clockModel;
@@ -156,13 +137,7 @@ public class VersalSlackAnalysis {
         this.periodPs = periodPs;
         this.setupUncertaintyPs = setupUncertaintyPs;
         this.holdUncertaintyPs = holdUncertaintyPs;
-        this.trees = trees;
-        this.clockPinOf = clockPinOf;
-        this.arrivalOf = arrivalOf;
-        this.pairCcd = pairCcd;
-        this.pairCpr = pairCpr;
-        this.pairVariantsSetup = pairVariantsSetup;
-        this.pairVariantsHold = pairVariantsHold;
+        this.clocks = clocks != null ? clocks : new VersalClockArrivals(graph, model, clockModel);
         iSlowMax = model.indexOf(VersalCorner.SLOW_MAX);
         iSlowMin = model.indexOf(VersalCorner.SLOW_MIN);
         iFastMax = model.indexOf(VersalCorner.FAST_MAX);
@@ -179,90 +154,22 @@ public class VersalSlackAnalysis {
     }
 
     public VersalClockModel.ClockTree getClockTree(Net net) {
-        return trees.computeIfAbsent(net, n -> clockModel.analyze(n, model));
+        return clocks.getClockTree(net);
     }
 
     /** The clock net sink pin feeding a vertex's cell clock, or null. */
     public SitePinInst clockSitePin(VersalTimingGraph.Vertex v) {
-        if (clockPinOf.containsKey(v)) return clockPinOf.get(v);
-        SitePinInst spi = null;
-        String phys = graph.getClockPin(v);
-        Cell c = v.cell;
-        if (phys != null) {
-            String logical = c.getLogicalPinMapping(phys);
-            if (logical != null) spi = c.getSitePinFromLogicalPin(logical, null);
-            if (spi == null && c.getSiteInst() != null) {
-                // hard blocks (DSP58, BRAM): the site pin carries the BEL pin's name, or the site has a single clock pin
-                spi = c.getSiteInst().getSitePinInst(phys);
-                if (spi == null || spi.getNet() == null || !VersalClockModel.isGlobalClockNet(spi.getNet())) {
-                    spi = null;
-                    for (SitePinInst p : c.getSiteInst().getSitePinInsts()) {
-                        if (p.getNet() != null && VersalClockModel.isGlobalClockNet(p.getNet())) { spi = spi == null ? p : null; if (spi == null) break; }
-                    }
-                }
-            }
-        }
-        if (spi != null && (spi.getNet() == null || !VersalClockModel.isGlobalClockNet(spi.getNet()))) spi = null;
-        clockPinOf.put(v, spi);
-        return spi;
+        return clocks.clockSitePin(v);
     }
 
-    /** Clock arrival at (site pin, cell), computed once: the same pin is asked for as a launch, as a capture and in every pessimism check against it. */
-    private final Map<SitePinInst, Map<Cell, float[]>> arrivalOf;
-    private static final float[] NO_ARRIVAL = new float[0];
-
+    /** Clock arrival (clock corners) at a site pin for the cell it clocks, or null. */
     private float[] clockArrival(SitePinInst spi, Cell cell) {
-        if (spi == null) return null;
-        float[] a = arrivalOf.computeIfAbsent(spi, k -> new HashMap<>(2)).computeIfAbsent(cell, c -> {
-            float[] r = clockModel.pinArrival(getClockTree(spi.getNet()), spi, c);
-            if (r == null) return NO_ARRIVAL;
-            float[] mux = clockInputArc(spi, c);
-            if (mux != null) { r = r.clone(); for (int i = 0; i < r.length && i < mux.length; i++) r[i] += mux[i]; }
-            return r;
-        });
-        return a == NO_ARRIVAL ? null : a;
+        return clocks.clockArrival(spi, cell);
     }
 
-    /**
-     * On a hard block the clock enters through a mux/inverter BEL of its own (DSP58: SRCMXINV, CLK_NAT -> CLK,
-     * 59-63 ps; Vivado's path reports show it as a cell arc after the clock net, "Prop_SRCMXINV_DSP58_CLK_IN_CLK")
-     * before the internal clock wire reaches the registers. The clock net delay Vivado reports, and so the
-     * CLKSITE term fitted from it, end at that BEL's input, so the arc is added here from the logic tables:
-     * the cell placed on the BEL the sink site pin connects to, from that pin to its output, when it is not the
-     * clocked cell itself. Slices have no such BEL (the site pin's BEL is the flop) and get nothing.
-     */
-    private float[] clockInputArc(SitePinInst spi, Cell cell) {
-        com.xilinx.rapidwright.design.SiteInst si = spi.getSiteInst();
-        com.xilinx.rapidwright.device.BELPin bp = spi.getBELPin();
-        boolean dbg = DEBUG_CLKARC && si != null && !si.getSiteTypeEnum().name().startsWith("SLICE") && debugClkArc++ < 8;
-        if (dbg) System.out.println("clkarc " + spi + " belpin " + bp + " bel " + (bp == null ? null : bp.getBEL()) + " cell " + (bp == null || bp.getBEL() == null ? null : si.getCell(bp.getBEL())) + " for " + cell);
-        if (si == null || bp == null || bp.getBEL() == null) return null;
-        // the site pin's own BEL pin is the site port; the BELs it feeds are on its site wire
-        for (com.xilinx.rapidwright.device.BELPin in : bp.getSiteConns()) {
-            if (!in.isInput() || in.getBEL() == null) continue;
-            Cell mux = si.getCell(in.getBEL());
-            if (mux == null || mux == cell) continue;
-            for (com.xilinx.rapidwright.device.BELPin out : in.getBEL().getPins()) {
-                if (!out.isOutput()) continue;
-                float[] d = graph.cellArc(mux, in.getName(), out.getName());
-                if (dbg) System.out.println("clkarc   " + in + " -> " + out.getName() + " = " + java.util.Arrays.toString(d));
-                if (d != null) return d;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * The clock group of a launch: the clock-tree node feeding its clock site pin (the leaf; the site
-     * pin's own node when the tree has no parent for it). Launches in one group share their clock path
-     * down to that node, so against any capture their pessimism removal differs by at most the spread
-     * of the last step; the analysis therefore only needs the extreme arrival of each group.
-     */
+    /** The clock group of a launch: the clock-tree node feeding its clock site pin ({@link VersalClockArrivals#launchGroup}). */
     private Object launchGroup(SitePinInst spi) {
-        Node n = spi.getConnectedNode();
-        if (n == null) return spi;
-        Node p = getClockTree(spi.getNet()).parent.get(n);
-        return p != null ? p : n;
+        return clocks.launchGroup(spi);
     }
 
     /**
@@ -323,7 +230,7 @@ public class VersalSlackAnalysis {
         Set<Site> sites = graph.refreshClockLeaves();
         Set<VersalTimingGraph.Vertex> retime = new HashSet<>();
         if (!sites.isEmpty()) {
-            arrivalOf.keySet().removeIf(spi -> spi.getSite() != null && sites.contains(spi.getSite()));
+            clocks.invalidateSites(sites);
             for (VersalTimingGraph.Vertex q : graph.getLaunches()) if (sites.contains(q.cell.getSite())) { seed(q); touched.add(q); }
             for (VersalTimingGraph.Vertex v : graph.getEndpoints()) if (sites.contains(v.cell.getSite())) retime.add(v);
         }
@@ -461,50 +368,13 @@ public class VersalSlackAnalysis {
         return path.isEmpty() ? v : path.get(0).src;
     }
 
-    /** {setup {slow, fast}, hold {slow, fast}} pessimism removal between a launch and a capture pin; zero across clock nets. */
-    private float[][] pessimismOf(VersalClockModel.ClockTree tree, VersalTimingGraph.Vertex launch, SitePinInst cap) {
-        return pessimismOf(tree, launch, clockSitePin(launch), cap, null);
-    }
-
-    /**
-     * Pessimism removal for a launch and a capture pin. When both are the same site pin with the same
-     * arrival (a DSP58's internal register stages, whose clock enters by one site pin), the whole clock
-     * path is common, including the site's own segment and the implicit leaf the tree model adds after
-     * the tree, so the credit is the pin's full max - min spread at each process; the tree-based
-     * computation stops at the tree node and would leave that segment's spread out (-56 ps setup, -44
-     * hold on the 8x8's DSP stages).
-     */
+    /** {setup {slow, fast}, hold {slow, fast}} pessimism removal between a launch and a capture pin ({@link VersalClockArrivals#pessimismOf}). */
     private float[][] pessimismOf(VersalClockModel.ClockTree tree, VersalTimingGraph.Vertex launch, SitePinInst lp, SitePinInst cap, float[] capArr) {
-        if (lp == null || lp.getNet() != cap.getNet()) return new float[][] {new float[2], new float[2]};
-        if (lp == cap && lp.getSiteInst() != null && !lp.getSiteInst().getSiteTypeEnum().name().startsWith("SLICE")) {
-            // hard blocks only: two flops of one slice share its clock site pin too, but Vivado does not credit
-            // the slice's own clock segment between them (applying it there moved the 8x8's flop-to-flop hold
-            // errors over 25 ps from 51 to 1849)
-            float[] lArr = clockArrival(lp, launch.cell);
-            if (capArr == null) capArr = clockArrival(cap, launch.cell);
-            if (lArr != null && capArr != null && java.util.Arrays.equals(lArr, capArr)) {
-                float[] spread = {lArr[iSlowMax] - lArr[iSlowMin], lArr[iFastMax] - lArr[iFastMin]};
-                return new float[][] {spread, spread.clone()};
-            }
-        }
-        return pairPessimism(tree, lp, cap);
+        return clocks.pessimismOf(tree, launch, lp, cap, capArr);
     }
 
-    /** {setup {slow, fast}, hold {slow, fast}} per (launch pin, capture pin), computed once: the same pair recurs for every endpoint of a site. */
-    private final Map<SitePinInst, Map<SitePinInst, float[][]>> pairCpr;
-    private float[][] pairPessimism(VersalClockModel.ClockTree tree, SitePinInst lp, SitePinInst cap) {
-        return pairCpr.computeIfAbsent(lp, k -> new HashMap<>()).computeIfAbsent(cap,
-                c -> new float[][] {clockModel.pessimism(tree, lp, c), clockModel.holdPessimism(tree, lp, c)});
-    }
-
-    /** The six pessimism variants ({@link VersalClockModel#pessimism(VersalClockModel.ClockTree, SitePinInst, SitePinInst, int, boolean)}) per (launch pin, capture pin), [variant][slow, fast]. */
-    private final Map<SitePinInst, Map<SitePinInst, float[][]>> pairVariantsSetup, pairVariantsHold;
     private float[][] pairVariants(VersalClockModel.ClockTree tree, SitePinInst lp, SitePinInst cap, boolean hold) {
-        return (hold ? pairVariantsHold : pairVariantsSetup).computeIfAbsent(lp, k -> new HashMap<>()).computeIfAbsent(cap, c -> {
-            float[][] out = new float[6][];
-            for (int vv = 0; vv < 6; vv++) out[vv] = clockModel.pessimism(tree, lp, c, vv, hold);
-            return out;
-        });
+        return clocks.pairVariants(tree, lp, cap, hold);
     }
 
     /**
@@ -593,8 +463,8 @@ public class VersalSlackAnalysis {
     public String report() {
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("period %.0f ps, setup uncertainty %.0f ps, hold uncertainty %.0f ps; %d endpoints x 2 processes; unclocked launches %d, endpoints %d%n",
-                periodPs, setupUncertaintyPs, holdUncertaintyPs, results.size() / 2, unclockedLaunches, unclockedEndpoints));
-        for (Net n : trees.keySet()) sb.append("clock net ").append(n.getName()).append(": ").append(trees.get(n).sinkArrival.size()).append(" sinks\n");
+                periodPs, setupUncertaintyPs, holdUncertaintyPs, getResults().size() / 2, unclockedLaunches, unclockedEndpoints));
+        for (Map.Entry<Net, VersalClockModel.ClockTree> e : clocks.getClockTrees().entrySet()) sb.append("clock net ").append(e.getKey().getName()).append(": ").append(e.getValue().sinkArrival.size()).append(" sinks\n");
         for (Map.Entry<Net, String> e : clockModel.getRootDescriptions().entrySet()) sb.append("  root of ").append(e.getKey().getName()).append(": ").append(e.getValue()).append('\n');
         sb.append("clock model tiers: ").append(clockModel.getTierUse()).append(", intra-site misses ").append(clockModel.getSiteMissCount()).append('\n');
         if (worstSetup != null) sb.append(describe(worstSetup, true));

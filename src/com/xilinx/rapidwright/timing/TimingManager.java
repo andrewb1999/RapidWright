@@ -107,7 +107,7 @@ public class TimingManager {
         if (design.getSeries() == Series.Versal) {
             // the Versal data-path model supplies logic, intra-site and net delays; no TimingModel
             timingModel = null;
-            timingGraph = new VersalRWTimingGraph(design, routerTimer);
+            timingGraph = new VersalRWTimingGraph(design, routerTimer, config.isVersalClockSkew());
         } else {
             timingModel = new TimingModel(design.getDevice());
             timingGraph = new TimingGraph(design, routerTimer, clkTiming, config.getDspTimingDataFolder());
@@ -199,19 +199,28 @@ public class TimingManager {
     public void getCriticalPathInfo(Pair<Float, TimingVertex> maxDelayTimingVertex) {
         TimingVertex maxV = maxDelayTimingVertex.getSecond();
         float maxDelay = maxDelayTimingVertex.getFirst();
-        System.out.printf(MessageGenerator.formatString("Timing requirement (ps):", timingRequirement));
+        System.out.printf(MessageGenerator.formatString("Timing requirement (ps):", timingRequirement - timingGraph.getClockOffset()));
         List<TimingEdge> criticalEdges = timingGraph.getCriticalTimingEdgesInOrder(maxV);
         short arr = 0;
         short clkskew = 0;
         for (TimingEdge e : criticalEdges) {
             arr += e.getDelay();
         }
+        if (timingGraph.hasClockSkew() && criticalEdges.size() >= 2) {
+            // the sink super edge carries offset - capture clock - pessimism credit: take it off the printed path
+            // delay (which keeps the setup check, as without skew) and print the skew the path sees
+            TimingEdge first = criticalEdges.get(0), last = criticalEdges.get(criticalEdges.size() - 1);
+            float sinkTerm = timingGraph.getSinkClockTerm(last.getSrc());
+            float launchTerm = timingGraph.getLaunchClockTerm(first.getDst());
+            clkskew = (short) sinkTerm;
+            System.out.printf(MessageGenerator.formatString("Clock skew on critical path (ps):", (int) (launchTerm + sinkTerm - timingGraph.getClockOffset())));
+        }
         System.out.printf(MessageGenerator.formatString("Critical path delay (ps):", (int)(arr - criticalEdges.get(0).getDelay() - clkskew)));
         System.out.printf(MessageGenerator.formatString("Slack (ps):", (int)(timingRequirement - maxDelay)));
         System.out.printf(MessageGenerator.formatString("With timing closure guarantee:"));
         int adjusted = (int) (pessimismA * (arr - criticalEdges.get(0).getDelay() - clkskew) + pessimismB);
         System.out.printf(MessageGenerator.formatString("Critical path delay (ps):", adjusted));
-        System.out.printf(MessageGenerator.formatString("Slack (ps):", (int)(timingRequirement - adjusted)));
+        System.out.printf(MessageGenerator.formatString("Slack (ps):", (int)(timingRequirement - timingGraph.getClockOffset() - adjusted)));
         
         printPathDelayBreakDown(arr, criticalEdges);
     }
@@ -435,7 +444,8 @@ public class TimingManager {
         for (Connection connection:connections) {
             connection.resetCriticality();
         }
-        float maxRequired = timingGraph.superSink.getRequiredTime();
+        // the clock offset is on every path (see TimingGraph.getClockOffset): keep the criticality scale a path delay
+        float maxRequired = timingGraph.superSink.getRequiredTime() - timingGraph.getClockOffset();
         for (Connection connection : connections) {
             connection.calculateCriticality(maxRequired, maxCriticality, criticalityExponent);
         }

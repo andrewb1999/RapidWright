@@ -83,6 +83,9 @@ public class RWRouteConfig {
     /** Versal only: true to re-evaluate the routed connections' delays with the full Versal interconnect model
      *  after every iteration (fan-out, load and crossing terms), instead of the per-node sums */
     private boolean versalExactNetDelay;
+    /** Versal (xcv80) only: true to fold the clock model's arrivals (launch and capture clock, pessimism removal)
+     *  into the timing graph once the clock nets are routed, so the router's slacks include the clock skew */
+    private boolean versalClockSkew;
     /** true to display more info along the routing process */
     private boolean verbose;
     /** true to display connection span statistics */
@@ -136,6 +139,7 @@ public class RWRouteConfig {
         maskNodesCrossRCLK = false;
         useUTurnNodes = false;
         versalExactNetDelay = true;
+        versalClockSkew = false;
         verbose = false;
         printConnectionSpan = false;
         lutPinSwapping = false;
@@ -241,6 +245,12 @@ public class RWRouteConfig {
                 break;
             case "--noVersalExactNetDelay":
                 setVersalExactNetDelay(false);
+                break;
+            case "--versalClockSkew":
+                setVersalClockSkew(true);
+                break;
+            case "--noVersalClockSkew":
+                setVersalClockSkew(false);
                 break;
             case "--verbose":
                 setVerbose(true);
@@ -870,6 +880,27 @@ public class RWRouteConfig {
     }
 
     /**
+     * Versal timing-driven routing: whether the clock model's arrivals are folded into the timing graph
+     * once the global clock nets are routed (launch clock at the max corner, capture clock at the min
+     * corner, pessimism removal and inter-SLR compensation), so that the criticalities include the
+     * clock skew the way the Versal timing report sees it. Computed once; the routing iterations are
+     * unchanged. Supported on the xcv80 only (the clock model's tables were fitted on it); RWRoute
+     * rejects the option on any other part.
+     * Default: false. Can be modified by "--versalClockSkew" / "--noVersalClockSkew".
+     * @return true, if the clock arrivals are applied to the timing graph
+     */
+    public boolean isVersalClockSkew() {
+        return versalClockSkew;
+    }
+
+    /**
+     * Sets versalClockSkew, see {@link #isVersalClockSkew()}.
+     */
+    public void setVersalClockSkew(boolean versalClockSkew) {
+        this.versalClockSkew = versalClockSkew;
+    }
+
+    /**
      * Checks if verbose is enabled.
      * If enabled, there will be more info in the routing log file regarding design netlist, routing statistics, and timing report.
      * Default: false. Can be modified by adding "--verbose" to the arguments.
@@ -1095,6 +1126,7 @@ public class RWRouteConfig {
         s.append(MessageGenerator.formatString("Mask nodes across RCLK: ", maskNodesCrossRCLK));
         s.append(MessageGenerator.formatString("Include U-turn nodes: ", useUTurnNodes));
         if (timingDriven) s.append(MessageGenerator.formatString("Versal exact net delay: ", versalExactNetDelay));
+        if (timingDriven) s.append(MessageGenerator.formatString("Versal clock skew: ", versalClockSkew));
         s.append(MessageGenerator.formatString("Initial present congestion factor: ", initialPresentCongestionFactor));
         s.append(MessageGenerator.formatString("Present congestion multiplier: ", presentCongestionMultiplier));
         s.append(MessageGenerator.formatString("Historical congestion factor: ", historicalCongestionFactor));

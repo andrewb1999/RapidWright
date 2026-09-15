@@ -178,13 +178,23 @@ inline constructions (`RWRoute`, `PartialRouter`, `CUFR`, `PartialCUFR`,
    Success: Vivado-measured WNS of the timing-driven route better than the non-timing-driven
    one, and the router's own critical path estimate within the report model's error of
    Vivado's number. Record the table in NOTES.md. About 2 days including the runs.
-6. **Optional, beyond parity: clock skew.** After `routeGlobalClkNet`,
-   `VersalClockModel.analyze(clk)` gives every launch and capture arrival (validated within
-   6 ps on RWRoute-routed trees, NOTES.md "Sweep results"). Put the launch arrival on the
-   superSource edge and subtract the capture arrival on the superSink edge (negative edge
-   weights are fine for the slack arithmetic; `computeArrivalTimesTopologicalOrder` only
-   takes a max). CPR would be ignored (pessimistic on same-leaf paths); flag
-   `--versalClockSkew`, default off. About 2 days.
+6. **Beyond parity: clock skew** (done, `--versalClockSkew`, default off, xcv80 only).
+   After `routeGlobalClkNets`, `VersalRWTimingGraph.applyClockArrivals` runs once: the clock
+   model (`VersalClockArrivals`, the clock side of `VersalSlackAnalysis` factored out so the
+   report and the router share it) gives every launch its max-corner and every endpoint its
+   min-corner clock arrival, and the two super edges become `L - L0 + Q` and
+   `S + K - (C - L0) - P` (launch clock `L`, earliest launch clock `L0`, clock-to-Q `Q`,
+   capture clock `C`, pessimism credit `P` minus the inter-SLR compensation, setup check `S`)
+   with the requirement raised by `K`, the smallest offset keeping every edge non-negative
+   (the critical-path print takes it off again and prints the skew of the path). The model
+   is built with the slow-min corner as well for the capture clock. Pessimism depends on the
+   launch, which a vertex STA cannot carry per path: each endpoint gets the smallest credit
+   over the launch clock groups (clock-tree leaves) that reach it, found with one topological
+   pass (2488 groups, 1.5 s on the 4x4), conservative for every launch; more than 64 groups
+   into a vertex means no credit. Nothing changes in the iterations. The criticality scale
+   excludes `K`. Tests: `testTimingDrivenRoutingOnVersalDeviceWithClockSkew` (BUFGCE ring
+   across clock regions, 521 ps skew on the critical path) and
+   `testVersalClockSkewRejectsUnsupportedUse` (xcvc1902 and non-timing-driven rejected).
 
 Total to parity with validation (steps 1-5): about 8 working days.
 

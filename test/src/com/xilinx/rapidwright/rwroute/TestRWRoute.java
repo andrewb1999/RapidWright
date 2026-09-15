@@ -59,7 +59,9 @@ import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Part;
 import com.xilinx.rapidwright.device.PartNameTools;
 import com.xilinx.rapidwright.device.Series;
+import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.eco.ECOTools;
+import com.xilinx.rapidwright.edif.EDIFDirection;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.edif.EDIFHierCellInst;
 import com.xilinx.rapidwright.edif.EDIFNetlist;
@@ -409,6 +411,97 @@ public class TestRWRoute {
      * The picoblaze design is from one of the RapidWright tutorials with nets between computing kernels not routed.
      * Other nets within each kernel are fully routed.
      */
+    /**
+     * A BUFGCE-clocked ring of flops on xcv80 whose stages sit in different clock regions, so that
+     * the clock arrivals at launch and capture differ by hundreds of picoseconds.
+     */
+    static Design genVersalClockSkewDesign() {
+        Design design = new Design("versal_clk_skew", "xcv80-lsva4737-2MHP-e-S");
+        EDIFCell top = design.getTopEDIFCell();
+        Net clk = design.createNet("clk");
+        Net clkIn = design.createNet("clkIn");
+        Net vcc = design.getVccNet();
+        Net gnd = design.getGndNet();
+        clkIn.getLogicalNet().createPortInst(top.createPort(clkIn.getName(), EDIFDirection.INPUT, 1));
+        Cell bufgce = TestGlobalSignalRouting.createBUFGCE(design, top, "bufgceInst", design.getDevice().getSite("BUFGCE_X2Y0"));
+        clkIn.connect(bufgce, "I");
+        clk.connect(bufgce, "O");
+        vcc.connect(bufgce, "CE");
+        String[] locs = {"SLICE_X98Y8", "SLICE_X86Y96", "SLICE_X86Y236", "SLICE_X86Y284"};
+        Cell[] ffs = new Cell[locs.length];
+        for (int i = 0; i < locs.length; i++) {
+            ffs[i] = design.createAndPlaceCell("ff" + i, Unisim.FDRE, locs[i] + "/AFF");
+            clk.connect(ffs[i], "C");
+            vcc.connect(ffs[i], "CE");
+            gnd.connect(ffs[i], "R");
+        }
+        for (int i = 0; i < ffs.length; i++) {
+            Net q = design.createNet("q" + i);
+            q.connect(ffs[i], "Q");
+            q.connect(ffs[(i + 1) % ffs.length], "D");
+        }
+        design.addXDCConstraint("create_clock -period 10.0 [get_ports clkIn]");
+        design.routeSites();
+        design.setAutoIOBuffers(false);
+        design.setDesignOutOfContext(true);
+        return design;
+    }
+
+    /**
+     * Timing-driven routing on xcv80 with the clock model's arrivals folded into the timing graph
+     * ({@code --versalClockSkew}): the clock net is routed first, the arrivals are applied once, and
+     * the critical path report shows the skew the path sees.
+     */
+    @Test
+    @LargeTest(max_memory_gb = 8)
+    public void testTimingDrivenRoutingOnVersalDeviceWithClockSkew() {
+        Design design = genVersalClockSkewDesign();
+
+        PrintStream stdout = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(captured, true));
+        try {
+            RWRoute.routeDesignWithUserDefinedArguments(design, new String[] {"--timingDriven", "--versalClockSkew", "--verbose"});
+        } finally {
+            System.setOut(stdout);
+        }
+        String log = captured.toString();
+        System.out.print(log);
+
+        for (Net net : design.getNets()) {
+            if (net.isStaticNet() || net.getSource() == null) continue;
+            assertAllPinsRouted(net);
+        }
+        Matcher m = Pattern.compile("Clock arrivals applied to (\\d+) launches \\((\\d+) unclocked\\) and (\\d+) endpoints \\((\\d+) unclocked\\)").matcher(log);
+        Assertions.assertTrue(m.find(), "clock arrivals not applied");
+        Assertions.assertEquals(4, Integer.parseInt(m.group(1)));
+        Assertions.assertEquals(0, Integer.parseInt(m.group(2)));
+        Assertions.assertEquals(12, Integer.parseInt(m.group(3)), "D, CE and R of every flop");
+        Assertions.assertEquals(0, Integer.parseInt(m.group(4)));
+        m = Pattern.compile("Clock skew on critical path \\(ps\\):\\s+(-?\\d+)").matcher(log);
+        Assertions.assertTrue(m.find(), "no clock skew reported on the critical path");
+        int skew = Integer.parseInt(m.group(1));
+        // launch and capture are in different clock regions on the same tree: a few hundred ps at most
+        Assertions.assertTrue(skew != 0 && Math.abs(skew) < 2000, "clock skew " + skew);
+        m = Pattern.compile("Timing requirement \\(ps\\):\\s+(\\d+)").matcher(log);
+        Assertions.assertTrue(m.find(), "no timing requirement reported");
+        Assertions.assertEquals(10000, Integer.parseInt(m.group(1)), "the printed requirement must not include the clock offset");
+    }
+
+    /** {@code --versalClockSkew} is rejected on any part but the xcv80, and without {@code --timingDriven}. */
+    @Test
+    public void testVersalClockSkewRejectsUnsupportedUse() {
+        Design other = new Design("other", "xcvc1902-vsva2197-2MP-e-S");
+        RuntimeException e = Assertions.assertThrows(RuntimeException.class,
+                () -> RWRoute.routeDesignWithUserDefinedArguments(other, new String[] {"--timingDriven", "--versalClockSkew"}));
+        Assertions.assertTrue(e.getMessage().contains("xcv80"), e.getMessage());
+
+        Design v80 = new Design("v80", "xcv80-lsva4737-2MHP-e-S");
+        e = Assertions.assertThrows(RuntimeException.class,
+                () -> RWRoute.routeDesignWithUserDefinedArguments(v80, new String[] {"--nonTimingDriven", "--versalClockSkew"}));
+        Assertions.assertTrue(e.getMessage().contains("--timingDriven"), e.getMessage());
+    }
+
     @Test
     @LargeTest
     @Disabled("Blocked on TimingGraph.build() being able to build partial graphs")

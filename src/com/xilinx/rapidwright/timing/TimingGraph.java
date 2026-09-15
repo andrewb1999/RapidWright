@@ -715,6 +715,29 @@ public class TimingGraph extends DefaultDirectedWeightedGraph<TimingVertex, Timi
      */
     public TimingVertex superSource = null;
     public TimingVertex superSink = null;
+
+    /** Whether clock arrivals were folded into the super edges (Versal, {@code --versalClockSkew}). */
+    public boolean hasClockSkew() {
+        return false;
+    }
+
+    /**
+     * The constant added to the timing requirement and to the sink super edges so that they stay
+     * non-negative with clock arrivals folded in; 0 without clock skew.
+     */
+    public float getClockOffset() {
+        return 0f;
+    }
+
+    /** The launch clock term on the super edge into a launch vertex (relative to the earliest launch clock); 0 without clock skew. */
+    public float getLaunchClockTerm(TimingVertex launch) {
+        return 0f;
+    }
+
+    /** The clock term on the super edge out of an endpoint vertex (offset minus capture clock minus pessimism credit); 0 without clock skew. */
+    public float getSinkClockTerm(TimingVertex endpoint) {
+        return 0f;
+    }
     
     /**
      * Connects the sources and sinks of timing paths to a superSource and a superSink, respectively

@@ -53,6 +53,7 @@ import com.xilinx.rapidwright.timing.TimingManager;
 import com.xilinx.rapidwright.timing.TimingVertex;
 import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
 import com.xilinx.rapidwright.timing.delayestimator.InterconnectInfo;
+import com.xilinx.rapidwright.timing.versal.VersalClockModel;
 import com.xilinx.rapidwright.timing.versal.VersalRWTimingGraph;
 import com.xilinx.rapidwright.util.MessageGenerator;
 import com.xilinx.rapidwright.util.Pair;
@@ -207,6 +208,16 @@ public class RWRoute {
             }
             if (config.isLutRoutethru()) {
                 throw new RuntimeException("ERROR: '--lutRoutethru' not yet supported on Versal.");
+            }
+        }
+        if (config.isVersalClockSkew()) {
+            String deviceName = design.getDevice().getName();
+            if (design.getSeries() != Series.Versal || !deviceName.startsWith("xcv80")) {
+                throw new RuntimeException("ERROR: '--versalClockSkew' is only supported on the Versal xcv80 (the clock model's "
+                        + "tables were fitted on it); the design targets " + design.getPartName() + ".");
+            }
+            if (!config.isTimingDriven()) {
+                throw new RuntimeException("ERROR: '--versalClockSkew' requires '--timingDriven'.");
             }
         }
     }
@@ -852,6 +863,12 @@ public class RWRoute {
         routeGlobalClkNets();
         routerTimer.getRuntimeTracker("route clock").stop();
 
+        if (config.isTimingDriven() && config.isVersalClockSkew()) {
+            routerTimer.createRuntimeTracker("clock skew", "Routing").start();
+            applyVersalClockSkew();
+            routerTimer.getRuntimeTracker("clock skew").stop();
+        }
+
         routerTimer.createRuntimeTracker("route static nets", "Routing").start();
         // Routes static nets (VCC and GND) before signals for now.
         // All the used nodes by other nets should be marked as unavailable, if static nets are routed after signals.
@@ -893,6 +910,15 @@ public class RWRoute {
 
         // Prints routing statistics, e.g. total wirelength, runtime and timing report
         printRoutingStatistics();
+    }
+
+    /**
+     * Folds the clock model's arrivals on the routed global clock nets into the Versal timing graph
+     * ({@link VersalRWTimingGraph#applyClockArrivals}), once, before the first timing analysis.
+     */
+    private void applyVersalClockSkew() {
+        VersalRWTimingGraph graph = (VersalRWTimingGraph) timingManager.getTimingGraph();
+        System.out.println(graph.applyClockArrivals(new VersalClockModel()));
     }
 
     /**
