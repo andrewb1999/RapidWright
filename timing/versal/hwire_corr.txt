@@ -1,0 +1,2 @@
+# no per-position corrections (superseded by CLSX column terms)
+hwire_corr

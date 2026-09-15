@@ -74,6 +74,9 @@ public class TimingManager {
     /** Format of one line of that breakdown: its delay, what kind of hop it is, and the hop itself */
     private static final String DELAY_LINE_FORMAT = "\tdelay = %4d, %-18s, %s\n";
 
+    /** What the model backing this manager promises; see {@link TimingFidelity}. */
+    private final TimingFidelity fidelity;
+
     /**
      * Default constructor: creates the TimingManager object, which the user needs to create for 
      * using our TimingModel, and then it builds the model.
@@ -81,6 +84,7 @@ public class TimingManager {
      */
     public TimingManager(Design design) {
         this.design = design;
+        fidelity = TimingFidelity.forSeries(design.getSeries());
         timingModel = new TimingModel(design.getDevice());
         timingGraph = new TimingGraph(design);
         timingModel.setTimingManager(this);
@@ -91,6 +95,22 @@ public class TimingManager {
         estimator = null;
         build(false, design.getNets());
     }
+
+    /** As {@link #TimingManager(Design)}, building the graph only when {@code doBuild} is set. */
+    public TimingManager(Design design, boolean doBuild) {
+        this.design = design;
+        fidelity = TimingFidelity.forSeries(design.getSeries());
+        timingModel = new TimingModel(design.getDevice());
+        timingGraph = new TimingGraph(design);
+        timingModel.setTimingManager(this);
+        timingGraph.setTimingManager(this);
+        timingGraph.setTimingModel(timingModel);
+        device = design.getDevice();
+        // No critical path breakdown is printed through this constructor, since it leaves verbose off
+        estimator = null;
+        if (doBuild)
+            build(false, design.getNets());
+    }
     
     public TimingManager(Design design,
                          RuntimeTrackerTree timer,
@@ -100,6 +120,7 @@ public class TimingManager {
                          boolean isPartialRouting,
                          DelayEstimatorBase<InterconnectInfo> estimator) {
         this.design = design;
+        fidelity = TimingFidelity.forSeries(design.getSeries());
         setTimingRequirement();
         verbose = config.isVerbose();
         setPessimismFactors(config.getPessimismA(), config.getPessimismB());
@@ -217,10 +238,14 @@ public class TimingManager {
         }
         System.out.printf(MessageGenerator.formatString("Critical path delay (ps):", (int)(arr - criticalEdges.get(0).getDelay() - clkskew)));
         System.out.printf(MessageGenerator.formatString("Slack (ps):", (int)(timingRequirement - maxDelay)));
-        System.out.printf(MessageGenerator.formatString("With timing closure guarantee:"));
-        int adjusted = (int) (pessimismA * (arr - criticalEdges.get(0).getDelay() - clkskew) + pessimismB);
-        System.out.printf(MessageGenerator.formatString("Critical path delay (ps):", adjusted));
-        System.out.printf(MessageGenerator.formatString("Slack (ps):", (int)(timingRequirement - timingGraph.getClockOffset() - adjusted)));
+        // The margin turns an estimate into a bound. A signoff model is not an
+        // estimate, so padding it would only misreport the slack.
+        if (fidelity.needsPessimism()) {
+            System.out.printf(MessageGenerator.formatString("With timing closure guarantee:"));
+            int adjusted = (int) (pessimismA * (arr - criticalEdges.get(0).getDelay() - clkskew) + pessimismB);
+            System.out.printf(MessageGenerator.formatString("Critical path delay (ps):", adjusted));
+            System.out.printf(MessageGenerator.formatString("Slack (ps):", (int)(timingRequirement - timingGraph.getClockOffset() - adjusted)));
+        }
         
         printPathDelayBreakDown(arr, criticalEdges);
     }
@@ -513,4 +538,12 @@ public class TimingManager {
     }
     
     
+    /**
+     * What the model backing this manager promises about its numbers. Callers
+     * that present a critical path as a timing closure bound should consult
+     * {@link TimingFidelity#needsPessimism()} before padding it.
+     */
+    public TimingFidelity getFidelity() {
+        return fidelity;
+    }
 }

@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import com.xilinx.rapidwright.design.Design;
+import com.xilinx.rapidwright.device.Series;
 import com.xilinx.rapidwright.support.RapidWrightDCP;
 
 public class TestTimingManager {
@@ -38,5 +39,19 @@ public class TestTimingManager {
                 + "[get_ports -filter { NAME =~  \"*clk*\" && DIRECTION == \"IN\" }]");
         
         Assertions.assertEquals(expectedClkPeriod, TimingManager.getDesignTimingRequirement(d));
+    }
+
+    @Test
+    public void testFidelityFollowsSeries() {
+        // UltraScale+ has only the fitted router model, which is an estimate
+        // that needs a pessimism margin before it is a bound.
+        Design d = RapidWrightDCP.loadDCP("picoblaze_ooc_X10Y235.dcp");
+        TimingManager tm = new TimingManager(d, false);
+        Assertions.assertEquals(TimingFidelity.APPROXIMATE, tm.getFidelity());
+        Assertions.assertTrue(tm.getFidelity().needsPessimism());
+
+        Assertions.assertEquals(TimingFidelity.SIGNOFF, TimingFidelity.forSeries(Series.Versal));
+        Assertions.assertFalse(TimingFidelity.SIGNOFF.needsPessimism());
+        Assertions.assertEquals(TimingFidelity.APPROXIMATE, TimingFidelity.forSeries(Series.UltraScale));
     }
 }

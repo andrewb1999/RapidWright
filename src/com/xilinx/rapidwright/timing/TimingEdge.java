@@ -55,6 +55,13 @@ public class TimingEdge extends DefaultEdge {
      * because intra-site delay does not change during routing and needs to be stored separately
      */
     private float intraSiteDelay = 0.0f;
+    /**
+     * The minimum-corner counterparts. The graph's edge weight and the
+     * single-argument setters are the maximum corner; an approximate model has
+     * only that one number and leaves these equal to it.
+     */
+    private float minLogicDelay = 0.0f;
+    private float minNetDelay = 0.0f;
 
     private SitePinInst first;
     private SitePinInst second;
@@ -253,6 +260,21 @@ public class TimingEdge extends DefaultEdge {
         return delay;
     }
 
+    /** The logic delay at a corner; the maximum corner is {@link #getLogicDelay()}. */
+    public float getLogicDelay(Corner corner) {
+        return corner == Corner.SLOW_MIN ? minLogicDelay : logicDelay;
+    }
+
+    /** The net delay at a corner; the maximum corner is {@link #getNetDelay()}. */
+    public float getNetDelay(Corner corner) {
+        return corner == Corner.SLOW_MIN ? minNetDelay : netDelay;
+    }
+
+    /** The total delay at a corner; the maximum corner is {@link #getDelay()}. */
+    public float getDelay(Corner corner) {
+        return corner == Corner.SLOW_MIN ? minLogicDelay + minNetDelay : delay;
+    }
+
     public float getIntraSiteDelay() {
         return intraSiteDelay;
     }
@@ -271,6 +293,7 @@ public class TimingEdge extends DefaultEdge {
 
     public void setRouteDelay(float routeDelay) {
         this.netDelay = this.intraSiteDelay + routeDelay;
+        this.minNetDelay = this.netDelay;
         this.delay = logicDelay + this.netDelay;
         if (timingGraph.containsEdge(this))
             timingGraph.setEdgeWeight(this, this.delay);
@@ -279,23 +302,45 @@ public class TimingEdge extends DefaultEdge {
     }
 
     /**
-     * Sets the net-related component of the delay in ps for this edge.
+     * Sets the net-related component of the delay in ps for this edge, at
+     * both corners alike.
      * @param netDelay Net delay in picoseconds.
      */
     public void setNetDelay(float netDelay) {
-        this.netDelay = netDelay;
-        this.delay = logicDelay + netDelay;
+        setNetDelay(netDelay, netDelay);
+    }
+
+    /**
+     * Sets the net-related component of the delay at each corner.
+     * @param maxNetDelay Net delay at {@link Corner#SLOW_MAX}, in picoseconds.
+     * @param minNetDelay Net delay at {@link Corner#SLOW_MIN}, in picoseconds.
+     */
+    public void setNetDelay(float maxNetDelay, float minNetDelay) {
+        this.netDelay = maxNetDelay;
+        this.minNetDelay = minNetDelay;
+        this.delay = logicDelay + maxNetDelay;
         if (timingGraph.containsEdge(this))
             timingGraph.setEdgeWeight(this, this.delay);
     }
 
     /**
-     * Sets the logic-related component of the delay in ps for this edge.
+     * Sets the logic-related component of the delay in ps for this edge, at
+     * both corners alike.
      * @param logicDelay Logic delay in picoseconds.
      */
     public void setLogicDelay(float logicDelay) {
-        this.logicDelay = logicDelay;
-        this.delay = logicDelay+netDelay;
+        setLogicDelay(logicDelay, logicDelay);
+    }
+
+    /**
+     * Sets the logic-related component of the delay at each corner.
+     * @param maxLogicDelay Logic delay at {@link Corner#SLOW_MAX}, in picoseconds.
+     * @param minLogicDelay Logic delay at {@link Corner#SLOW_MIN}, in picoseconds.
+     */
+    public void setLogicDelay(float maxLogicDelay, float minLogicDelay) {
+        this.logicDelay = maxLogicDelay;
+        this.minLogicDelay = minLogicDelay;
+        this.delay = maxLogicDelay + netDelay;
         if (timingGraph.containsEdge(this))
             timingGraph.setEdgeWeight(this, this.delay);
     }
