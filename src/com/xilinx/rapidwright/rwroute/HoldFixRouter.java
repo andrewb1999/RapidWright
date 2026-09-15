@@ -623,7 +623,7 @@ public class HoldFixRouter extends PartialRouter {
         public int violatingBefore, violatingAfter, belowMarginBefore, belowMarginAfter;
         public int endpointsTargeted, sinksBudgeted, skippedNoNetEdge, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks;
         /** endpoints (any, not only targets) whose setup slack the detours pushed under the floor, before and after the revert */
-        public int setupPushedUnderFloor, setupPushedUnderFloorAfterRevert, netsReverted, sinksReverted, sinksNotSlower;
+        public int setupPushedUnderFloor, sinksNotSlower;
         public long pipsBefore, pipsAfter;
         public long analysisMs, routeMs;
         @Override
@@ -631,10 +631,10 @@ public class HoldFixRouter extends PartialRouter {
             return String.format("hold: WHS %.0f -> %.0f ps, endpoints below 0: %d -> %d, below margin: %d -> %d; setup: WNS %.0f -> %.0f ps; "
                     + "%d endpoints targeted -> %d sinks budgeted (%d without a net edge, %d without setup room, %d without a route delay); "
                     + "%d routed, %d met their minimum, %d fell back to the plain search; setup pushed under the floor on %d endpoints, "
-                    + "%d sinks no slower than before; %d nets (%d sinks) reverted, %d endpoints under the floor after; PIPs on the touched nets %d -> %d; analysis %d ms, route %d ms",
+                    + "%d sinks no slower than before; PIPs on the touched nets %d -> %d; analysis %d ms, route %d ms",
                     whsBefore, whsAfter, violatingBefore, violatingAfter, belowMarginBefore, belowMarginAfter, wnsBefore, wnsAfter,
                     endpointsTargeted, sinksBudgeted, skippedNoNetEdge, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks,
-                    setupPushedUnderFloor, sinksNotSlower, netsReverted, sinksReverted, setupPushedUnderFloorAfterRevert,
+                    setupPushedUnderFloor, sinksNotSlower,
                     pipsBefore, pipsAfter, analysisMs, routeMs);
         }
     }
@@ -734,37 +734,19 @@ public class HoldFixRouter extends PartialRouter {
 
         t0 = System.currentTimeMillis();
         sa.update();
-        // setup check over every endpoint: a net whose detours pushed an endpoint's worst setup path under
-        // the floor is put back as it was (its targets keep their hold violation); one pass
+        // setup check over every endpoint (reported, not undone: restoring a branch after other detours were
+        // routed around it produced node conflicts and invalid site programming on the 32x8, and reserving
+        // the branch's nodes for the net makes the base graph exclude them from every new path)
         Set<Net> revert = new HashSet<>();
         for (VersalSlackAnalysis.Result r : sa.getResults()) {
             if (r.fast || r.setupSlack >= setupFloorPs) continue;
             Float before = setupBefore.get(r.endpoint);
             if (before == null || before < setupFloorPs) continue;
             out.setupPushedUnderFloor++;
-            for (VersalTimingGraph.Edge e : sa.getGraph().getPath(r.endpoint, iMax)) {
-                if ("net".equals(e.kind) && e.net != null && pipsBefore.containsKey(e.net)) revert.add(e.net);
-            }
         }
-        // a sink that came out no slower than before (a search that fell back to the plain route, which can
-        // even be faster than the original) is put back too: nothing gained, and the original was known-good
         for (Map.Entry<SitePinInst, DelayBudget> e : router.getDelayBudgets().entrySet()) {
             Float a = router.getAchievedDelay(e.getKey());
-            if (a == null || Float.isNaN(a) || a < e.getValue().lowerBound + 10f) { revert.add(e.getKey().getNet()); out.sinksNotSlower++; }
-        }
-        for (Net net : revert) {
-            net.setPIPs(pipsBefore.get(net));
-            for (SitePinInst p : net.getSinkPins()) p.setRouted(true);
-            out.sinksReverted += byNet.get(net).size();
-        }
-        out.netsReverted = revert.size();
-        if (!revert.isEmpty()) {
-            sa.update();
-            for (VersalSlackAnalysis.Result r : sa.getResults()) {
-                if (r.fast || r.setupSlack >= setupFloorPs) continue;
-                Float before = setupBefore.get(r.endpoint);
-                if (before != null && before >= setupFloorPs) out.setupPushedUnderFloorAfterRevert++;
-            }
+            if (a == null || Float.isNaN(a) || a < e.getValue().lowerBound + 10f) out.sinksNotSlower++;
         }
         out.analysisMs += System.currentTimeMillis() - t0;
         out.whsAfter = sa.getWHS();
