@@ -34,6 +34,7 @@ import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
 import com.xilinx.rapidwright.timing.delayestimator.InterconnectInfo;
 import com.xilinx.rapidwright.timing.versal.VersalClockModel;
 import com.xilinx.rapidwright.timing.versal.VersalCorner;
+import com.xilinx.rapidwright.timing.versal.VersalClockArrivals;
 import com.xilinx.rapidwright.timing.versal.VersalSlackAnalysis;
 import com.xilinx.rapidwright.timing.versal.VersalTimingGraph;
 import com.xilinx.rapidwright.timing.versal.VersalTimingModel;
@@ -44,6 +45,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
@@ -147,6 +149,26 @@ public class HoldFixRouter extends PartialRouter {
     private float holdPsPerTile = 35f;
     /** What one SLL crossing costs in the estimate (Versal SLL_INPUT marginal). */
     public static final float SLL_DELAY_PS = 500f;
+    /** How many vertices back from an endpoint {@link #fixHoldByDetour} walks for short paths, and how many it budgets per endpoint. */
+    public static final int SHORT_PATH_DEPTH = 6, SHORT_PATHS_PER_ENDPOINT = 16;
+    /** Hold slack (ps, hold corner) a budget aims for above the margin, so the conversion's undershoot still lands above it. */
+    public static final float BUDGET_OVERSHOOT_PS = 30f;
+    /** The full model's slow-max net delay over the router's marginal sum for the same route (32x8 median 1.10): converts a model delay into a lower bound in router units. */
+    public static final float MODEL_OVER_ROUTER_DELAY = 1.10f;
+
+    /**
+     * The delay window for a connection that must gain {@code deficitPs} of hold slack (hold corner, the
+     * overshoot included by the caller) without spending more than {@code roomPs} of setup slack: the
+     * deficit converted to router units by the connection's slow-max over min-corner {@code ratio}, the
+     * room by the model-over-router safety factor. Null when the room cannot hold the deficit.
+     */
+    public static DelayBudget budgetFor(float lowerBound, float deficitPs, float roomPs, float ratio, float maxExtraPs) {
+        if (roomPs < deficitPs) return null;
+        float extra = deficitPs * ratio;
+        float maxExtra = Math.min(roomPs / SETUP_ROOM_SAFETY, extra + maxExtraPs);
+        if (maxExtra < extra) return null;
+        return new DelayBudget(lowerBound + extra, lowerBound + maxExtra, lowerBound);
+    }
     /** The full model's setup delay of a detour against the router's marginal sum (32x8: median 1.10, p90 1.37). */
     public static final float SETUP_ROOM_SAFETY = 1.15f;
     /** budgeted connections whose window held no route and which fell back to the plain search */
@@ -325,6 +347,28 @@ public class HoldFixRouter extends PartialRouter {
             }
             return super.isExcluded(parent, child);
         }
+    }
+
+    /**
+     * The PIP-overlap audit over the nets this router routed only. RWRoute's audit rebuilds a map of every
+     * PIP of every net in the design after each call, which on a large design costs more than the routing
+     * itself (32x8: about 10 s and several GB per call for a handful of detours); the partial graph keeps
+     * every other net's nodes preserved, so overlaps can only arise among the routed nets.
+     */
+    @Override
+    protected void checkPIPsUsage() {
+        Map<PIP, Net> owner = new HashMap<>();
+        int overlaps = 0;
+        for (Net net : nets.keySet()) {
+            for (PIP pip : net.getPIPs()) {
+                Net other = owner.put(pip, net);
+                if (other != null && other != net) {
+                    if (overlaps++ < 10) System.out.println("pip " + pip + " users = [" + other.getName() + ", " + net.getName() + "]");
+                }
+            }
+        }
+        if (overlaps > 0) System.err.println("ERROR: PIPs overused error: " + overlaps);
+        else System.out.println("\nINFO: No PIP overlaps among the " + nets.size() + " routed nets\n");
     }
 
     @Override
@@ -621,19 +665,21 @@ public class HoldFixRouter extends PartialRouter {
     public static class Outcome {
         public float whsBefore, whsAfter, wnsBefore, wnsAfter;
         public int violatingBefore, violatingAfter, belowMarginBefore, belowMarginAfter;
-        public int endpointsTargeted, sinksBudgeted, skippedNoNetEdge, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks;
+        public int endpointsTargeted, pathsBudgeted, sinksBudgeted, skippedNoNetEdge, skippedCrossing, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks;
         /** endpoints (any, not only targets) whose setup slack the detours pushed under the floor, before and after the revert */
         public int setupPushedUnderFloor, sinksNotSlower;
         public long pipsBefore, pipsAfter;
         public long analysisMs, routeMs;
+        /** the analysis the round used, current for the design after it */
+        public VersalSlackAnalysis analysis;
         @Override
         public String toString() {
             return String.format("hold: WHS %.0f -> %.0f ps, endpoints below 0: %d -> %d, below margin: %d -> %d; setup: WNS %.0f -> %.0f ps; "
-                    + "%d endpoints targeted -> %d sinks budgeted (%d without a net edge, %d without setup room, %d without a route delay); "
+                    + "%d endpoints targeted, %d short paths -> %d sinks budgeted (%d endpoints without a net edge, %d crossing paths left to the ladder, %d paths without setup room, %d sinks without a route delay); "
                     + "%d routed, %d met their minimum, %d fell back to the plain search; setup pushed under the floor on %d endpoints, "
                     + "%d sinks no slower than before; PIPs on the touched nets %d -> %d; analysis %d ms, route %d ms",
                     whsBefore, whsAfter, violatingBefore, violatingAfter, belowMarginBefore, belowMarginAfter, wnsBefore, wnsAfter,
-                    endpointsTargeted, sinksBudgeted, skippedNoNetEdge, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks,
+                    endpointsTargeted, pathsBudgeted, sinksBudgeted, skippedNoNetEdge, skippedCrossing, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks,
                     setupPushedUnderFloor, sinksNotSlower,
                     pipsBefore, pipsAfter, analysisMs, routeMs);
         }
@@ -652,45 +698,98 @@ public class HoldFixRouter extends PartialRouter {
      * @param maxExtraPs the budget window's width above the minimum (ps, router units)
      */
     public static Outcome fixHoldByDetour(Design design, float marginPs, float setupFloorPs, float setupUncertaintyPs, float maxExtraPs) {
+        return fixHoldByDetour(design, null, marginPs, setupFloorPs, setupUncertaintyPs, maxExtraPs);
+    }
+
+    /**
+     * As {@link #fixHoldByDetour(Design, float, float, float, float)}, over an existing analysis of the design
+     * (brought up to date incrementally; a new one is built when {@code sa} is null). The analysis used is
+     * returned in {@link Outcome#analysis} so that further rounds skip the build.
+     */
+    public static Outcome fixHoldByDetour(Design design, VersalSlackAnalysis sa, float marginPs, float setupFloorPs, float setupUncertaintyPs, float maxExtraPs) {
         Outcome out = new Outcome();
         long t0 = System.currentTimeMillis();
-        VersalTimingModel model = new VersalTimingModel(design.getDevice());
-        VersalClockModel clockModel = new VersalClockModel();
-        float period = VersalTimingReport.periodFromConstraints(design);
-        if (period <= 0) throw new IllegalStateException("no create_clock -period in the design's constraints");
-        VersalSlackAnalysis sa = new VersalSlackAnalysis(design, model, clockModel, period, setupUncertaintyPs, 0f);
-        sa.run();
+        if (sa == null) {
+            VersalTimingModel model0 = new VersalTimingModel(design.getDevice());
+            VersalClockModel clockModel = new VersalClockModel();
+            float period = VersalTimingReport.periodFromConstraints(design);
+            if (period <= 0) throw new IllegalStateException("no create_clock -period in the design's constraints");
+            sa = new VersalSlackAnalysis(design, model0, clockModel, period, setupUncertaintyPs, 0f);
+            sa.run();
+        } else {
+            sa.update();
+        }
+        out.analysis = sa;
+        VersalTimingModel model = sa.getGraph().getModel();
         out.analysisMs = System.currentTimeMillis() - t0;
         out.whsBefore = sa.getWHS();
         out.wnsBefore = sa.getWNS();
         int iMax = model.indexOf(VersalCorner.SLOW_MAX), iMin = model.indexOf(VersalCorner.SLOW_MIN);
 
-        // targets: the last net edge on each violating endpoint's worst hold path
+        // targets: the last net edge on each violating endpoint's worst hold path, at the worse of its two processes
+        int iFastMin = model.indexOf(VersalCorner.FAST_MIN);
         Map<SitePinInst, float[]> want = new HashMap<>();   // sink -> {deficit, setup room} at the hold corner (ps)
+        Map<SitePinInst, Integer> holdCornerOfSink = new HashMap<>();   // the min corner of the sink's largest deficit
         Map<SitePinInst, List<VersalSlackAnalysis.Result>> endpointsOfSink = new HashMap<>();
         Map<VersalTimingGraph.Vertex, Float> setupBefore = new HashMap<>();
+        Map<VersalTimingGraph.Vertex, VersalSlackAnalysis.Result> worstOf = new LinkedHashMap<>();
         for (VersalSlackAnalysis.Result r : sa.getResults()) {
-            if (r.fast) continue;
-            setupBefore.put(r.endpoint, r.setupSlack);
+            setupBefore.merge(r.endpoint, r.setupSlack, Math::min);
+            VersalSlackAnalysis.Result h = worstOf.get(r.endpoint);
+            if (h == null || r.holdSlack < h.holdSlack) worstOf.put(r.endpoint, r);
+        }
+        List<VersalTimingGraph.Vertex> below = new ArrayList<>();
+        for (VersalSlackAnalysis.Result r : worstOf.values()) {
             if (r.holdSlack < 0) out.violatingBefore++;
             if (r.holdSlack >= marginPs) continue;
             out.belowMarginBefore++;
             out.endpointsTargeted++;
-            List<VersalTimingGraph.Edge> path = sa.getGraph().getPath(r.endpoint, iMin, r.holdTag);
-            SitePinInst sink = null;
-            for (int i = path.size() - 1; i >= 0; i--) {
-                VersalTimingGraph.Edge e = path.get(i);
-                if ("net".equals(e.kind) && e.sinkPin != null) { sink = e.sinkPin; break; }
+            below.add(r.endpoint);
+        }
+        // every short path into each endpoint, not only its worst: once the worst is slowed the next one would
+        // take over and cost another round (32x8: 20 endpoints of 2,634 after one round)
+        Map<VersalTimingGraph.Vertex, List<VersalSlackAnalysis.PathSlack>> shortPaths = sa.shortHoldPaths(below, marginPs, SHORT_PATH_DEPTH, SHORT_PATHS_PER_ENDPOINT);
+        for (VersalTimingGraph.Vertex v : below) {
+            VersalSlackAnalysis.Result r = worstOf.get(v);
+            List<VersalSlackAnalysis.PathSlack> paths = shortPaths.get(v);
+            if (paths == null) {
+                // fan-in deeper than the walk: the worst path alone
+                VersalSlackAnalysis.PathSlack ps = new VersalSlackAnalysis.PathSlack();
+                ps.path = sa.getGraph().getPath(r.endpoint, r.fast ? iFastMin : iMin, r.holdTag);
+                ps.launch = ps.path.isEmpty() ? null : ps.path.get(0).src; ps.endpoint = v; ps.fast = r.fast; ps.holdSlack = r.holdSlack;
+                paths = new ArrayList<>(); paths.add(ps);
             }
-            Net net = sink == null ? null : sink.getNet();
-            if (net == null || net.getSource() == null || net.isStaticNet() || net.isClockNet()) { out.skippedNoNetEdge++; continue; }
-            float deficit = marginPs - r.holdSlack;
-            float room = r.setupSlack - setupFloorPs;
-            if (room < deficit) { out.skippedSetupRoom++; continue; }
-            float[] w = want.computeIfAbsent(sink, k -> new float[] {0f, Float.MAX_VALUE});
-            w[0] = Math.max(w[0], deficit);
-            w[1] = Math.min(w[1], room);
-            endpointsOfSink.computeIfAbsent(sink, k -> new ArrayList<>()).add(r);
+            boolean anyNet = false;
+            for (VersalSlackAnalysis.PathSlack ps : paths) {
+                SitePinInst sink = null;
+                for (int i = ps.path.size() - 1; i >= 0; i--) {
+                    VersalTimingGraph.Edge e = ps.path.get(i);
+                    if ("net".equals(e.kind) && e.sinkPin != null) { sink = e.sinkPin; break; }
+                }
+                Net net = sink == null ? null : sink.getNet();
+                if (net == null || net.getSource() == null || net.isStaticNet() || net.isClockNet()) continue;
+                anyNet = true;
+                // SLR crossings are left to a route-through detour on the source side (HoldFixer): the budgeted search
+                // cannot reach an SLL input pin or a sink across the boundary inside its window, and the plain search
+                // it falls back to re-routes the connection shorter than it was (32x8: a crossing entry went from
+                // 1562 to 913 ps and its endpoint from -2 to -224 ps)
+                if (sink.getName().startsWith("LAG") || (ps.launch != null && VersalClockArrivals.crossesSlr(ps.launch, v))) { out.skippedCrossing++; continue; }
+                // aim past the margin: the hold-corner deficit converted to router units lands 5-10% short in the
+                // full model on large deficits, and the search settles just above the minimum (32x8: 20 of 2,614
+                // connections met their budget and ended 29-49 ps of hold, costing a second round for +30 ps)
+                float deficit = marginPs + BUDGET_OVERSHOOT_PS - ps.holdSlack;
+                float room = setupBefore.get(v) - setupFloorPs;
+                if (room < deficit) deficit = marginPs - ps.holdSlack;   // no room for the overshoot: the bare deficit
+                if (room < deficit) { out.skippedSetupRoom++; continue; }
+                out.pathsBudgeted++;
+                int corner = ps.fast ? iFastMin : iMin;
+                float[] w = want.computeIfAbsent(sink, k -> new float[] {0f, Float.MAX_VALUE});
+                if (deficit > w[0]) { w[0] = deficit; holdCornerOfSink.put(sink, corner); }
+                w[1] = Math.min(w[1], room);
+                List<VersalSlackAnalysis.Result> eps = endpointsOfSink.computeIfAbsent(sink, k -> new ArrayList<>());
+                if (!eps.contains(r)) eps.add(r);
+            }
+            if (!anyNet) out.skippedNoNetEdge++;
         }
 
         RWRouteConfig config = new RWRouteConfig(new String[] {"--fixBoundingBox", "--useUTurnNodes", "--nonTimingDriven"});
@@ -703,9 +802,10 @@ public class HoldFixRouter extends PartialRouter {
             float lb = router.routeDelay(net, sink);
             if (Float.isNaN(lb)) { out.skippedNoRouteDelay++; continue; }
             VersalTimingModel.SinkDelay sd = netDelays.computeIfAbsent(net, model::calcNetDelays).get(sink);
-            float ratio = 1.4f;
-            if (sd != null && sd.routed && sd.interconnect[iMin] > 0f) {
-                ratio = Math.max(1f, Math.min(3f, sd.interconnect[iMax] / sd.interconnect[iMin]));
+            int iLo = holdCornerOfSink.getOrDefault(sink, iMin);
+            float ratio = iLo == iMin ? 1.4f : 2.0f;
+            if (sd != null && sd.routed && sd.interconnect[iLo] > 0f) {
+                ratio = Math.max(1f, Math.min(4f, sd.interconnect[iMax] / sd.interconnect[iLo]));
             }
             // the hold deficit is at the hold corner and needs the ratio; the setup room is slow-max already
             // (the router's units), and the full model charges a detour about 1.1x the marginal sum
@@ -752,10 +852,11 @@ public class HoldFixRouter extends PartialRouter {
         out.whsAfter = sa.getWHS();
         out.wnsAfter = sa.getWNS();
         for (Net net : byNet.keySet()) out.pipsAfter += net.getPIPs().size();
-        for (VersalSlackAnalysis.Result r : sa.getResults()) {
-            if (r.fast) continue;
-            if (r.holdSlack < 0) out.violatingAfter++;
-            if (r.holdSlack < marginPs) out.belowMarginAfter++;
+        Map<VersalTimingGraph.Vertex, Float> holdAfter = new HashMap<>();
+        for (VersalSlackAnalysis.Result r : sa.getResults()) holdAfter.merge(r.endpoint, r.holdSlack, Math::min);
+        for (float h : holdAfter.values()) {
+            if (h < 0) out.violatingAfter++;
+            if (h < marginPs) out.belowMarginAfter++;
         }
         // per-sink outcome for the log: budget vs achieved, and the endpoints' hold/setup slack before -> after
         StringBuilder sb = new StringBuilder();
@@ -768,7 +869,7 @@ public class HoldFixRouter extends PartialRouter {
                     a == null ? "-" : Float.isNaN(a) ? "unrouted" : String.format("%.0f", a), revert.contains(sink.getNet()) ? " (reverted)" : ""));
             for (VersalSlackAnalysis.Result before : endpointsOfSink.getOrDefault(sink, Collections.emptyList())) {
                 VersalSlackAnalysis.Result[] now = sa.getResults(before.endpoint);
-                VersalSlackAnalysis.Result after = now == null ? null : now[0];
+                VersalSlackAnalysis.Result after = now == null ? null : now[before.fast ? 1 : 0];
                 sb.append(String.format(" %s hold %.0f -> %s setup %.0f -> %s", before.endpoint.getName(), before.holdSlack,
                         after == null ? "?" : String.format("%.0f", after.holdSlack), before.setupSlack, after == null ? "?" : String.format("%.0f", after.setupSlack)));
             }

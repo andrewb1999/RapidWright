@@ -411,6 +411,88 @@ public class VersalSlackAnalysis {
         return r;
     }
 
+    /** One hold path into an endpoint: its edges (launch first), the process and the path's own hold slack. */
+    public static class PathSlack {
+        public List<VersalTimingGraph.Edge> path;
+        public VersalTimingGraph.Vertex launch, endpoint;
+        public boolean fast;
+        public float holdSlack;
+    }
+
+    /**
+     * Hold slack of one explicit path into an endpoint at a process: the launch's own arrival plus the
+     * edges' min-corner delays against the capture, with the launch's pessimism removal and SLR
+     * compensation, the way {@link #run()} scores the worst path. NaN when either end is unclocked.
+     */
+    public float holdSlackOfPath(List<VersalTimingGraph.Edge> path, VersalTimingGraph.Vertex v, boolean fast) {
+        if (path.isEmpty()) return Float.NaN;
+        VersalTimingGraph.Vertex launch = path.get(0).src;
+        SitePinInst cap = clockSitePin(v), lp = clockSitePin(launch);
+        float[] capArr = clockArrival(cap, v.cell), lArr = clockArrival(lp, launch.cell);
+        if (capArr == null || lArr == null) return Float.NaN;
+        int iMax = fast ? iFastMax : iSlowMax, iMin = fast ? iFastMin : iSlowMin;
+        if (Float.isInfinite(launch.arrival[iMin])) return Float.NaN;
+        float dataMin = launch.arrival[iMin];
+        for (VersalTimingGraph.Edge e : path) dataMin += e.delay[iMin];
+        VersalClockModel.ClockTree tree = getClockTree(cap.getNet());
+        float hcpr = pessimismOf(tree, launch, lp, cap, capArr)[1][fast ? 1 : 0];
+        float slr = crossesSlr(launch, v) ? (dataMin - commonDelayMin(tree, lp, cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
+        return dataMin - (capArr[iMax] - hcpr + holdUncertaintyPs + v.check[iMin]) - slr;
+    }
+
+    /**
+     * Every hold path into the given endpoints whose own slack is below the margin, at either process:
+     * not only each endpoint's worst path, but every launch and every branch of the fan-in that is short
+     * on its own, so that fixing one does not merely uncover the next. The fan-in is walked backwards
+     * through at most {@code maxDepth} vertices and at most {@code maxPaths} paths are kept per endpoint
+     * (worst first). Endpoints with no short path are absent.
+     */
+    public Map<VersalTimingGraph.Vertex, List<PathSlack>> shortHoldPaths(java.util.Collection<VersalTimingGraph.Vertex> endpoints, float marginPs, int maxDepth, int maxPaths) {
+        // in-edges of the endpoints' fan-in cones, one edge scan per level
+        Map<VersalTimingGraph.Vertex, List<VersalTimingGraph.Edge>> ins = new HashMap<>();
+        Set<VersalTimingGraph.Vertex> frontier = new HashSet<>(endpoints), seen = new HashSet<>(endpoints);
+        for (int d = 0; d < maxDepth && !frontier.isEmpty(); d++) {
+            Map<VersalTimingGraph.Vertex, List<VersalTimingGraph.Edge>> level = graph.inEdges(frontier);
+            ins.putAll(level);
+            Set<VersalTimingGraph.Vertex> next = new HashSet<>();
+            for (List<VersalTimingGraph.Edge> es : level.values()) for (VersalTimingGraph.Edge e : es) if (!e.src.launch && seen.add(e.src)) next.add(e.src);
+            frontier = next;
+        }
+        Map<VersalTimingGraph.Vertex, List<PathSlack>> out = new HashMap<>();
+        for (VersalTimingGraph.Vertex v : endpoints) {
+            List<PathSlack> found = new ArrayList<>();
+            // depth-first backwards: a stack of partial paths (endpoint side first)
+            java.util.ArrayDeque<List<VersalTimingGraph.Edge>> stack = new java.util.ArrayDeque<>();
+            for (VersalTimingGraph.Edge e : ins.getOrDefault(v, java.util.Collections.emptyList())) { List<VersalTimingGraph.Edge> p = new ArrayList<>(4); p.add(e); stack.push(p); }
+            int expanded = 0;
+            while (!stack.isEmpty() && expanded++ < 4096) {
+                List<VersalTimingGraph.Edge> suffix = stack.pop();
+                VersalTimingGraph.Vertex head = suffix.get(suffix.size() - 1).src;
+                if (head.launch) {
+                    List<VersalTimingGraph.Edge> path = new ArrayList<>(suffix);
+                    java.util.Collections.reverse(path);
+                    for (boolean fast : new boolean[] {false, true}) {
+                        float slack = holdSlackOfPath(path, v, fast);
+                        if (Float.isNaN(slack) || slack >= marginPs) continue;
+                        PathSlack ps = new PathSlack();
+                        ps.path = path; ps.launch = head; ps.endpoint = v; ps.fast = fast; ps.holdSlack = slack;
+                        found.add(ps);
+                    }
+                    continue;
+                }
+                if (suffix.size() >= maxDepth) continue;
+                for (VersalTimingGraph.Edge e : ins.getOrDefault(head, java.util.Collections.emptyList())) {
+                    if (e.src == v) continue;
+                    List<VersalTimingGraph.Edge> p = new ArrayList<>(suffix); p.add(e); stack.push(p);
+                }
+            }
+            if (found.isEmpty()) continue;
+            found.sort((a, b) -> Float.compare(a.holdSlack, b.holdSlack));
+            out.put(v, found.size() > maxPaths ? new ArrayList<>(found.subList(0, maxPaths)) : found);
+        }
+        return out;
+    }
+
     /** {@link #describe} for a pair result: the path from that launch rather than the endpoint's worst path. */
     public String describePair(Result r, boolean setup) {
         int iMax = r.fast ? iFastMax : iSlowMax, iMin = r.fast ? iFastMin : iSlowMin;

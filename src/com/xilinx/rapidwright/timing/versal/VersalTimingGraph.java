@@ -331,15 +331,30 @@ public class VersalTimingGraph {
     /** Builds logic arcs and net edges for the whole design. */
     /** Wall time of the build phases: constants, logic arcs, net edges (ms). */
     public final long[] phaseMs = new long[3];
+    /** Wall time of resolving the hierarchical nets before the build phases (ms). */
+    public long hierNetsMs = 0;
+
+    /** hierarchical net per physical net for the duration of a build: resolved once, sequentially, and read by the parallel phases */
+    private Map<Net, EDIFHierNet> hierNets = null;
 
     public void build() {
         long t = System.currentTimeMillis();
+        // The netlist's name lookups fill shared caches and are not thread-safe; both parallel phases below need the
+        // hierarchical net of every physical net, so resolve them all here once instead of serialising the lookups
+        // inside the parallel work (which cost the net-edge phase 12 s on the 32x8) or racing on them.
+        hierNets = new HashMap<>(design.getNets().size() * 2);
+        for (Net net : design.getNets()) {
+            EDIFHierNet h = design.getNetlist().getHierNetFromName(net.getName());
+            if (h != null) hierNets.put(net, h);
+        }
+        hierNetsMs = System.currentTimeMillis() - t; t = System.currentTimeMillis();
         propagateConstants();
         phaseMs[0] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
         buildLogicArcs();
         phaseMs[1] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
         buildNetEdges();
         phaseMs[2] = System.currentTimeMillis() - t;
+        hierNets = null;   // later refreshes look up the few changed nets one at a time
         leafSnapshot = leafSettings();
         built = true;
         arrivalsValid = false;
@@ -929,6 +944,8 @@ public class VersalTimingGraph {
      * per-net work stays parallel.
      */
     private EDIFHierNet hierNetOf(Net net) {
+        Map<Net, EDIFHierNet> resolved = hierNets;
+        if (resolved != null) return resolved.get(net);
         com.xilinx.rapidwright.edif.EDIFNetlist netlist = design.getNetlist();
         synchronized (netlist) {
             return netlist.getHierNetFromName(net.getName());
@@ -1409,6 +1426,14 @@ public class VersalTimingGraph {
         short[] idx = belIndices(c);
         return idx == null ? null : logicDelays(idx, in, out);
     }
+    /** The live edges into each of the given vertices (one scan of the edge list; vertices without any are absent). */
+    public Map<Vertex, List<Edge>> inEdges(Collection<Vertex> of) {
+        Set<Vertex> want = of instanceof Set ? (Set<Vertex>) of : new HashSet<>(of);
+        Map<Vertex, List<Edge>> ins = new HashMap<>();
+        for (Edge e : edges) if (!e.removed && want.contains(e.dst)) ins.computeIfAbsent(e.dst, k -> new ArrayList<>(2)).add(e);
+        return ins;
+    }
+
     /** Every edge added so far; skip those with {@link Edge#removed} set. */
     public List<Edge> getEdges() { return edges; }
     public java.util.Collection<Vertex> getVertices() { return vertices.values(); }
