@@ -563,9 +563,11 @@ public class VersalTimingGraph {
     }
 
     /**
-     * Sections of the same BEL on the other letters of this site type, in letter order, each with an
-     * index per corner (-1 where a corner's model lacks it); rows whose primary-corner section is
-     * absent are dropped. Empty for anything but a lettered slice BEL. Cached per BEL key and site type.
+     * Sections of the same BEL on the other letters of this site type, in letter order, then the same
+     * BEL at the other slice type (SLICEL/SLICEM, own letter first), each with an index per corner
+     * (-1 where a corner's model lacks it); rows whose primary-corner section is absent are dropped.
+     * Empty for anything but a lettered slice BEL. Cached per BEL key and site type. The slice types
+     * share their LUT and flop silicon: A5->O5 of a 6LUT was sampled on C6LUT@SLICEL only.
      */
     private short[][] siblingIndices(Cell c) {
         String bare = c.getBELName();
@@ -573,12 +575,21 @@ public class VersalTimingGraph {
         String fam = belKeyFor(c), site = c.getSiteInst().getSiteTypeEnum().name();
         return siblingCache.computeIfAbsent(fam + "@" + site, k -> {
             List<short[]> rows = new ArrayList<>();
-            for (char l = 'A'; l <= 'H'; l++) {
-                if (l == bare.charAt(0)) continue;
-                String key = l + fam.substring(1) + "@" + site;
-                short[] row = new short[nc];
-                for (int i = 0; i < nc; i++) row[i] = tryIndex(delayModelAt(i), key);
-                if (row[0] >= 0) rows.add(row);
+            String other = site.equals("SLICEM") ? "SLICEL" : site.equals("SLICEL") ? "SLICEM" : null;
+            for (String st : other == null ? new String[] {site} : new String[] {site, other}) {
+                for (int n = 0; n < 8; n++) {
+                    // own letter first at the other type; skipped at the own type (that is row 0)
+                    char l = (char) ('A' + n);
+                    if (st.equals(site) && l == bare.charAt(0)) continue;
+                    if (!st.equals(site)) {
+                        if (n == 0) l = bare.charAt(0);
+                        else { l = (char) ('A' + n - 1); if (l >= bare.charAt(0)) l++; if (l > 'H') continue; }
+                    }
+                    String key = l + fam.substring(1) + "@" + st;
+                    short[] row = new short[nc];
+                    for (int i = 0; i < nc; i++) row[i] = tryIndex(delayModelAt(i), key);
+                    if (row[0] >= 0) rows.add(row);
+                }
             }
             return rows.toArray(NO_SIBLINGS);
         });

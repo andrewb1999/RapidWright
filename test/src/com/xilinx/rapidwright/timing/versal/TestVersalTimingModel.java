@@ -257,6 +257,14 @@ public class TestVersalTimingModel {
         float[] a6o5 = graph.cellArc(lutD, "A6", "O5");
         Assertions.assertNotNull(a6o5, "D6LUT@SLICEM A6->O5 via a sibling letter");
         Assertions.assertTrue(a6o5[0] > 20 && a6o5[0] < 80, "A6->O5 " + a6o5[0]);
+        // A5->O5 of a 6LUT was sampled on C6LUT@SLICEL only (a 10x11 mesh had LUT4s on SLICEM 6LUTs
+        // taking a neighbour's data on A5 and driving O5): the donor is at the other slice type
+        Cell lutE = new Cell("lutE", si, site.getBEL("E6LUT"));
+        lutE.setType("LUT4");
+        float[] a5o5 = graph.cellArc(lutE, "A5", "O5");
+        Assertions.assertNotNull(a5o5, "E6LUT@SLICEM A5->O5 via the other slice type");
+        float[] a5o6 = graph.cellArc(lutE, "A5", "O6");
+        Assertions.assertTrue(Math.abs(a5o5[0] - a5o6[0]) < 25, "A5->O5 " + a5o5[0] + " vs A5->O6 " + a5o6[0]);
         // a plain LUT has no clock arcs at all: the fallback must not invent one
         Cell lut = new Cell("lut", si, site.getBEL("E6LUT"));
         lut.setType("LUT6");
