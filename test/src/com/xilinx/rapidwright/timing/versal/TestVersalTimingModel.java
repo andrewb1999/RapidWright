@@ -250,6 +250,13 @@ public class TestVersalTimingModel {
         Cell ramH = new Cell("ramH", si, site.getBEL("H5LUT"));
         ramH.setType("RAMD32");
         Assertions.assertNotNull(graph.cellArc(ramH, "CLK", "A1"));
+        // a LUT on a SLICEM 6LUT that uses the O5 output: B6LUT/D6LUT@SLICEM were never sampled with O5
+        // and take the arc from a sibling letter (a 4x4 mesh had such LUTs feeding hold-critical flops)
+        Cell lutD = new Cell("lutD", si, site.getBEL("D6LUT"));
+        lutD.setType("LUT4");
+        float[] a6o5 = graph.cellArc(lutD, "A6", "O5");
+        Assertions.assertNotNull(a6o5, "D6LUT@SLICEM A6->O5 via a sibling letter");
+        Assertions.assertTrue(a6o5[0] > 20 && a6o5[0] < 80, "A6->O5 " + a6o5[0]);
         // a plain LUT has no clock arcs at all: the fallback must not invent one
         Cell lut = new Cell("lut", si, site.getBEL("E6LUT"));
         lut.setType("LUT6");

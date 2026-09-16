@@ -506,8 +506,10 @@ public class VersalTimingGraph {
     private float[] logicDelays(short[][] belIdx, String in, String out) {
         // the LUT address pins are not equivalent across letters: on the H LUT they are the slice's write
         // address and carry a clock check (CLK->A1..A5 in H5LUT_RAM), on A..G they are read-only and have
-        // none, so an arc into or out of one is never taken from another letter
-        int rows = isLutAddressPin(in) || isLutAddressPin(out) ? 1 : belIdx.length;
+        // none, so a check on one is never taken from another letter (combinational arcs through the
+        // address pins are: B6LUT/D6LUT@SLICEM lack the A->O5 arcs of a LUT using the O5 output)
+        boolean check = (isClockPin(in) && isLutAddressPin(out)) || (isLutAddressPin(in) && isClockPin(out));
+        int rows = check ? 1 : belIdx.length;
         for (int r = 0; r < rows; r++) {
             short[] idx = belIdx[r];
             short d0 = delayModelAt(0).getLogicDelay(idx[0], in, out);

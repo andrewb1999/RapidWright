@@ -558,6 +558,13 @@ public class VersalTimingValidator {
         for (String[] r : rows.subList(1, rows.size())) {
             String netName = r[col.get("net")], sinkPin = r[col.get("sink_pin")];
             Net net = design.getNet(netName);
+            if (net == null) {
+                // Vivado names a net by the hierarchy level it was queried at; the physical net carries the
+                // parent (top-most) alias
+                com.xilinx.rapidwright.edif.EDIFHierNet h = design.getNetlist().getHierNetFromName(netName);
+                com.xilinx.rapidwright.edif.EDIFHierNet parent = h == null ? null : design.getNetlist().getParentNet(h);
+                if (parent != null) net = design.getNet(parent.getHierarchicalNetName());
+            }
             if (net == null) { missingNet++; continue; }
             int slash = sinkPin.lastIndexOf('/');
             Cell cell = design.getCell(sinkPin.substring(0, slash));

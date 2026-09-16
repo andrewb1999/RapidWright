@@ -29,6 +29,7 @@ import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.IntentCode;
 import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.SiteTypeEnum;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Tile;
 import com.xilinx.rapidwright.device.TileTypeEnum;
@@ -109,7 +110,7 @@ public class VersalTimingModel {
     private final VersalDelayTerms[] terms;
     private final DelayModel[] delayModels;
     private final Map<Node, float[]> tileTermCache = new java.util.concurrent.ConcurrentHashMap<>();
-    /** DEBUG_NODE=<substring>: print the per-term breakdown of every hop into a matching node (primary corner) */
+    /** DEBUG_NODE=<substring>: print the per-term breakdown of every hop into a matching node, one line per corner */
     private static final String DEBUG_NODE = System.getenv("DEBUG_NODE");
     private final Map<Node, String> signatureCache = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<Node, String> signatureCacheFull = new java.util.concurrent.ConcurrentHashMap<>();
@@ -476,8 +477,8 @@ public class VersalTimingModel {
                         float ref = load != 0 ? terms[i].loadReference(pClass, ci) : 0;
                         if (ref > 10) load *= (tile[i] + edge) / ref;
                         d[i] = pArr[i] + (tile[i] + edge) * (1f + fx) + fan + gpt + ex + load;
-                        if (dbgNode && i == 0) System.out.printf("[debug node] %s <- %s: class %s children %s siblings %s (%d) gp %s x%d sig %s | edge %.1f tile %.1f x(1+%.3f) fanout %.1f gp %.1f edgex %.1f load %.1f = hop %.1f, arrival %.1f%n",
-                                c, p, pClass, childKey, sibKey, kids.size(), gpi, gpFanout, signatureFull, edge, tile[i], fx, fan, gpt, ex, load, d[i] - pArr[i], d[i]);
+                        if (dbgNode) System.out.printf("[debug node] [%s] %s <- %s: class %s children %s siblings %s (%d) gp %s x%d sig %s | edge %.1f tile %.1f x(1+%.3f) fanout %.1f gp %.1f edgex %.1f load %.1f = hop %.1f, arrival %.1f%n",
+                                corners[i].getSuffix(), c, p, pClass, childKey, sibKey, kids.size(), gpi, gpFanout, signatureFull, edge, tile[i], fx, fan, gpt, ex, load, d[i] - pArr[i], d[i]);
                     }
                     arrivals.put(c, d);
                     if (rootOf != null) rootOf.put(c, root);
@@ -757,16 +758,25 @@ public class VersalTimingModel {
             float[] cached = dbg ? null : intraSiteCache.get(cacheKey);
             if (cached == INTRA_MISS) continue;
             if (cached != null) return cached.clone();
-            Short v = lookup(0, si, from, to);
+            SiteTypeEnum st = si.getSiteTypeEnum();
+            Short v = lookup(0, st, from, to);
             if (dbg) System.out.println("[debug intra] " + missKey + " key " + from + " -> " + to + " = " + v);
             if (v == null) {
-                // Slice pins are replicated per LUT/FF letter (A..H); fall back to the 'A' instance, then to
-                // any letter that was sampled (e.g. a LUTRAM WE pin seen only on F6LUT/H6LUT).
+                // Slice pins are replicated per LUT/FF letter (A..H) and the two slice types share their
+                // internal paths. Fall back to the same pins at the other slice type first (the letter
+                // matters more than the type: D6LUT/O5 -> DFF2/D is 29 ps at SLICEL and 34 on the A letter
+                // at SLICEM), then to any letter that was sampled at this type (e.g. a LUTRAM WE pin seen
+                // only on F6LUT/H6LUT).
+                SiteTypeEnum other = st == SiteTypeEnum.SLICEM ? SiteTypeEnum.SLICEL : st == SiteTypeEnum.SLICEL ? SiteTypeEnum.SLICEM : null;
+                if (other != null) {
+                    v = lookup(0, other, from, to);
+                    if (v != null) st = other;
+                }
                 String from2 = toLetterA(from), to2 = toLetterA(to);
-                if (isLettered(from2) || isLettered(to2)) {
+                if (v == null && (isLettered(from2) || isLettered(to2))) {
                     for (char c = 'A'; c <= 'H' && v == null; c++) {
                         String f3 = withLetter(from2, c), t3 = withLetter(to2, c);
-                        v = lookup(0, si, f3, t3);
+                        v = lookup(0, st, f3, t3);
                         if (v != null) { from = f3; to = t3; }
                     }
                 }
@@ -775,7 +785,7 @@ public class VersalTimingModel {
             float[] out = new float[corners.length];
             out[0] = v;
             for (int i = 1; i < corners.length; i++) {
-                Short vi = lookup(i, si, from, to);
+                Short vi = lookup(i, st, from, to);
                 out[i] = vi == null ? v : vi;
             }
             intraSiteCache.put(cacheKey, out.clone());
@@ -789,9 +799,9 @@ public class VersalTimingModel {
         return out;
     }
 
-    private Short lookup(int corner, SiteInst si, String from, String to) {
+    private Short lookup(int corner, SiteTypeEnum siteType, String from, String to) {
         try {
-            Short v = delayModels[corner].getIntraSiteDelay(si.getSiteTypeEnum(), from, to);
+            Short v = delayModels[corner].getIntraSiteDelay(siteType, from, to);
             // SmallDelayModel answers -2 (not null) for a connection the table does not hold; -1 marks an
             // arc Vivado disables. Either is a miss here, so the letter fallback and the miss count apply.
             return v == null || v == -1 || v == -2 ? null : v;
