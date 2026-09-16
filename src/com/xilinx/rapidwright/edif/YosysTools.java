@@ -31,6 +31,10 @@ import java.util.List;
 
 public class YosysTools {
     public static final String yosysExec = "yosys";
+    /** Environment variable naming the yosys executable to use instead of {@code yosys} on the PATH. */
+    public static final String YOSYS_ENV = "YOSYS";
+    /** The slang SystemVerilog frontend plugin ({@code yosys -m slang}, {@code read_slang}); prebuilt in the OSS CAD Suite. */
+    public static final String SLANG_PLUGIN = "slang";
 
     public static final String SYNTH_XILINX = "synth_xilinx";
 
@@ -140,5 +144,61 @@ public class YosysTools {
      */
     public static boolean isYosysOnPath() {
         return FileTools.isExecutableOnPath(yosysExec);
+    }
+
+    /** The yosys executable: {@link #YOSYS_ENV} when set, else {@code yosys} resolved on the PATH. */
+    public static String getYosysExecutable() {
+        String env = System.getenv(YOSYS_ENV);
+        if (env != null && !env.isEmpty()) return env;
+        return FileTools.getExecutablePath(yosysExec);
+    }
+
+    /**
+     * Runs a Yosys script with no input files on the command line (the script reads them itself,
+     * e.g. with {@code read_slang}), optionally with plugins loaded first ({@code -m}) and a log file.
+     * Yosys' console output is captured and included in the exception when it fails.
+     * @param script Yosys commands, separated by ';'
+     * @param workDir Working directory (relative paths in the script resolve against it)
+     * @param logFile Log file for Yosys' own log ({@code -l}), or null
+     * @param plugins Plugins to load before the script runs (e.g. {@link #SLANG_PLUGIN})
+     */
+    public static void runScript(String script, Path workDir, Path logFile, String... plugins) {
+        List<String> exec = new ArrayList<>();
+        exec.add(getYosysExecutable());
+        exec.add("-q");
+        for (String plugin : plugins) { exec.add("-m"); exec.add(plugin); }
+        if (logFile != null) { exec.add("-l"); exec.add(logFile.toString()); }
+        exec.add("-p");
+        exec.add(script);
+        try {
+            Process p = new ProcessBuilder(exec).directory(workDir.toFile()).redirectErrorStream(true).start();
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            try (java.io.InputStream in = p.getInputStream()) { for (int n; (n = in.read(buf)) > 0; ) bos.write(buf, 0, n); }
+            int exitCode = p.waitFor();
+            if (exitCode != 0) {
+                throw new RuntimeException("Yosys exited with code " + exitCode + (logFile != null ? " (log " + logFile + ")" : "") + "\n"
+                        + new String(bos.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+            }
+        } catch (java.io.IOException | InterruptedException e) {
+            throw new RuntimeException("Could not run yosys (" + exec.get(0) + "; set " + YOSYS_ENV + " to the executable)", e);
+        }
+    }
+
+    /**
+     * The {@code read_slang} command that elaborates SystemVerilog sources with the slang frontend
+     * (load it with {@link #SLANG_PLUGIN}): {@code read_slang <sources> --top <top> -G<param>=<value>...}.
+     * Compose it with the rest of a script for {@link #runScript}, e.g.
+     * {@code readSlangCommand(files, "top", params) + "; hierarchy -top top; clean; write_json out.json"}.
+     * @param sources SystemVerilog files, in read order
+     * @param top top module name
+     * @param parameters parameter overrides for the top module, or null
+     */
+    public static String readSlangCommand(List<Path> sources, String top, java.util.Map<String, String> parameters) {
+        StringBuilder cmd = new StringBuilder("read_slang");
+        for (Path p : sources) cmd.append(' ').append(p);
+        cmd.append(" --top ").append(top);
+        if (parameters != null) for (java.util.Map.Entry<String, String> e : parameters.entrySet()) cmd.append(" -G").append(e.getKey()).append('=').append(e.getValue());
+        return cmd.toString();
     }
 }

@@ -28,9 +28,8 @@ import com.google.ortools.sat.CpModel;
 import com.google.ortools.sat.CpSolver;
 import com.google.ortools.sat.CpSolverStatus;
 import com.google.ortools.sat.IntVar;
+import com.google.ortools.sat.LinearArgument;
 import com.google.ortools.sat.LinearExpr;
-import com.google.ortools.sat.LinearExprBuilder;
-import com.google.ortools.sat.Literal;
 import com.xilinx.rapidwright.design.Design;
 import com.xilinx.rapidwright.design.blocks.PBlockSide;
 import com.xilinx.rapidwright.edif.EDIFHierCellInst;
@@ -46,10 +45,13 @@ import org.jgrapht.graph.DefaultDirectedGraph;
 import org.jgrapht.graph.DefaultEdge;
 import org.jgrapht.traverse.TopologicalOrderIterator;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -58,8 +60,17 @@ import java.util.stream.Collectors;
 
 /**
  * A graph providing an abstract representation of a netlist comprised of blackbox cells.
- * Used by ArrayBuilder to calculate an ideal placement for a netlist that minimizes distanced between
- * nearest neighbors.
+ * Used by ArrayBuilder to calculate an ideal placement for a netlist that minimizes the distance between
+ * nearest neighbors: the grid position of every instance such that the longest connection, measured as
+ * the Manhattan distance between the two instances it joins, is as short as possible.
+ * <p>
+ * Edges carry the side of the kernel PBlock the driving port sits on (the component's side map), which
+ * says where the driven instance belongs relative to the driver. {@link #getPlacementGrid()} uses that:
+ * when every instance is reachable over labeled edges the grid follows from propagating the directions
+ * (exact, linear time, and the optimum whenever the netlist is a grid), otherwise the directions become
+ * sign constraints solved per axis by longest path. Only netlists neither of those can orient go to the
+ * CP-SAT model of {@link #getOptimalPlacementGrid}, and an unlabeled acyclic netlist keeps the legacy
+ * greedy topological placement of {@link #getGreedyPlacementGrid}.
  */
 public class ArrayNetlistGraph {
     public static class IdealArrayPlacement {
@@ -175,6 +186,10 @@ public class ArrayNetlistGraph {
             return direction == PBlockSide.TOP;
         }
 
+        public PBlockSide getDirection() {
+            return direction;
+        }
+
         @Override
         public String toString() {
             return "(" + getSource() + " : " + getTarget() + ", " + this.direction + ")";
@@ -182,6 +197,10 @@ public class ArrayNetlistGraph {
     }
     private Graph<String, NetlistEdge> graph;
     private Map<Pair<String, String>, Boolean> directionMap;
+    /** Swap LEFT and RIGHT when reading edge directions (the array is mirrored at placement time). */
+    private boolean flipHorizontally = false;
+    /** Wall-clock budget of the CP-SAT fallback, seconds. */
+    private double cpSatTimeLimitSeconds = 120.0;
 
     public ArrayNetlistGraph() {
         graph = new DefaultDirectedGraph<>(NetlistEdge.class);
@@ -343,172 +362,286 @@ public class ArrayNetlistGraph {
         return idealPlacement;
     }
 
-    public IdealArrayPlacement getOptimalPlacementGrid(int width, int height) {
-        IdealArrayPlacement idealPlacement = new IdealArrayPlacement();
-        int numNodes = graph.vertexSet().size();
-        Map<Integer, String> numToNameMap = new HashMap<>();
-        Map<String, Integer> nameToNumMap = new HashMap<>();
+    public void setFlipHorizontally(boolean flipHorizontally) {
+        this.flipHorizontally = flipHorizontally;
+    }
 
-        int i = 0;
-        for (String v : graph.vertexSet()) {
-            numToNameMap.put(i, v);
-            nameToNumMap.put(v, i);
-            i++;
+    public void setCpSatTimeLimitSeconds(double seconds) {
+        this.cpSatTimeLimitSeconds = seconds;
+    }
+
+    /** Grid step of an edge direction: x grows to the right, y grows downward. */
+    private int[] delta(PBlockSide side) {
+        switch (side) {
+            case TOP:    return new int[] {0, -1};
+            case BOTTOM: return new int[] {0, 1};
+            case RIGHT:  return new int[] {flipHorizontally ? -1 : 1, 0};
+            case LEFT:   return new int[] {flipHorizontally ? 1 : -1, 0};
+            default:     throw new IllegalArgumentException(String.valueOf(side));
         }
+    }
+
+    /** Longest Manhattan distance over all edges of {@code placement}, with the edge count. */
+    private int[] maxStretch(IdealArrayPlacement placement) {
+        int max = 0, edges = 0;
+        for (NetlistEdge e : graph.edgeSet()) {
+            Pair<Integer, Integer> a = placement.getPlacement(graph.getEdgeSource(e));
+            Pair<Integer, Integer> b = placement.getPlacement(graph.getEdgeTarget(e));
+            if (a == null || b == null) continue;
+            max = Math.max(max, Math.abs(a.getFirst() - b.getFirst()) + Math.abs(a.getSecond() - b.getSecond()));
+            edges++;
+        }
+        return new int[] {max, edges};
+    }
+
+    private static IdealArrayPlacement normalized(Map<String, int[]> coords) {
+        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
+        for (int[] c : coords.values()) { minX = Math.min(minX, c[0]); minY = Math.min(minY, c[1]); }
+        IdealArrayPlacement p = new IdealArrayPlacement();
+        for (Map.Entry<String, int[]> e : coords.entrySet()) p.place(e.getKey(), e.getValue()[0] - minX, e.getValue()[1] - minY);
+        return p;
+    }
+
+    private static boolean hasCollision(Map<String, int[]> coords) {
+        Set<Pair<Integer, Integer>> seen = new HashSet<>();
+        for (int[] c : coords.values()) if (!seen.add(new Pair<>(c[0], c[1]))) return true;
+        return false;
+    }
+
+    private void printGrid(IdealArrayPlacement placement) {
+        for (Pair<Pair<Integer, Integer>, String> e : placement.getRowColumnOrderList()) {
+            System.out.println("Placed " + e.getSecond() + " at (" + e.getFirst().getFirst() + ", " + e.getFirst().getSecond() + ")");
+        }
+    }
+
+    /**
+     * The ideal placement of this netlist, by the first of these that applies: the propagation of
+     * the edge directions when they place every instance consistently (see the class comment), the
+     * per-axis longest-path compaction of the direction signs, the legacy greedy grid for an
+     * acyclic netlist without directions, and last the CP-SAT model, hinted with the best partial
+     * answer of the steps before it.
+     */
+    public IdealArrayPlacement getPlacementGrid() {
+        int labeled = 0, unlabeled = 0;
+        for (NetlistEdge e : graph.edgeSet()) { if (e.noDirectionSpecified()) unlabeled++; else labeled++; }
+        System.out.println("[ArrayNetlistGraph] " + graph.vertexSet().size() + " instances, " + labeled
+                + " directed and " + unlabeled + " undirected connections" + (flipHorizontally ? " (mirrored)" : ""));
+        if (graph.vertexSet().size() == 1) {
+            IdealArrayPlacement p = new IdealArrayPlacement();
+            p.place(graph.vertexSet().iterator().next(), 0, 0);
+            return p;
+        }
+        Map<String, int[]> hint = null;
+        if (labeled > 0) {
+            Map<String, int[]> coords = propagateDirections();
+            if (coords != null) {
+                IdealArrayPlacement p = normalized(coords);
+                int[] st = maxStretch(p);
+                System.out.println("[ArrayNetlistGraph] direction propagation placed the " + p.getArrayWidth() + " x "
+                        + p.getArrayHeight() + " grid; longest connection " + st[0] + " over " + st[1] + " connections");
+                printGrid(p);
+                return p;
+            }
+            coords = compactDirections();
+            if (coords != null) {
+                if (!hasCollision(coords)) {
+                    IdealArrayPlacement p = normalized(coords);
+                    int[] st = maxStretch(p);
+                    System.out.println("[ArrayNetlistGraph] longest-path compaction placed the " + p.getArrayWidth() + " x "
+                            + p.getArrayHeight() + " grid; longest connection " + st[0] + " over " + st[1] + " connections");
+                    printGrid(p);
+                    return p;
+                }
+                System.out.println("[ArrayNetlistGraph] longest-path compaction leaves instances on the same cell; used as the CP-SAT hint");
+                hint = coords;
+            }
+        } else if (isAcyclic()) {
+            System.out.println("[ArrayNetlistGraph] no directions and an acyclic netlist: greedy placement");
+            return getGreedyPlacementGrid();
+        }
+        System.out.println("[ArrayNetlistGraph] the directions do not orient the netlist; solving with CP-SAT");
+        return getOptimalPlacementGrid(hint);
+    }
+
+    /**
+     * Tier 1a: breadth-first propagation of unit offsets over the labeled edges (each traversed in
+     * both directions), from an arbitrary root. Returns null when some instance is not reachable
+     * over labeled edges, when two paths disagree on an instance's position, or when two instances
+     * land on the same cell; any of those means the netlist is not a plain grid.
+     */
+    private Map<String, int[]> propagateDirections() {
+        Map<String, int[]> coords = new LinkedHashMap<>();
+        String root = graph.vertexSet().iterator().next();
+        coords.put(root, new int[] {0, 0});
+        Deque<String> queue = new ArrayDeque<>();
+        queue.add(root);
+        while (!queue.isEmpty()) {
+            String u = queue.poll();
+            int[] cu = coords.get(u);
+            for (NetlistEdge e : graph.edgesOf(u)) {
+                if (e.noDirectionSpecified()) continue;
+                boolean forward = graph.getEdgeSource(e).equals(u);
+                String v = forward ? graph.getEdgeTarget(e) : graph.getEdgeSource(e);
+                if (v.equals(u)) continue;
+                int[] d = delta(e.getDirection());
+                int[] cv = forward ? new int[] {cu[0] + d[0], cu[1] + d[1]} : new int[] {cu[0] - d[0], cu[1] - d[1]};
+                int[] have = coords.get(v);
+                if (have == null) { coords.put(v, cv); queue.add(v); }
+                else if (have[0] != cv[0] || have[1] != cv[1]) {
+                    System.out.println("[ArrayNetlistGraph] " + v + " is at (" + have[0] + "," + have[1] + ") but its connection from "
+                            + u + " (" + e.getDirection() + ") wants (" + cv[0] + "," + cv[1] + "): not a unit grid");
+                    return null;
+                }
+            }
+        }
+        if (coords.size() != graph.vertexSet().size()) {
+            System.out.println("[ArrayNetlistGraph] only " + coords.size() + " of " + graph.vertexSet().size()
+                    + " instances are reachable over directed connections");
+            return null;
+        }
+        if (hasCollision(coords)) {
+            System.out.println("[ArrayNetlistGraph] direction propagation puts two instances on one cell");
+            return null;
+        }
+        return coords;
+    }
+
+    /**
+     * Tier 1b: the directions as signs only. Instances joined by a vertical connection share a
+     * column, a horizontal connection orders its two columns; the columns are then packed by longest
+     * path so every ordering is satisfied with the least spread. The same for rows. Returns null when
+     * the orderings contain a cycle; the result may put two instances on one cell.
+     */
+    private Map<String, int[]> compactDirections() {
+        Map<String, Integer> x = compactAxis(true), y = compactAxis(false);
+        if (x == null || y == null) return null;
+        Map<String, int[]> coords = new LinkedHashMap<>();
+        for (String v : graph.vertexSet()) coords.put(v, new int[] {x.get(v), y.get(v)});
+        return coords;
+    }
+
+    private Map<String, Integer> compactAxis(boolean xAxis) {
+        // union-find over the instances that share a coordinate on this axis
+        Map<String, String> parent = new HashMap<>();
+        for (String v : graph.vertexSet()) parent.put(v, v);
+        java.util.function.Function<String, String> find = new java.util.function.Function<String, String>() {
+            public String apply(String v) { while (!parent.get(v).equals(v)) { parent.put(v, parent.get(parent.get(v))); v = parent.get(v); } return v; }
+        };
+        for (NetlistEdge e : graph.edgeSet()) {
+            if (e.noDirectionSpecified()) continue;
+            int[] d = delta(e.getDirection());
+            boolean movesOnAxis = xAxis ? d[0] != 0 : d[1] != 0;
+            if (!movesOnAxis) parent.put(find.apply(graph.getEdgeSource(e)), find.apply(graph.getEdgeTarget(e)));
+        }
+        // the ordering constraints between classes: succ(a) contains b when b must be at least a + 1
+        Map<String, Set<String>> succ = new HashMap<>();
+        Map<String, Integer> indeg = new HashMap<>();
+        for (String v : graph.vertexSet()) { String r = find.apply(v); succ.putIfAbsent(r, new HashSet<>()); indeg.putIfAbsent(r, 0); }
+        for (NetlistEdge e : graph.edgeSet()) {
+            if (e.noDirectionSpecified()) continue;
+            int[] d = delta(e.getDirection());
+            int step = xAxis ? d[0] : d[1];
+            if (step == 0) continue;
+            String a = find.apply(graph.getEdgeSource(e)), b = find.apply(graph.getEdgeTarget(e));
+            if (a.equals(b)) {
+                System.out.println("[ArrayNetlistGraph] " + graph.getEdgeSource(e) + " and " + graph.getEdgeTarget(e)
+                        + " must share a " + (xAxis ? "column" : "row") + " and also be ordered on it");
+                return null;
+            }
+            String lo = step > 0 ? a : b, hi = step > 0 ? b : a;
+            if (succ.get(lo).add(hi)) indeg.merge(hi, 1, Integer::sum);
+        }
+        // longest path in topological order
+        Map<String, Integer> pos = new HashMap<>();
+        Deque<String> ready = new ArrayDeque<>();
+        for (Map.Entry<String, Integer> e : indeg.entrySet()) if (e.getValue() == 0) { ready.add(e.getKey()); pos.put(e.getKey(), 0); }
+        int done = 0;
+        while (!ready.isEmpty()) {
+            String a = ready.poll(); done++;
+            for (String b : succ.get(a)) {
+                pos.merge(b, pos.get(a) + 1, Math::max);
+                if (indeg.merge(b, -1, Integer::sum) == 0) ready.add(b);
+            }
+        }
+        if (done != indeg.size()) {
+            System.out.println("[ArrayNetlistGraph] the " + (xAxis ? "horizontal" : "vertical") + " orderings contain a cycle");
+            return null;
+        }
+        Map<String, Integer> result = new HashMap<>();
+        for (String v : graph.vertexSet()) result.put(v, pos.get(find.apply(v)));
+        return result;
+    }
+
+    /**
+     * Tier 2: CP-SAT over integer coordinates. One x and one y per instance, all cells distinct, the
+     * longest Manhattan distance over the edges minimized directly, edge directions kept as sign
+     * constraints, translation fixed by pinning the smallest x and y to 0, and {@code hint} (if any)
+     * as the starting point. Runs for at most {@link #setCpSatTimeLimitSeconds} and accepts a
+     * feasible answer. For a grid netlist this is the slow path; the propagation above is exact
+     * there and never gets here.
+     */
+    public IdealArrayPlacement getOptimalPlacementGrid(Map<String, int[]> hint) {
+        int n = graph.vertexSet().size();
+        List<String> names = new ArrayList<>(new java.util.TreeSet<>(graph.vertexSet()));
+        Map<String, Integer> num = new HashMap<>();
+        for (int i = 0; i < n; i++) num.put(names.get(i), i);
 
         Loader.loadNativeLibraries();
         CpModel model = new CpModel();
-        Literal[][][] placements = new Literal[numNodes][width][height];
-        for (int n = 0; n < numNodes; n++) {
-            for (int x = 0; x < width; x++) {
-                for (int y = 0; y < height; y++) {
-                    placements[n][x][y] = model.newBoolVar("placement_n" + n + "x" + x + "y" + y);
-                }
+        IntVar[] x = new IntVar[n], y = new IntVar[n];
+        LinearArgument[] cells = new LinearArgument[n];
+        for (int i = 0; i < n; i++) {
+            x[i] = model.newIntVar(0, n - 1, "x" + i);
+            y[i] = model.newIntVar(0, n - 1, "y" + i);
+            cells[i] = LinearExpr.weightedSum(new LinearArgument[] {x[i], y[i]}, new long[] {n, 1});
+        }
+        model.addAllDifferent(cells);
+        model.addMinEquality(LinearExpr.constant(0), x);
+        model.addMinEquality(LinearExpr.constant(0), y);
+        IntVar longest = model.newIntVar(0, 2L * (n - 1), "longest");
+        int k = 0;
+        for (NetlistEdge e : graph.edgeSet()) {
+            int a = num.get(graph.getEdgeSource(e)), b = num.get(graph.getEdgeTarget(e));
+            if (a == b) continue;
+            IntVar dx = model.newIntVar(0, n - 1, "dx" + k), dy = model.newIntVar(0, n - 1, "dy" + k);
+            k++;
+            model.addAbsEquality(dx, LinearExpr.weightedSum(new LinearArgument[] {x[a], x[b]}, new long[] {1, -1}));
+            model.addAbsEquality(dy, LinearExpr.weightedSum(new LinearArgument[] {y[a], y[b]}, new long[] {1, -1}));
+            model.addLessOrEqual(LinearExpr.sum(new LinearArgument[] {dx, dy}), longest);
+            if (!e.noDirectionSpecified()) {
+                int[] d = delta(e.getDirection());
+                if (d[0] != 0) model.addGreaterOrEqual(LinearExpr.weightedSum(new LinearArgument[] {x[b], x[a]}, new long[] {d[0], -d[0]}), 1);
+                if (d[1] != 0) model.addGreaterOrEqual(LinearExpr.weightedSum(new LinearArgument[] {y[b], y[a]}, new long[] {d[1], -d[1]}), 1);
             }
         }
-
-        // At most one node can be placed at each grid location
-        for (int x = 0; x < width; x++) {
-            for (int y = 0; y < height; y++) {
-                List<Literal> nodes = new ArrayList<>();
-                for (int n = 0; n < numNodes; n++) {
-                    nodes.add(placements[n][x][y]);
-                }
-                model.addAtMostOne(nodes);
+        model.minimize(longest);
+        if (hint != null) {
+            int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
+            for (int[] c : hint.values()) { minX = Math.min(minX, c[0]); minY = Math.min(minY, c[1]); }
+            for (Map.Entry<String, int[]> h : hint.entrySet()) {
+                Integer i = num.get(h.getKey());
+                if (i == null) continue;
+                model.addHint(x[i], Math.min(n - 1, h.getValue()[0] - minX));
+                model.addHint(y[i], Math.min(n - 1, h.getValue()[1] - minY));
             }
         }
-
-        // Every node must be placed at exactly one location
-        for (int n = 0; n < numNodes; n++) {
-            List<Literal> locations = new ArrayList<>();
-            for (int x = 0; x < width; x++) {
-                locations.addAll(Arrays.asList(placements[n][x]).subList(0, height));
-            }
-            model.addExactlyOne(locations);
-        }
-
-        // Add auxiliary variables for x and y placement
-        IntVar[] xPlacement = new IntVar[numNodes];
-        IntVar[] yPlacement = new IntVar[numNodes];
-        for (int n = 0; n < numNodes; n++) {
-            xPlacement[n] = model.newIntVar(0, width, "x_loc_n" + n);
-            yPlacement[n] = model.newIntVar(0, height, "y_loc_n" + n);
-            LinearExprBuilder xExpr = LinearExpr.newBuilder();
-            LinearExprBuilder yExpr = LinearExpr.newBuilder();
-            for (int x = 0; x < width; x++) {
-                for (int y = 0; y < height; y++) {
-                    xExpr.addTerm(placements[n][x][y], x);
-                    yExpr.addTerm(placements[n][x][y], y);
-                }
-            }
-            model.addEquality(xPlacement[n], xExpr);
-            model.addEquality(yPlacement[n], yExpr);
-        }
-
-        // Add auxiliary variables for x and y distance between connected nodes
-        List<IntVar> xDistVars = new ArrayList<>();
-        List<IntVar> yDistVars = new ArrayList<>();
-        for (String v : graph.vertexSet()) {
-            Set<NetlistEdge> outEdges = graph.outgoingEdgesOf(v);
-            int sourceNum = nameToNumMap.get(v);
-            for (NetlistEdge e : outEdges) {
-                String edgeTarget = graph.getEdgeTarget(e);
-                int targetNum = nameToNumMap.get(edgeTarget);
-
-                // x distance variable
-                IntVar xDistVar = model.newIntVar(0, width, "x_dist_" + v + "_n" + sourceNum + "_to_" + edgeTarget + "_n" + targetNum);
-                xDistVars.add(xDistVar);
-                IntVar sourceXVar = xPlacement[sourceNum];
-                IntVar targetXVar = xPlacement[targetNum];
-
-                // Adding both of these constraints is equivalent to xDistVar = abs(sourceX - targetX)
-                LinearExprBuilder sourceMinusTargetX = LinearExpr.newBuilder();
-                sourceMinusTargetX.addTerm(sourceXVar, 1);
-                sourceMinusTargetX.addTerm(targetXVar, -1);
-                model.addGreaterOrEqual(xDistVar, sourceMinusTargetX);
-
-                LinearExprBuilder targetMinusSourceX = LinearExpr.newBuilder();
-                targetMinusSourceX.addTerm(targetXVar, 1);
-                targetMinusSourceX.addTerm(sourceXVar, -1);
-                model.addGreaterOrEqual(xDistVar, targetMinusSourceX);
-
-                // y distance variable
-                IntVar yDistVar = model.newIntVar(0, width, "y_dist_" + v + "_n" + sourceNum + "_to_" + edgeTarget + "_n" + targetNum);
-                yDistVars.add(yDistVar);
-                IntVar sourceYVar = yPlacement[sourceNum];
-                IntVar targetYVar = yPlacement[targetNum];
-
-                // Adding both of these constraints is equivalent to xDistVar = abs(sourceX - targetX)
-                LinearExprBuilder sourceMinusTargetY = LinearExpr.newBuilder();
-                sourceMinusTargetY.addTerm(sourceYVar, 1);
-                sourceMinusTargetY.addTerm(targetYVar, -1);
-                model.addGreaterOrEqual(yDistVar, sourceMinusTargetY);
-
-                LinearExprBuilder targetMinusSourceY = LinearExpr.newBuilder();
-                targetMinusSourceY.addTerm(targetYVar, 1);
-                targetMinusSourceY.addTerm(sourceYVar, -1);
-                model.addGreaterOrEqual(yDistVar, targetMinusSourceY);
-
-                // Neighbors must be adjacent
-                LinearExprBuilder xDistPlusYDist = LinearExpr.newBuilder();
-                xDistPlusYDist.addSum(new IntVar[]{xDistVar, yDistVar});
-                model.addLessOrEqual(xDistPlusYDist, 1);
-                model.addLessOrEqual(xDistVar, 3);
-                model.addLessOrEqual(yDistVar, 3);
-            }
-        }
-
-        // Place the anchor in the top left corner
-        String anchor = getTopologicalOrderIterator().next();
-        int anchorNum = nameToNumMap.get(anchor);
-        model.addAssumption(placements[anchorNum][0][0]);
-
-        NetlistEdge extraConstraintEdge = graph.outgoingEdgesOf(anchor).iterator().next();
-        if (extraConstraintEdge.isRight() || extraConstraintEdge.isBelow()) {
-            // Add additional constraint based on the sideMap
-            String extraConstraintNode = graph.getEdgeTarget(extraConstraintEdge);
-            int extraConstraintNum = nameToNumMap.get(extraConstraintNode);
-            if (extraConstraintEdge.isRight()) {
-                model.addAssumption(placements[extraConstraintNum][1][0]);
-            } else {
-                model.addAssumption(placements[extraConstraintNum][0][1]);
-            }
-        }
-
-        IntVar maxXDistVar = model.newIntVar(0, width, "max_x_dist");
-        for (IntVar xDistVar : xDistVars) {
-            model.addGreaterOrEqual(maxXDistVar, xDistVar);
-        }
-        IntVar maxYDistVar = model.newIntVar(0, width, "max_y_dist");
-        for (IntVar yDistVar : yDistVars) {
-            model.addGreaterOrEqual(maxYDistVar, yDistVar);
-        }
-        LinearExprBuilder obj = LinearExpr.newBuilder();
-        obj.add(maxXDistVar);
-        obj.add(maxYDistVar);
-        model.minimize(obj);
 
         CpSolver solver = new CpSolver();
+        solver.getParameters().setMaxTimeInSeconds(cpSatTimeLimitSeconds);
+        solver.getParameters().setNumWorkers(8);
+        long t0 = System.currentTimeMillis();
         CpSolverStatus status = solver.solve(model);
-
-        if (status == CpSolverStatus.FEASIBLE || status == CpSolverStatus.OPTIMAL) {
-            System.out.println("Solution: " + status);
-            for (int x = 0; x < width; x++) {
-                for (int y = 0; y < height; y++) {
-                    for (int n = 0; n < numNodes; n++) {
-                        if (solver.booleanValue(placements[n][x][y])) {
-                            System.out.println("Placed " + numToNameMap.get(n) + " at (" + x + ", " + y + ")");
-                            idealPlacement.place(numToNameMap.get(n), new Pair<>(x, y));
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            throw new RuntimeException("Failed to find optimal placement grid, solver returned status: " + status);
+        if (status != CpSolverStatus.FEASIBLE && status != CpSolverStatus.OPTIMAL) {
+            throw new RuntimeException("Failed to find a placement grid, CP-SAT returned " + status + " after "
+                    + (System.currentTimeMillis() - t0) + " ms for " + n + " instances and " + k + " connections");
         }
-
-        return idealPlacement;
+        Map<String, int[]> coords = new LinkedHashMap<>();
+        for (int i = 0; i < n; i++) coords.put(names.get(i), new int[] {(int) solver.value(x[i]), (int) solver.value(y[i])});
+        IdealArrayPlacement p = normalized(coords);
+        System.out.println("[ArrayNetlistGraph] CP-SAT " + status + " in " + (System.currentTimeMillis() - t0) + " ms: "
+                + p.getArrayWidth() + " x " + p.getArrayHeight() + " grid, longest connection " + solver.value(longest));
+        printGrid(p);
+        return p;
     }
 
     @Override

@@ -700,14 +700,16 @@ public class ArrayBuilder {
                     + (prefix != null ? " (prefix='" + prefix + "')" : ""));
         }
         config.setInstCountLimit(modInstNames.size());
-        Map<EDIFPort, PBlockSide> sideMap = null;
-        if (config.getSideMapFile() != null) {
+        Map<EDIFPort, PBlockSide> sideMap = config.getSideMap();
+        if (sideMap == null && config.getSideMapFile() != null) {
             sideMap = InlineFlopTools.parseSideMap(getKernelDesign().getNetlist(), config.getSideMapFile());
         }
-        setCondensedGraph(new ArrayNetlistGraph(array, modInstNames, sideMap));
-        ArrayNetlistGraph.IdealArrayPlacement idealPlacement =
-                getCondensedGraph().getGreedyPlacementGrid();
-        return idealPlacement;
+        ArrayNetlistGraph graph = new ArrayNetlistGraph(array, modInstNames, sideMap);
+        // The side map is physical and the grid is placed mirrored when the flip is on, so read the
+        // directions mirrored too; the grid then stays in the orientation the placement expects.
+        graph.setFlipHorizontally(config.isFlipPlacementHorizontally());
+        setCondensedGraph(graph);
+        return graph.getPlacementGrid();
     }
 
     private ArrayNetlistGraph.IdealArrayPlacement prepareArrayForPlacement() {

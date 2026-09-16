@@ -25,6 +25,8 @@ package com.xilinx.rapidwright.design.tools;
 
 import com.xilinx.rapidwright.router.VTreeType;
 import com.xilinx.rapidwright.design.Design;
+import com.xilinx.rapidwright.design.blocks.PBlockSide;
+import com.xilinx.rapidwright.edif.EDIFPort;
 import com.xilinx.rapidwright.device.Part;
 import com.xilinx.rapidwright.device.PartNameTools;
 import com.xilinx.rapidwright.edif.EDIFNetlist;
@@ -41,6 +43,7 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A collection of customizable parameters for a {@link ArrayBuilder} Object.
@@ -120,6 +123,13 @@ public class ArrayBuilderConfig {
     private String instanceNamePrefix = null;
 
     private String sideMapFile;
+
+    /**
+     * The kernel's side map (its ports by the PBlock side they sit on), which tells
+     * {@link ArrayNetlistGraph} where each connected instance belongs relative to its driver.
+     * Takes precedence over {@link #getSideMapFile()}.
+     */
+    private Map<EDIFPort, PBlockSide> sideMap;
 
     private String workDir;
 
@@ -495,6 +505,14 @@ public class ArrayBuilderConfig {
 
     public String getSideMapFile() {
         return sideMapFile;
+    }
+
+    public Map<EDIFPort, PBlockSide> getSideMap() {
+        return sideMap;
+    }
+
+    public void setSideMap(Map<EDIFPort, PBlockSide> sideMap) {
+        this.sideMap = sideMap;
     }
 
     public void setSideMapFile(String sideMapFile) {
