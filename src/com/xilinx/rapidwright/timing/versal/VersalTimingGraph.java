@@ -347,6 +347,7 @@ public class VersalTimingGraph {
             EDIFHierNet h = design.getNetlist().getHierNetFromName(net.getName());
             if (h != null) hierNets.put(net, h);
         }
+        warmPinMappings();
         hierNetsMs = System.currentTimeMillis() - t; t = System.currentTimeMillis();
         propagateConstants();
         phaseMs[0] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
@@ -379,6 +380,16 @@ public class VersalTimingGraph {
      * whose function is constant given its constant inputs has a constant output, and that constant
      * flows on through the nets it drives. Arcs from constant pins are not timed by Vivado.
      */
+    /**
+     * Cell builds its logical-to-physical pin map lazily and without synchronisation, publishing the
+     * map before filling it, so two threads asking for the same cell's mapping can race (a
+     * ConcurrentModificationException in {@link Cell#getPhysicalPinMapping}). The parallel phases
+     * below read those maps: build every cell's here first, on one thread.
+     */
+    private void warmPinMappings() {
+        for (Cell c : design.getCells()) c.getPinMappingsL2P();
+    }
+
     private void propagateConstants() {
         Map<String, Cell> lutByOutNet = new HashMap<>();       // net name -> LUT cell driving it
         Map<String, List<String>> netSinks = new HashMap<>();  // net name -> sink "cell/physPin"
@@ -486,30 +497,89 @@ public class VersalTimingGraph {
     private static final String DEBUG_CELL = System.getenv("DEBUG_CELL");
     private static final String DEBUG_SINK = System.getenv("DEBUG_SINK");
 
-    private float[] logicDelays(short[] belIdx, String in, String out) {
-        short d0 = delayModelAt(0).getLogicDelay(belIdx[0], in, out);
-        if (d0 == NO_ARC) return null;
-        float[] d = new float[nc];
-        d[0] = d0;
-        for (int i = 1; i < nc; i++) {
-            short di = belIdx[i] < 0 ? NO_ARC : delayModelAt(i).getLogicDelay(belIdx[i], in, out);
-            d[i] = di == NO_ARC ? d0 : di;
+    /**
+     * Logic delay per corner of a BEL arc, or null if no section has it. Row 0 of {@code belIdx} is the
+     * cell's own section; the following rows are the same BEL on the other letters of the site type,
+     * tried in order when the own section lacks the arc (the tables hold only the arcs the training
+     * designs exercised per letter: the LUTRAM CLK->DI hold check, for one, was seen on A..D only).
+     */
+    private float[] logicDelays(short[][] belIdx, String in, String out) {
+        // the LUT address pins are not equivalent across letters: on the H LUT they are the slice's write
+        // address and carry a clock check (CLK->A1..A5 in H5LUT_RAM), on A..G they are read-only and have
+        // none, so an arc into or out of one is never taken from another letter
+        int rows = isLutAddressPin(in) || isLutAddressPin(out) ? 1 : belIdx.length;
+        for (int r = 0; r < rows; r++) {
+            short[] idx = belIdx[r];
+            short d0 = delayModelAt(0).getLogicDelay(idx[0], in, out);
+            if (d0 == NO_ARC) continue;
+            float[] d = new float[nc];
+            d[0] = d0;
+            for (int i = 1; i < nc; i++) {
+                short di = idx[i] < 0 ? NO_ARC : delayModelAt(i).getLogicDelay(idx[i], in, out);
+                d[i] = di == NO_ARC ? d0 : di;
+            }
+            return d;
         }
-        return d;
+        return null;
     }
 
     private DelayModel delayModelAt(int i) {
         return model.getDelayModel(i);
     }
 
-    /** BEL section index per corner for a cell, or null if unknown in the primary corner's model. */
-    private short[] belIndices(Cell c) {
+    /**
+     * BEL section indices per corner for a cell (row 0), followed by the sections of the same BEL on
+     * the other letters A..H of its site type (lettered slice BELs only, see {@link #siblingIndices});
+     * null if the cell's BEL is unknown in the primary corner's model.
+     */
+    private short[][] belIndices(Cell c) {
         short[] idx = new short[nc];
         for (int i = 0; i < nc; i++) {
             idx[i] = belIndex(delayModelAt(i), c);
             if (i == 0 && idx[0] < 0) return null;
         }
-        return idx;
+        short[][] siblings = siblingIndices(c);
+        if (siblings.length == 0) return new short[][] {idx};
+        short[][] all = new short[siblings.length + 1][];
+        all[0] = idx;
+        System.arraycopy(siblings, 0, all, 1, siblings.length);
+        return all;
+    }
+
+    private static final short[][] NO_SIBLINGS = new short[0][];
+    /** "BEL[_family]@site" -> sibling sections (per corner each), for the per-arc letter fallback of {@link #logicDelays}. */
+    private final Map<String, short[][]> siblingCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** A LUT address pin A1..A6. */
+    static boolean isLutAddressPin(String belPin) {
+        return belPin.length() == 2 && belPin.charAt(0) == 'A' && belPin.charAt(1) >= '1' && belPin.charAt(1) <= '6';
+    }
+
+    /** A slice BEL replicated per letter A..H: xFF, xFF2, x5LUT, x6LUT (with any family suffix). */
+    static boolean isLetteredBel(String bare) {
+        return bare != null && bare.length() > 1 && bare.charAt(0) >= 'A' && bare.charAt(0) <= 'H' && "F56".indexOf(bare.charAt(1)) >= 0;
+    }
+
+    /**
+     * Sections of the same BEL on the other letters of this site type, in letter order, each with an
+     * index per corner (-1 where a corner's model lacks it); rows whose primary-corner section is
+     * absent are dropped. Empty for anything but a lettered slice BEL. Cached per BEL key and site type.
+     */
+    private short[][] siblingIndices(Cell c) {
+        String bare = c.getBELName();
+        if (!isLetteredBel(bare) || c.getSiteInst() == null || c.getSiteInst().getSiteTypeEnum() == null) return NO_SIBLINGS;
+        String fam = belKeyFor(c), site = c.getSiteInst().getSiteTypeEnum().name();
+        return siblingCache.computeIfAbsent(fam + "@" + site, k -> {
+            List<short[]> rows = new ArrayList<>();
+            for (char l = 'A'; l <= 'H'; l++) {
+                if (l == bare.charAt(0)) continue;
+                String key = l + fam.substring(1) + "@" + site;
+                short[] row = new short[nc];
+                for (int i = 0; i < nc; i++) row[i] = tryIndex(delayModelAt(i), key);
+                if (row[0] >= 0) rows.add(row);
+            }
+            return rows.toArray(NO_SIBLINGS);
+        });
     }
 
     private static short tryIndex(DelayModel dm, String key) {
@@ -713,7 +783,7 @@ public class VersalTimingGraph {
 
     private CellPlan planCell(Cell c) {
         CellPlan plan = new CellPlan(c);
-        short[] belIdx = belIndices(c);
+        short[][] belIdx = belIndices(c);
         if (belIdx == null) { plan.unknownBel = c.getType() + "@" + c.getBELName(); return plan; }
         Map<String, String> p2l = c.getPinMappingsP2L();
         List<String> ins = new ArrayList<>(), outs = new ArrayList<>();
@@ -734,7 +804,7 @@ public class VersalTimingGraph {
         ArcConfig cfg = arcConfig(c, ins, outs);
         boolean dbg = DEBUG_CELL != null && c.getName().contains(DEBUG_CELL);
         if (dbg && cfg != null) System.out.println("[debug cell] arc config: noLaunch " + cfg.noLaunch + " noCombInto " + cfg.noCombInto + " noCheck " + cfg.noCheck + " allowedInto " + cfg.allowedInto);
-        if (dbg) System.out.println("[debug cell] " + c.getName() + " type " + c.getType() + " bel " + c.getBELName() + " ins " + ins + " outs " + outs + " lutSize " + lutSize + " init " + Long.toHexString(lutInit) + " belIdx " + belIdx[0] + " p2l " + p2l);
+        if (dbg) System.out.println("[debug cell] " + c.getName() + " type " + c.getType() + " bel " + c.getBELName() + " ins " + ins + " outs " + outs + " lutSize " + lutSize + " init " + Long.toHexString(lutInit) + " belIdx " + belIdx[0][0] + " p2l " + p2l);
         for (String in : ins) {
             // Vivado has no timing arc from a constant pin, nor from a LUT input the INIT function
             // does not depend on (given the other inputs that are constant)
@@ -1423,7 +1493,7 @@ public class VersalTimingGraph {
 
     /** A cell's logic arc from one BEL pin to another (per corner, model order), or null if its BEL has no such arc. */
     public float[] cellArc(Cell c, String in, String out) {
-        short[] idx = belIndices(c);
+        short[][] idx = belIndices(c);
         return idx == null ? null : logicDelays(idx, in, out);
     }
     /** The live edges into each of the given vertices (one scan of the edge list; vertices without any are absent). */

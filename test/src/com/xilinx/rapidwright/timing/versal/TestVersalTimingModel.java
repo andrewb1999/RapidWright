@@ -20,6 +20,10 @@
 
 package com.xilinx.rapidwright.timing.versal;
 
+import com.xilinx.rapidwright.design.Cell;
+import com.xilinx.rapidwright.design.Design;
+import com.xilinx.rapidwright.design.SiteInst;
+import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.IntentCode;
 import com.xilinx.rapidwright.device.Node;
@@ -203,6 +207,54 @@ public class TestVersalTimingModel {
         Assertions.assertEquals("AFF/Q", VersalTimingModel.toLetterA("HFF/Q"));
         Assertions.assertEquals("A6LUT/A4", VersalTimingModel.toLetterA("H6LUT/A4"));
         Assertions.assertEquals("CLK", VersalTimingModel.toLetterA("CLK"));
+    }
+
+    /**
+     * The per-letter LUTRAM sections hold only the arcs the training designs exercised on that letter:
+     * the data-input check CLK->DI (setup at the max corners, hold at the min corners) was sampled on
+     * A..D only, and H5LUT_RAM lacks the WA pins. A RAMD32 placed on an E..H LUT must still get the
+     * check, taken from a sibling letter, or the graph would have no data-input endpoint for it.
+     */
+    @Test
+    public void testLogicArcFallsBackAcrossLetters() {
+        Design design = new Design("t", "xcv80-lsva4737-2MHP-e-S");
+        VersalTimingModel model = new VersalTimingModel(design.getDevice());
+        VersalTimingGraph graph = new VersalTimingGraph(design, model);
+        Site site = design.getDevice().getAllSitesOfType(SiteTypeEnum.SLICEM)[0];
+        SiteInst si = design.createSiteInst(site);
+        float[] ref5 = null, ref6 = null, refWa = null;
+        for (char l = 'A'; l <= 'H'; l++) {
+            for (int size : new int[] {5, 6}) {
+                Cell c = new Cell("ram" + l + size, si, site.getBEL(l + "" + size + "LUT"));
+                c.setType("RAMD32");
+                float[] di = graph.cellArc(c, "CLK", size == 5 ? "DI" : "DI2WE2");
+                float[] wa = graph.cellArc(c, "CLK", "WA1");
+                Assertions.assertNotNull(di, l + size + "LUT_RAM CLK->DI check");
+                Assertions.assertNotNull(wa, l + size + "LUT_RAM CLK->WA1 check");
+                Assertions.assertEquals(model.getCornerCount(), di.length);
+                float[] ref = size == 5 ? ref5 : ref6;
+                if (ref == null) { if (size == 5) ref5 = di; else ref6 = di; refWa = wa; continue; }
+                for (int i = 0; i < di.length; i++) {
+                    // the letters agree within a few ps: a sibling's value is a fair stand-in
+                    Assertions.assertEquals(ref[i], di[i], 6f, l + size + "LUT_RAM CLK->DI corner " + i);
+                    Assertions.assertEquals(refWa[i], wa[i], 6f, l + size + "LUT_RAM CLK->WA1 corner " + i);
+                }
+            }
+        }
+        // the read address of an A..G LUTRAM has no clock check (the H section's CLK->A1..A5 are its
+        // write-address checks and must not be borrowed), while H keeps its own
+        Cell ramE = new Cell("ramE", si, site.getBEL("E6LUT"));
+        ramE.setType("RAMD32");
+        Assertions.assertNull(graph.cellArc(ramE, "CLK", "A1"));
+        Assertions.assertNotNull(graph.cellArc(ramE, "A1", "O6"));
+        Cell ramH = new Cell("ramH", si, site.getBEL("H5LUT"));
+        ramH.setType("RAMD32");
+        Assertions.assertNotNull(graph.cellArc(ramH, "CLK", "A1"));
+        // a plain LUT has no clock arcs at all: the fallback must not invent one
+        Cell lut = new Cell("lut", si, site.getBEL("E6LUT"));
+        lut.setType("LUT6");
+        Assertions.assertNull(graph.cellArc(lut, "CLK", "O6"));
+        Assertions.assertNotNull(graph.cellArc(lut, "A1", "O6"));
     }
 
     @Test
