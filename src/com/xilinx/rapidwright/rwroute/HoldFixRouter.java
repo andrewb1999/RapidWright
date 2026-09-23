@@ -668,6 +668,8 @@ public class HoldFixRouter extends PartialRouter {
         public int endpointsTargeted, pathsBudgeted, sinksBudgeted, skippedNoNetEdge, skippedCrossing, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks;
         /** endpoints (any, not only targets) whose setup slack the detours pushed under the floor, before and after the revert */
         public int setupPushedUnderFloor, sinksNotSlower;
+        /** budgeted sinks that no search could route again, left unrouted (reported; expected 0) */
+        public int unroutedSinks;
         public long pipsBefore, pipsAfter;
         public long analysisMs, routeMs;
         /** the analysis the round used, current for the design after it */
@@ -677,10 +679,10 @@ public class HoldFixRouter extends PartialRouter {
             return String.format("hold: WHS %.0f -> %.0f ps, endpoints below 0: %d -> %d, below margin: %d -> %d; setup: WNS %.0f -> %.0f ps; "
                     + "%d endpoints targeted, %d short paths -> %d sinks budgeted (%d endpoints without a net edge, %d crossing paths left to the ladder, %d paths without setup room, %d sinks without a route delay); "
                     + "%d routed, %d met their minimum, %d fell back to the plain search; setup pushed under the floor on %d endpoints, "
-                    + "%d sinks no slower than before; PIPs on the touched nets %d -> %d; analysis %d ms, route %d ms",
+                    + "%d sinks no slower than before, %d left unrouted; PIPs on the touched nets %d -> %d; analysis %d ms, route %d ms",
                     whsBefore, whsAfter, violatingBefore, violatingAfter, belowMarginBefore, belowMarginAfter, wnsBefore, wnsAfter,
                     endpointsTargeted, pathsBudgeted, sinksBudgeted, skippedNoNetEdge, skippedCrossing, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks,
-                    setupPushedUnderFloor, sinksNotSlower,
+                    setupPushedUnderFloor, sinksNotSlower, unroutedSinks,
                     pipsBefore, pipsAfter, analysisMs, routeMs);
         }
     }
@@ -824,9 +826,20 @@ public class HoldFixRouter extends PartialRouter {
         router.initialize();
         router.route();
         out.routeMs = System.currentTimeMillis() - t0;
+        List<SitePinInst> unrouted = new ArrayList<>();
         for (Map.Entry<SitePinInst, DelayBudget> e : router.getDelayBudgets().entrySet()) {
             Float a = router.getAchievedDelay(e.getKey());
             if (a != null && !Float.isNaN(a)) { out.routed++; if (a >= e.getValue().min - 10f) out.budgetMet++; }
+            else if (!e.getKey().isRouted()) unrouted.add(e.getKey());
+        }
+        // A connection the budgeted search and its fallback both abandon must not stay unrouted (the 16x16
+        // FSA shipped one such pin in a routed checkpoint): route it again on any wire, like a reverted sink.
+        if (!unrouted.isEmpty()) {
+            HoldFixRouter plain = new HoldFixRouter(design, config, unrouted, false, new ArrayList<>());
+            plain.initialize();
+            plain.route();
+            for (SitePinInst p : unrouted) if (!p.isRouted()) out.unroutedSinks++;
+            System.out.printf("[HoldFixRouter] %d sinks left unrouted by the budgeted search routed again plainly; %d still unrouted%n", unrouted.size(), out.unroutedSinks);
         }
 
         long[] stats = router.getBudgetedSearchStats();
