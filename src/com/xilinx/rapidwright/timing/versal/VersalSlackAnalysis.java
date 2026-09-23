@@ -126,6 +126,7 @@ public class VersalSlackAnalysis {
         this(base.design, base.model, base.clockModel, base.graph, base.periodPs, setupUncertaintyPs, holdUncertaintyPs, base.clocks);
         unclockedLaunches = base.unclockedLaunches;
         unclockedEndpoints = base.unclockedEndpoints;
+        leafPin.putAll(base.leafPin);   // seeded by the base; this analysis only computes slacks
     }
 
     private VersalSlackAnalysis(Design design, VersalTimingModel model, VersalClockModel clockModel, VersalTimingGraph graph,
