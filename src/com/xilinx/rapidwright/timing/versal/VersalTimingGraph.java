@@ -82,6 +82,14 @@ public class VersalTimingGraph {
         public final float[] check;
         /** arrivals per launch clock group (see {@link Tagged}); null until reached */
         public List<Tagged> tags;
+        /**
+         * Set when this vertex's arrival groups are its single incoming edge's source's shifted by that
+         * edge's delay (a vertex with one input that is not a launch: every net sink, most of the graph),
+         * in which case {@link #tags} stays null and {@link #getTags} derives them. A net's sinks then
+         * share the driver's list instead of each holding a copy: the lists were 105 million entries on
+         * a 450,000-cell design, one per (vertex, upstream clock leaf) pair.
+         */
+        public Edge viewOf;
 
         Vertex(Cell cell, String pin, int corners) {
             this.cell = cell;
@@ -1141,6 +1149,7 @@ public class VersalTimingGraph {
     private void resetVertex(Vertex v) {
         for (int i = 0; i < nc; i++) { v.arrival[i] = unset(i); v.pred[i] = null; }
         v.tags = null;
+        v.viewOf = null;
         if (!v.launch) return;
         float[] q = clkToQ.get(v);
         Object[] s = seeds.get(v);
@@ -1206,14 +1215,53 @@ public class VersalTimingGraph {
 
     /** The arrival group of a vertex with the given tag, or null. */
     public static Tagged getTag(Vertex v, Object tag) {
+        if (v.viewOf != null) {
+            List<Edge> chain = new ArrayList<>(2);
+            Vertex base = resolveView(v, chain);
+            Tagged t = getTag(base, tag);
+            return t == null ? null : shifted(t, chain, v.viewOf);
+        }
         if (v.tags == null) return null;
         for (Tagged t : v.tags) if (t.tag == tag || (tag != null && tag.equals(t.tag))) return t;
         return null;
     }
 
-    /** All arrival groups of a vertex (empty when unreached). */
+    /** All arrival groups of a vertex (empty when unreached); a view's are derived, a fresh list each call. */
     public static List<Tagged> getTags(Vertex v) {
+        if (v.viewOf != null) {
+            List<Edge> chain = new ArrayList<>(2);
+            Vertex base = resolveView(v, chain);
+            if (base.tags == null) return Collections.emptyList();
+            List<Tagged> out = new ArrayList<>(base.tags.size());
+            for (Tagged t : base.tags) out.add(shifted(t, chain, v.viewOf));
+            return out;
+        }
         return v.tags == null ? Collections.emptyList() : v.tags;
+    }
+
+    /** The vertex whose list a view (chain) derives from; {@code chain} receives the view edges, the one nearest the base first. */
+    private static Vertex resolveView(Vertex v, List<Edge> chain) {
+        while (v.viewOf != null) {
+            chain.add(0, v.viewOf);
+            v = v.viewOf.src;
+        }
+        return v;
+    }
+
+    /** An arrival taken through the view chain's edges one by one, as the stored value would have been computed (same float rounding). */
+    private static float through(float arrival, List<Edge> chain, int corner) {
+        for (Edge e : chain) arrival += e.delay[corner];
+        return arrival;
+    }
+
+    /** A group shifted through a view chain, its predecessor at every reached corner the view's own edge. */
+    private static Tagged shifted(Tagged t, List<Edge> chain, Edge pred) {
+        Tagged out = new Tagged(t.tag, t.arrival.length);
+        for (int i = 0; i < t.arrival.length; i++) {
+            out.arrival[i] = Float.isInfinite(t.arrival[i]) ? t.arrival[i] : through(t.arrival[i], chain, i);
+            out.pred[i] = Float.isInfinite(t.arrival[i]) ? null : pred;
+        }
+        return out;
     }
 
     /**
@@ -1222,10 +1270,46 @@ public class VersalTimingGraph {
      * sorted worst first. A launch vertex with incoming combinational edges (SRL / LUT-RAM output
      * from the address pins) ends up with the extreme of its clock-to-Q and the paths into it.
      */
+    /**
+     * Per corner, the most one arrival group's slack can gain on another's at the same endpoint
+     * from clock pessimism removal and SLR compensation (ps), or null for no pruning. With it set,
+     * a group whose arrival is worse than the vertex's extreme by more than that can never give
+     * the worst slack at any endpoint downstream (every group accumulates the same edge delays
+     * from here on), so it is dropped once the vertex's inputs are all relaxed
+     * ({@link #pruneTags}). The bound is the slack analysis's to set from its clock model.
+     */
+    public float[] pruneBound;
+    /** Tags dropped by {@link #pruneTags} and kept, over all propagations. */
+    public long tagsPruned, tagsKept;
+
+    private void pruneTags(Vertex v) {
+        if (v.viewOf != null) return;
+        if (pruneBound == null || v.tags == null || v.tags.size() < 2) { if (v.tags != null) tagsKept += v.tags.size(); return; }
+        float[] extreme = new float[nc];
+        for (int i = 0; i < nc; i++) extreme[i] = unset(i);
+        for (Tagged t : v.tags) {
+            for (int i = 0; i < nc; i++) if (isSet(t.arrival[i]) && better(i, t.arrival[i], extreme[i])) extreme[i] = t.arrival[i];
+        }
+        int before = v.tags.size();
+        v.tags.removeIf(t -> {
+            for (int i = 0; i < nc; i++) {
+                if (!isSet(t.arrival[i])) continue;
+                // within the bound of the extreme at any corner: may still be the worst somewhere
+                if (model.isMax(i) ? t.arrival[i] >= extreme[i] - pruneBound[i] : t.arrival[i] <= extreme[i] + pruneBound[i]) return false;
+            }
+            return true;
+        });
+        tagsPruned += before - v.tags.size();
+        tagsKept += v.tags.size();
+    }
+
     public List<Vertex> computeArrivals() {
+        tagsPruned = 0; tagsKept = 0; views = 0;
         // Kahn topological order restricted to the reachable graph
         Map<Vertex, Integer> indeg = new HashMap<>();
         for (Edge e : edges) if (!e.removed) indeg.merge(e.dst, 1, Integer::sum);
+        inDegree = new HashMap<>(indeg);
+        for (Vertex v : vertices.values()) v.viewOf = null;
         Deque<Vertex> queue = new ArrayDeque<>();
         for (Vertex v : vertices.values()) if (!indeg.containsKey(v)) queue.add(v);
         // launches never seeded through seedLaunch (clock-to-Q only) form the default group
@@ -1234,6 +1318,7 @@ public class VersalTimingGraph {
         while (!queue.isEmpty()) {
             Vertex v = queue.poll();
             visited++;
+            pruneTags(v);
             for (Edge e : v.outs) {
                 relax(e);
                 int d = indeg.merge(e.dst, -1, Integer::sum);
@@ -1243,9 +1328,14 @@ public class VersalTimingGraph {
         if (visited != vertices.size()) {
             System.err.println("WARNING: timing graph has a combinational loop; " + (vertices.size() - visited) + " vertices not visited");
         }
+        for (Vertex v : vertices.values()) if (v.viewOf != null) views++;
+        inDegree = null;
         arrivalsValid = true;
         return getEndpointsSorted(0);
     }
+
+    /** Vertices whose groups are views after the last full propagation. */
+    public long views;
 
     /**
      * Relaxes one edge: the sink's arrival and per-group arrivals take the source's when better. A
@@ -1253,6 +1343,12 @@ public class VersalTimingGraph {
      * from its address pins, a bypassed DSP register): its arrival is the extreme of its own
      * clock-to-Q and the paths into it, so edges into launches are relaxed like any other.
      */
+    /**
+     * In-degree of every vertex (non-removed edges) for the propagation in progress: a sink with
+     * exactly one input that is not a launch takes its groups as a view of its input's source.
+     */
+    private Map<Vertex, Integer> inDegree;
+
     private void relax(Edge e) {
         Vertex v = e.src;
         for (int i = 0; i < nc; i++) {
@@ -1260,8 +1356,16 @@ public class VersalTimingGraph {
             float a = v.arrival[i] + e.delay[i];
             if (better(i, a, e.dst.arrival[i])) { e.dst.arrival[i] = a; e.dst.pred[i] = e; }
         }
-        if (v.tags == null) return;
-        for (Tagged s : v.tags) {
+        Vertex base = v;
+        List<Edge> chain = null;
+        if (v.viewOf != null) { chain = new ArrayList<>(2); base = resolveView(v, chain); }
+        if (base.tags == null) return;
+        if (!e.dst.launch && inDegree != null && inDegree.getOrDefault(e.dst, 0) == 1 && e.dst.tags == null) {
+            // the only input: the groups are the source's, shifted; nothing to store
+            e.dst.viewOf = e;
+            return;
+        }
+        for (Tagged s : base.tags) {
             Tagged d = getTag(e.dst, s.tag);
             if (d == null) {
                 d = new Tagged(s.tag, nc);
@@ -1271,7 +1375,7 @@ public class VersalTimingGraph {
             }
             for (int i = 0; i < nc; i++) {
                 if (!isSet(s.arrival[i])) continue;
-                float a = s.arrival[i] + e.delay[i];
+                float a = (chain == null ? s.arrival[i] : through(s.arrival[i], chain, i)) + e.delay[i];
                 if (better(i, a, d.arrival[i])) { d.arrival[i] = a; d.pred[i] = e; }
             }
         }
@@ -1294,6 +1398,8 @@ public class VersalTimingGraph {
         }
         for (Vertex v : cone) resetVertex(v);
         Map<Vertex, Integer> indeg = new HashMap<>();
+        inDegree = new HashMap<>();
+        for (Edge e : edges) if (!e.removed && cone.contains(e.dst)) inDegree.merge(e.dst, 1, Integer::sum);
         for (Edge e : edges) {
             if (e.removed || !cone.contains(e.dst)) continue;
             if (cone.contains(e.src)) indeg.merge(e.dst, 1, Integer::sum);
@@ -1305,6 +1411,7 @@ public class VersalTimingGraph {
         while (!queue.isEmpty()) {
             Vertex v = queue.poll();
             visited++;
+            pruneTags(v);
             for (Edge e : v.outs) {
                 relax(e);
                 if (indeg.merge(e.dst, -1, Integer::sum) == 0) queue.add(e.dst);
@@ -1313,6 +1420,7 @@ public class VersalTimingGraph {
         if (visited != cone.size()) {
             System.err.println("WARNING: timing graph has a combinational loop; " + (cone.size() - visited) + " vertices of the update cone not visited");
         }
+        inDegree = null;
         arrivalsValid = true;
         return cone;
     }

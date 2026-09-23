@@ -198,9 +198,13 @@ public class VersalSlackAnalysis {
             graph.resetArrivals();
             unclockedLaunches = 0;
             for (VersalTimingGraph.Vertex q : graph.getLaunches()) if (!seed(q)) unclockedLaunches++;
+            graph.pruneBound = pruneBound();
             phaseMs[0] = System.currentTimeMillis() - t; t = System.currentTimeMillis();
             graph.computeArrivals();
             phaseMs[1] = System.currentTimeMillis() - t;
+            if (graph.pruneBound != null)
+                System.out.printf("[Timing] arrival groups: %d stored, %d pruned as dominated (bound slow %.0f/%.0f, fast %.0f/%.0f ps); %d vertices are views of their input%n",
+                        graph.tagsKept, graph.tagsPruned, graph.pruneBound[iSlowMax], graph.pruneBound[iSlowMin], graph.pruneBound[iFastMax], graph.pruneBound[iFastMin], graph.views);
         }
         long t = System.currentTimeMillis();
         byEndpoint.clear();
@@ -286,6 +290,41 @@ public class VersalSlackAnalysis {
         if (arr == null) { graph.unseedLaunch(q); return false; }
         graph.seedLaunch(q, arr, launchGroup(spi));
         return true;
+    }
+
+    /** Extra allowance in the pruning bound for leaf delays set later by the deskew (its taps, ps). */
+    private static final float PRUNE_TAP_ALLOWANCE_PS = 600f;
+
+    /**
+     * The bound {@link VersalTimingGraph#pruneBound} for this design, per corner: the largest
+     * pessimism credit any launch can get (against a capture on its own leaf, which shares its
+     * whole clock path; a hard-block pin against itself its arrival spread) plus the largest SLR
+     * compensation and room for the deskew's taps; null when disabled ({@code -Dversal.timing.prune=false}).
+     */
+    private float[] pruneBound() {
+        if (!Boolean.parseBoolean(System.getProperty("versal.timing.prune", "true"))) return null;
+        int nc = model.getCornerCount();
+        float[] b = new float[nc];
+        float maxClock = 0;
+        java.util.Set<Object> seen = new java.util.HashSet<>();
+        for (VersalTimingGraph.Vertex q : graph.getLaunches()) {
+            SitePinInst spi = clockSitePin(q);
+            if (spi == null || spi.getNet() == null) continue;
+            float[] arr = clockArrival(spi, q.cell);
+            if (arr == null) continue;
+            for (int i = 0; i < nc; i++) maxClock = Math.max(maxClock, arr[i]);
+            // one computation per leaf group (the tag) and per hard-block pin
+            Object key = spi.getSiteInst() != null && !spi.getSiteInst().getSiteTypeEnum().name().startsWith("SLICE") ? spi : launchGroup(spi);
+            if (key == null || !seen.add(key)) continue;
+            float[][] cpr = clocks.pessimismOf(getClockTree(spi.getNet()), q, spi, spi, arr);
+            b[iSlowMax] = Math.max(b[iSlowMax], cpr[0][0]); b[iFastMax] = Math.max(b[iFastMax], cpr[0][1]);
+            b[iSlowMin] = Math.max(b[iSlowMin], cpr[1][0]); b[iFastMin] = Math.max(b[iFastMin], cpr[1][1]);
+            float[][] pair = clocks.pairPessimism(getClockTree(spi.getNet()), spi, spi);
+            b[iSlowMax] = Math.max(b[iSlowMax], pair[0][0]); b[iFastMax] = Math.max(b[iFastMax], pair[0][1]);
+            b[iSlowMin] = Math.max(b[iSlowMin], pair[1][0]); b[iFastMin] = Math.max(b[iFastMin], pair[1][1]);
+        }
+        for (int i = 0; i < nc; i++) b[i] += maxClock * SLR_PRORATING + PRUNE_TAP_ALLOWANCE_PS;
+        return b;
     }
 
     /** Rebuilds the worst results and invalidates the flattened list after the per-endpoint results changed. */
