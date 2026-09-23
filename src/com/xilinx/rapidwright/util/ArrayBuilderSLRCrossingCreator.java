@@ -35,6 +35,7 @@ import com.xilinx.rapidwright.design.blocks.PBlockRange;
 import com.xilinx.rapidwright.design.blocks.PBlockSide;
 import com.xilinx.rapidwright.design.tools.ArrayBuilder;
 import com.xilinx.rapidwright.design.tools.InlineFlopTools;
+import com.xilinx.rapidwright.design.tools.PBlockStaticNetFixer;
 import com.xilinx.rapidwright.design.xdc.ConstraintTools;
 import com.xilinx.rapidwright.device.ClockRegion;
 import com.xilinx.rapidwright.device.IntentCode;
@@ -61,6 +62,7 @@ import com.xilinx.rapidwright.util.VivadoTools;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -374,8 +376,11 @@ public class ArrayBuilderSLRCrossingCreator {
     }
 
     private static void explorePerformance(Design design, String runDirectory, boolean reuse, double clkPeriod,
-                                           boolean noExplore) {
+                                           boolean noExplore, List<String> postPlaceTclLines) {
         PerformanceExplorer pe = new PerformanceExplorer(design, runDirectory, "clk", clkPeriod);
+        for (String line : postPlaceTclLines) {
+            pe.addPostPlaceTclLine(line);
+        }
         if (noExplore) {
             pe.setPlacerDirectives(Arrays.asList(PlacerDirective.Explore));
             pe.setRouterDirectives(Arrays.asList(RouterDirective.Explore));
@@ -533,6 +538,30 @@ public class ArrayBuilderSLRCrossingCreator {
         /** Renames the routed design's netlist and top cell before it is written; null keeps the name. */
         public String getTopCellName() { return topCellName; }
         public Options setTopCellName(String topCellName) { this.topCellName = topCellName; return this; }
+
+        /**
+         * Tcl lines run after {@code place_design} and before {@code route_design} in every
+         * implementation ({@link PerformanceExplorer#addPostPlaceTclLine}), e.g. to add fixed routing
+         * that the placer need not know about.
+         */
+        private final List<String> postPlaceTclLines = new ArrayList<>();
+        public List<String> getPostPlaceTclLines() { return postPlaceTclLines; }
+        public Options addPostPlaceTclLine(String line) { postPlaceTclLines.add(line); return this; }
+
+        /** Run on the constrained design just before Vivado places and routes it (e.g. to add fixed routing that holds resources). */
+        private java.util.function.Consumer<Design> preRouteHook;
+        public java.util.function.Consumer<Design> getPreRouteHook() { return preRouteHook; }
+        public Options setPreRouteHook(java.util.function.Consumer<Design> hook) { this.preRouteHook = hook; return this; }
+
+        /** Run on the routed design as read back from Vivado, before the crossing's clean-up (e.g. to remove what the pre-route hook or post-place lines added). */
+        private java.util.function.Consumer<Design> postRouteHook;
+        public java.util.function.Consumer<Design> getPostRouteHook() { return postRouteHook; }
+        public Options setPostRouteHook(java.util.function.Consumer<Design> hook) { this.postRouteHook = hook; return this; }
+
+        /** Vivado name of the clock distribution tree type (USER_CLOCK_VTREE_TYPE: balanced, interSLR, intraSLR); null leaves Vivado's default. */
+        private String clockVTreeType = null;
+        public String getClockVTreeType() { return clockVTreeType; }
+        public Options setClockVTreeType(String clockVTreeType) { this.clockVTreeType = clockVTreeType; return this; }
     }
 
     public static void createSLRCrossing(Design kernelDesign, Design topDesign,
@@ -676,16 +705,33 @@ public class ArrayBuilderSLRCrossingCreator {
         }
         addNoReplicateConstraintsForSLRCrossingNets(topDesign, topInstName, bottomInstName);
         addClockTreeConstraints(topDesign, topPBlock, bottomPBlock, options);
+        if (options.getClockVTreeType() != null) {
+            // The crossing is closed under the tree type the array will be built with (an interSLR tree
+            // trades intra-SLR balance for less skew across the boundary the crossing spans).
+            System.out.println("[SLR-CROSSING] " + USER_CLOCK_VTREE_TYPE + " " + options.getClockVTreeType());
+            topDesign.addXDCConstraint(ConstraintGroup.LATE,
+                    "set_property " + USER_CLOCK_VTREE_TYPE + " " + options.getClockVTreeType() + " [get_nets clk]");
+        }
 
         String runDirectory = Paths.get(outputPath).getParent().resolve(PE_RUN_DIR).toString();
-        explorePerformance(topDesign, runDirectory, reusePreviousResults, clkPeriod, noExplore);
+        if (options.getPreRouteHook() != null) {
+            options.getPreRouteHook().accept(topDesign);
+        }
+        explorePerformance(topDesign, runDirectory, reusePreviousResults, clkPeriod, noExplore, options.getPostPlaceTclLines());
         Design bestDesign = Design.readCheckpoint(Paths.get(runDirectory, "pblock0_best.dcp").toString());
         List<String> spilled = netsLeavingRectangle(bestDesign, overallPBlock);
         if (!spilled.isEmpty()) {
             bestDesign = rerouteSpilledNetsWithoutHoldPadding(runDirectory, spilled);
         }
         EDIFTools.removeVivadoBusPreventionAnnotations(bestDesign.getNetlist());
+        if (options.getPostRouteHook() != null) {
+            options.getPostRouteHook().accept(bestDesign);
+        }
         removePEClockBUFGCE(bestDesign);
+        // Vivado may source a static net from a tie-off LUT outside the pblocks (the mesh tile's
+        // crossing had GND driven from CLEs two columns out); such routing does not relocate with
+        // the module and collides with the neighbouring tiles. Same treatment as the tile precompile.
+        PBlockStaticNetFixer.fix(bestDesign, Collections.singletonList(overallPBlock));
         InlineFlopTools.removeInlineFlops(bestDesign);
         NetTools.unrouteTopLevelNetsThatLeavePBlock(bestDesign, topPBlock);
         NetTools.unrouteTopLevelNetsThatLeavePBlock(bestDesign, bottomPBlock);
@@ -719,6 +765,7 @@ public class ArrayBuilderSLRCrossingCreator {
         DesignTools.createMissingSitePinInsts(bestDesign);
         removeConstraintsContaining(bestDesign, USER_CLOCK_ROOT);
         removeConstraintsContaining(bestDesign, USER_CLOCK_EXPANSION_WINDOW);
+        removeConstraintsContaining(bestDesign, USER_CLOCK_VTREE_TYPE);
         if (options.getTopCellName() != null) {
             bestDesign.getNetlist().renameNetlistAndTopCell(options.getTopCellName());
         }
@@ -790,12 +837,16 @@ public class ArrayBuilderSLRCrossingCreator {
                 + "/* && IS_SEQUENTIAL}]";
         String bottomRegs = "[get_cells -hier -quiet -filter {NAME =~ " + bottomInstName
                 + "/* && IS_SEQUENTIAL}]";
-        design.addXDCConstraint(ConstraintGroup.LATE,
-                "set_max_delay " + maxDelay
-                        + " -from " + topRegs + " -to " + bottomRegs);
-        design.addXDCConstraint(ConstraintGroup.LATE,
-                "set_min_delay " + minDelay
-                        + " -from " + topRegs + " -to " + bottomRegs);
+        // Both directions: a systolic kernel only sends downward, a mesh kernel has links both ways
+        // (the upward set is empty for the former, which Vivado accepts quietly).
+        for (String[] dir : new String[][] {{topRegs, bottomRegs}, {bottomRegs, topRegs}}) {
+            design.addXDCConstraint(ConstraintGroup.LATE,
+                    "set_max_delay " + maxDelay
+                            + " -from " + dir[0] + " -to " + dir[1]);
+            design.addXDCConstraint(ConstraintGroup.LATE,
+                    "set_min_delay " + minDelay
+                            + " -from " + dir[0] + " -to " + dir[1]);
+        }
     }
 
     /**
@@ -876,6 +927,7 @@ public class ArrayBuilderSLRCrossingCreator {
 
     private static final String USER_CLOCK_ROOT = "USER_CLOCK_ROOT";
     private static final String USER_CLOCK_EXPANSION_WINDOW = "USER_CLOCK_EXPANSION_WINDOW";
+    private static final String USER_CLOCK_VTREE_TYPE = "USER_CLOCK_VTREE_TYPE";
 
     private static ClockRegion clockRegionOf(Tile t) {
         ClockRegion cr = t.getClockRegion();
@@ -941,11 +993,13 @@ public class ArrayBuilderSLRCrossingCreator {
                 + "/* && IS_SEQUENTIAL}]";
         design.addXDCConstraint(ConstraintGroup.LATE,
                 "set_false_path -hold -from " + topRegs + " -to " + bottomRegs);
+        design.addXDCConstraint(ConstraintGroup.LATE,
+                "set_false_path -hold -from " + bottomRegs + " -to " + topRegs);
     }
 
     private static void addNoReplicateConstraintsForSLRCrossingNets(Design design, String topInstName,
                                                                      String bottomInstName) {
-        String crossingNets = "[get_nets -hier -quiet -filter {NAME =~ " + topInstName + "/*}]";
+        String crossingNets = "[get_nets -hier -quiet -filter {NAME =~ " + topInstName + "/* || NAME =~ " + bottomInstName + "/*}]";
         String crossingSegments = "[get_nets -quiet -segments " + crossingNets + "]";
         String crossingDrivers = "[get_cells -quiet -of_objects [get_pins -quiet -filter {DIRECTION == OUT} "
                 + "-of_objects " + crossingSegments + "]]";

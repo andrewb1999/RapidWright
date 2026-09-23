@@ -229,8 +229,37 @@ public class PartialRouter extends RWRoute {
         }
     }
 
+    /**
+     * Nodes no routed connection may use, reserved under a placeholder net before routing: a
+     * caller's way to keep a route off resources that are not equivalent everywhere a module
+     * relocates (Versal SLL columns differ between otherwise identical column ranges).
+     */
+    private Collection<Node> blockedNodes = Collections.emptyList();
+
+    /** Sets the nodes to keep every routed connection off (see {@link #blockedNodes}); call before routing. */
+    public void setBlockedNodes(Collection<Node> nodes) {
+        this.blockedNodes = nodes == null ? Collections.emptyList() : nodes;
+    }
+
+    private void preserveBlockedNodes() {
+        if (blockedNodes.isEmpty()) {
+            return;
+        }
+        Net blocker = new Net("RWROUTE_BLOCKED_NODES");
+        int reserved = 0;
+        for (Node node : blockedNodes) {
+            if (routingGraph.getPreservedNet(node) == null) {
+                routingGraph.preserve(node, blocker);
+                reserved++;
+            }
+        }
+        System.out.println("INFO: Blocked " + reserved + " of " + blockedNodes.size() + " nodes from routing");
+    }
+
     @Override
     protected Set<Net> ensureSinkRoutability() {
+        preserveBlockedNodes();
+        reserveDriversOfUnroutedPins();
         // With all routingGraph.preserveAsync() calls having completed,
         // now check that no sinks are preserved by another net
         // (e.g. a pin was moved from one net to the other, but
@@ -345,6 +374,11 @@ public class PartialRouter extends RWRoute {
             // For signal nets, only preserve those pins that are not to be routed
             // All sink pins must be preserved for static nets since the static router does not resolve conflicts
             pinsToRoute = netToPins.get(net);
+            if (pinsToRoute == null && !net.isClockNet() && !net.getSinkPins().isEmpty()) {
+                synchronized (preservedNonTargetNets) {
+                    preservedNonTargetNets.add(net);
+                }
+            }
         }
         List<SitePinInst> pinsToPreserve;
         if (pinsToRoute == null) {
@@ -436,6 +470,60 @@ public class PartialRouter extends RWRoute {
             preserveNet(net, true);
             numPreservedWire++;
             numPreservedRoutableNets++;
+        }
+    }
+
+    /** Nets that are not routing targets and whose sink pins were preserved (routed or not). */
+    private final List<Net> preservedNonTargetNets = new ArrayList<>();
+
+    /**
+     * For each preserved sink pin of a net that is not a routing target and does not reach the pin
+     * yet (a port net of a template whose proxy flop was removed), reserves one free node that can
+     * drive the pin's uphill node when that is a bounce node: a bounce node has a handful of
+     * drivers, and once the nets routed now have taken all of them the pin cannot be reached later.
+     * Runs after every preserved route is in the graph.
+     */
+    private void reserveDriversOfUnroutedPins() {
+        if (!routingGraph.isVersal || preservedNonTargetNets.isEmpty()) {
+            return;
+        }
+        int reserved = 0, missing = 0;
+        for (Net net : preservedNonTargetNets) {
+            for (SitePinInst pin : net.getSinkPins()) {
+                List<Node> uphill = pin.getConnectedNode().getAllUphillNodes();
+                if (uphill.size() != 1 || uphill.get(0).getIntentCode() != IntentCode.NODE_PINBOUNCE) {
+                    continue;
+                }
+                Node bounce = uphill.get(0);
+                boolean has = false;
+                Node free = null;
+                for (Node driver : bounce.getAllUphillNodes()) {
+                    if (driver.getIntentCode() != IntentCode.NODE_INODE) {
+                        continue;
+                    }
+                    Net owner = routingGraph.getPreservedNet(driver);
+                    if (owner == net) {
+                        has = true;
+                        break;
+                    }
+                    if (owner == null && free == null) {
+                        free = driver;
+                    }
+                }
+                if (has) {
+                    continue;
+                }
+                if (free == null) {
+                    missing++;
+                    continue;
+                }
+                routingGraph.preserve(free, net);
+                reserved++;
+            }
+        }
+        if (reserved > 0 || missing > 0) {
+            System.out.println("INFO: Reserved a driver node for " + reserved + " sink pins of unrouted nets"
+                    + (missing > 0 ? "; " + missing + " have none left" : ""));
         }
     }
 
@@ -792,6 +880,15 @@ public class PartialRouter extends RWRoute {
                                                              String[] args,
                                                              Collection<SitePinInst> pinsToRoute,
                                                              boolean softPreserve) {
+        return routeDesignWithUserDefinedArguments(design, args, pinsToRoute, softPreserve, null);
+    }
+
+    /** As above, keeping every routed connection off {@code blockedNodes} (see {@link #setBlockedNodes}). */
+    public static Design routeDesignWithUserDefinedArguments(Design design,
+                                                             String[] args,
+                                                             Collection<SitePinInst> pinsToRoute,
+                                                             boolean softPreserve,
+                                                             Collection<Node> blockedNodes) {
         // Instantiates a RWRouteConfig Object and parses the arguments.
         // Uses the default configuration if basic usage only.
         RWRouteConfig config = new RWRouteConfig(args);
@@ -804,7 +901,9 @@ public class PartialRouter extends RWRoute {
             System.out.println("WARNING: Masking nodes across RCLK for partial routing could result in routability problems.");
         }
 
-        return routeDesign(new PartialRouter(design, config, pinsToRoute, softPreserve));
+        PartialRouter router = new PartialRouter(design, config, pinsToRoute, softPreserve);
+        router.setBlockedNodes(blockedNodes);
+        return routeDesign(router);
     }
 
     /**

@@ -338,6 +338,18 @@ public class PerformanceExplorer {
         return reusePreviousResults;
     }
 
+    /** Placeholder in a post-place Tcl line for the run's directory. */
+    public static final String POST_PLACE_INST_DIR = "%INST_DIR%";
+    private final List<String> postPlaceTclLines = new ArrayList<>();
+
+    /**
+     * Adds a Tcl line run after {@code place_design} and before {@code route_design} in every
+     * implementation; {@link #POST_PLACE_INST_DIR} in it is replaced by the run's directory.
+     */
+    public void addPostPlaceTclLine(String line) {
+        postPlaceTclLines.add(line);
+    }
+
     public ArrayList<String> createTclScript(String initialDcp, String instDirectory,
                                              PlacerDirective p, RouterDirective r, String clockUncertainty,
                                              Entry<PBlock, String> pblockEntry, String encryptedTcl) {
@@ -370,6 +382,9 @@ public class PerformanceExplorer {
         lines.add("place_design -directive " + p.name());
         lines.add("# set_clock_uncertainty -setup "+baseClockUncertainty+" [get_clocks "+clkName+"]");
         lines.add("report_timing -file "+instDirectory + File.separator+PLACED_TIMING_RESULT);
+        for (String line : postPlaceTclLines) {
+            lines.add(line.replace(POST_PLACE_INST_DIR, instDirectory));
+        }
         lines.add("route_design -directive " + r.name());
         lines.add("report_timing -file "+instDirectory + File.separator+ROUTED_TIMING_RESULT);
         lines.add("write_checkpoint -force " + instDirectory + File.separator + "routed.dcp");

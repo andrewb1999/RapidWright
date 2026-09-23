@@ -49,6 +49,8 @@ import com.xilinx.rapidwright.design.blocks.PBlock;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.IntentCode;
 import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.BEL;
+import com.xilinx.rapidwright.device.SitePin;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Series;
 import com.xilinx.rapidwright.device.Tile;
@@ -127,7 +129,7 @@ public class RouteNodeGraph {
     protected final Map<TileTypeEnum, BitSet[]> eastWestWires;
 
     /** Flag for whether design targets the Versal series */
-    protected final boolean isVersal;
+    public final boolean isVersal;
 
     /** Map of the TileTypeEnum to the highest base wire index */
     protected final Map<TileTypeEnum, Integer> highestBaseWireIndex;
@@ -624,6 +626,10 @@ public class RouteNodeGraph {
         boolean isStaticNet = net.isStaticNet();
         for (SitePinInst pin : pins) {
             Node preserveNode = pin.getConnectedNode();
+            if (preserveNode == null) {
+                // A pin created for a placed but unrouted cell may have no node (e.g. a LAG pin's mux)
+                continue;
+            }
             if (isVersal && !pin.isOutPin()) {
                 // On Versal, spiNode gives the "*_PIN" node. Preserve the one and only
                 // node uphill of that, which is the "IMUX_*" or "BOUNCE_*"
@@ -654,7 +660,9 @@ public class RouteNodeGraph {
                 }
 
                 Node otherNode = si.getSite().getConnectedNode(otherPinName);
-                preserve(otherNode, net);
+                if (otherNode != null) {
+                    preserve(otherNode, net);
+                }
             }
         }
 
@@ -1041,6 +1049,7 @@ public class RouteNodeGraph {
 
         // (c) on the same side as the sink
         Tile sinkTile = sinkRnode.getTile();
+        boolean crossSlrCtrlSink = false;   // a CTRL sink's connection, on the other side of the SLR boundary
         switch (sinkRnode.getType()) {
             case LOCAL_EAST:
                 assert(connection.hasAltSinks());
@@ -1073,6 +1082,17 @@ public class RouteNodeGraph {
                         if (type != RouteNodeType.LOCAL_RESERVED) {
                             return false;
                         }
+                    } else if (connection.isCrossSLR() &&
+                            childRnode.getIntentCode() == IntentCode.NODE_PINFEED &&
+                            parentRnode.getIntentCode() == IntentCode.NODE_SLL_OUTPUT) {
+                        // ... or, on the way from another SLR, through the LAG pin an SLL lands on
+                        // (NODE_SLL_OUTPUT -> NODE_PINFEED -> NODE_CLE_OUTPUT, the slice routethru),
+                        // as for any other sink
+                        return true;
+                    } else if (connection.isCrossSLR() && childRnode.getSLRIndex(this) != sinkRnode.getSLRIndex(this)) {
+                        // ... or, in the other SLR, on the way into an SLL: the rules below
+                        // (INODE -> PINBOUNCE -> BNODE -> NODE_SLL_INPUT) apply as for any other sink
+                        crossSlrCtrlSink = true;
                     } else {
                         // ... or via LOCAL nodes in the two INT tiles either side
                         if (childTile.getTileYCoordinate() != sinkTile.getTileYCoordinate() ||
@@ -1101,7 +1121,7 @@ public class RouteNodeGraph {
                         return false;
                     }
                 }
-                assert(childTile == sinkTile);
+                assert(crossSlrCtrlSink || childTile == sinkTile);
                 break;
             case EXCLUSIVE_SINK_NON_LOCAL:
                 if (type.isAnyLocal()) {
@@ -1119,8 +1139,8 @@ public class RouteNodeGraph {
         }
 
         if (isVersal) {
-            assert(sinkRnode.getType() != RouteNodeType.EXCLUSIVE_SINK_BOTH);
-            assert(sinkRnode.getIntentCode() == IntentCode.NODE_IMUX || sinkRnode.getIntentCode() == IntentCode.NODE_PINBOUNCE);
+            assert(crossSlrCtrlSink || sinkRnode.getType() != RouteNodeType.EXCLUSIVE_SINK_BOTH);
+            assert(crossSlrCtrlSink || sinkRnode.getIntentCode() == IntentCode.NODE_IMUX || sinkRnode.getIntentCode() == IntentCode.NODE_PINBOUNCE);
 
             IntentCode childIntentCode = childRnode.getIntentCode();
             switch (childIntentCode) {
@@ -1199,7 +1219,21 @@ public class RouteNodeGraph {
                     head.getPrev().getIntentCode() == IntentCode.NODE_SLL_OUTPUT) {
                 // Ths sequence NODE_SLL_OUTPUT -> NODE_PINFEED -> NODE_CLE_OUTPUT must be a slice routethru the Laguna pin
                 assert(isVersalLagOutRoutethru(head, tail));
-                // Allow CLE/*LAG*_PIN -> CLE/*[A-H]Q2?_PIN routethru
+                // Allow CLE/*LAG*_PIN -> CLE/*[A-H]Q2?_PIN routethru, unless a placed cell of that slice
+                // already drives the output pin (a partially routed design's flops) or sits on the flop
+                // the routethru passes through (the helper's letter filter does not relate a LAG pin to it)
+                if (!RouteThruHelper.isRouteThruPIPAvailable(design, head, tail)) {
+                    return false;
+                }
+                SitePin outPin = tail.getSitePin();
+                SiteInst si = outPin == null ? null : design.getSiteInstFromSite(outPin.getSite());
+                if (si != null) {
+                    String q = outPin.getPinName();   // [A-H]Q or [A-H]Q2 -> [A-H]FF or [A-H]FF2
+                    BEL ff = outPin.getSite().getBEL(q.charAt(0) + "FF" + (q.endsWith("2") ? "2" : ""));
+                    if (ff != null && si.getCell(ff) != null) {
+                        return false;
+                    }
+                }
                 return true;
             }
         }

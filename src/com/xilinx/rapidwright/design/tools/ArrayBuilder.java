@@ -152,6 +152,9 @@ public class ArrayBuilder {
 
     private List<String> modInstNames;
 
+    /** The logical grid the instances were placed on, retained for {@link #getLogicalPlacement()}. */
+    private ArrayNetlistGraph.IdealArrayPlacement idealPlacement;
+
     private final ArrayBuilderConfig config;
 
     public ArrayBuilder(ArrayBuilderConfig config) {
@@ -252,6 +255,22 @@ public class ArrayBuilder {
      */
     public List<RelocatableTileRectangle> getPlacedArrayBoundingBoxes() {
         return placedArrayBoundingBoxes;
+    }
+
+    /**
+     * Logical grid cell (x, y) of every kernel instance {@link #createArray()} placed, by the instance
+     * name in the top design (the original tile names for tiles merged into an SLR crossing; see
+     * {@link #getMergedTileMap()}). Empty when the array was placed from a placement file or without
+     * a top design.
+     */
+    public Map<String, Pair<Integer, Integer>> getLogicalPlacement() {
+        Map<String, Pair<Integer, Integer>> result = new HashMap<>();
+        if (idealPlacement != null) {
+            for (Pair<Pair<Integer, Integer>, String> e : idealPlacement.getRowColumnOrderList()) {
+                result.put(e.getSecond(), e.getFirst());
+            }
+        }
+        return result;
     }
 
     private Site getModuleInstCentroid(ModuleInst mi) {
@@ -929,6 +948,24 @@ public class ArrayBuilder {
     }
 
     private EDIFHierCellInst mergeBlackBoxCells(String firstInstName, String secondInstName, String topInstName, String bottomInstName) {
+        return mergeBlackBoxCells(array, slrCrossing.getNetlist(), slrCrossingSynth.getNetlist(), firstInstName, secondInstName,
+                topInstName, bottomInstName);
+    }
+
+    /**
+     * Replaces two black-box tile instances of {@code array} (the tiles above and below an SLR
+     * boundary) with one black-box instance of the precompiled crossing's cell, named
+     * {@code <first>_<second>}: each net of the two instances moves to the crossing port the
+     * crossing's synthesized netlist maps that tile port to (the ports the crossing joins internally
+     * are dropped). The caller places a {@link ModuleInst} of the crossing under the returned instance's name.
+     *
+     * @param crossingNetlist the routed crossing's netlist (its top cell is the merged cell's port template)
+     * @param crossingSynthNetlist the crossing's synthesized netlist, whose {@code topInstName} and
+     *        {@code bottomInstName} black boxes map tile ports to crossing ports
+     */
+    public static EDIFHierCellInst mergeBlackBoxCells(Design array, EDIFNetlist crossingNetlist, EDIFNetlist crossingSynthNetlist,
+                                                      String firstInstName, String secondInstName,
+                                                      String topInstName, String bottomInstName) {
         EDIFHierCellInst firstHierInst = array.getNetlist().getHierCellInstFromName(firstInstName);
         EDIFHierCellInst secondHierInst = array.getNetlist().getHierCellInstFromName(secondInstName);
         EDIFCellInst firstInst = firstHierInst.getInst();
@@ -936,12 +973,12 @@ public class ArrayBuilder {
         EDIFCell firstCell = firstHierInst.getCellType();
         EDIFCell secondCell = secondHierInst.getCellType();
 
-        EDIFCell slrCrossingTopCell = slrCrossing.getTopEDIFCell();
+        EDIFCell slrCrossingTopCell = crossingNetlist.getTopCell();
 
         assert !firstCell.isPrimitive() && firstCell.isLeafCellOrBlackBox();
         assert !secondCell.isPrimitive() && secondCell.isLeafCellOrBlackBox();
 
-        EDIFNetlist netlist = slrCrossingSynth.getNetlist();
+        EDIFNetlist netlist = crossingSynthNetlist;
         Map<String, String> topBBPortMap = getBlackBoxToTopLevelMap(netlist, topInstName);
         Map<String, String> bottomBBPortMap = getBlackBoxToTopLevelMap(netlist, bottomInstName);
 
@@ -1226,6 +1263,7 @@ public class ArrayBuilder {
 
     private void placeArray() {
         ArrayNetlistGraph.IdealArrayPlacement idealPlacement = prepareArrayForPlacement();
+        this.idealPlacement = idealPlacement;
 
         t.stop().start("Place Instances");
         if (config.getOutputPlacementLocsFileName() != null) {
