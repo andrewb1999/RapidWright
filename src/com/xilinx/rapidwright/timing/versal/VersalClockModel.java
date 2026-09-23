@@ -37,6 +37,8 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.util.WeakHashMap;
+import java.util.Collections;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -999,14 +1001,27 @@ public class VersalClockModel {
         return ctx.size();
     }
 
+    /**
+     * Answers of {@link #isGlobalClockNet} by net, with the PIP count they were computed for: the
+     * scan is over every PIP of the net, and a clock net that is not typed as one (the flow's
+     * BUFGCE output) is asked about once per clocked cell, which on a 450,000-cell design made
+     * the slack analysis's seeding take hours.
+     */
+    private static final Map<Net, long[]> globalClockNets = Collections.synchronizedMap(new WeakHashMap<>());
+
     /** Whether a net is a routed global clock net (uses the global clock network). */
     public static boolean isGlobalClockNet(Net net) {
-        if (net.getPIPs().isEmpty()) return false;
+        int pips = net.getPIPs().size();
+        if (pips == 0) return false;
         if (net.isClockNet()) return true;
+        long[] cached = globalClockNets.get(net);
+        if (cached != null && cached[0] == pips) return cached[1] != 0;
+        boolean global = false;
         for (PIP p : net.getPIPs()) {
             Node e = p.getEndNode();
-            if (e != null && e.getIntentCode() != null && e.getIntentCode().name().startsWith("NODE_GLOBAL")) return true;
+            if (e != null && e.getIntentCode() != null && e.getIntentCode().name().startsWith("NODE_GLOBAL")) { global = true; break; }
         }
-        return false;
+        globalClockNets.put(net, new long[] {pips, global ? 1 : 0});
+        return global;
     }
 }
