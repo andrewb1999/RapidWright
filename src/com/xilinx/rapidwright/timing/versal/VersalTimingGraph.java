@@ -383,6 +383,8 @@ public class VersalTimingGraph {
     /** cell name + "/" + physical pin -> constant value (0/1) for pins Vivado would treat as constant. */
     private final Map<String, Integer> constantPins = new HashMap<>();
     private int constantLuts = 0;
+    /** configuration registers (flops fed back their own Q) whose INIT the graph treats as a constant */
+    private int constantFlops = 0;
 
     /**
      * Mirrors Vivado's constant propagation through LUTs: pins driven by GND/VCC are constant, a LUT
@@ -402,15 +404,15 @@ public class VersalTimingGraph {
     private void propagateConstants() {
         Map<String, Cell> lutByOutNet = new HashMap<>();       // net name -> LUT cell driving it
         Map<String, List<String>> netSinks = new HashMap<>();  // net name -> sink "cell/physPin"
-        // phase 1 (parallel): per net, its driving LUT and its sink pins, read off the netlist
+        // phase 1 (parallel): per net, its driving LUT (or feedback flop) and its sink pins, read off the netlist
         List<Net> nets = new ArrayList<>(design.getNets());
-        Object[][] found = new Object[nets.size()][];   // {LUT cell or null, sink keys}
+        Object[][] found = new Object[nets.size()][];   // {LUT cell or null, sink keys, feedback flop or null}
         java.util.stream.IntStream range = java.util.stream.IntStream.range(0, nets.size());
         (parallelNets() ? range.parallel() : range).forEach(i -> {
             Net net = nets.get(i);
             EDIFHierNet hnet = hierNetOf(net);
             if (hnet == null) return;
-            Cell lut = null;
+            Cell lut = null, ff = null;
             List<String> sinks = new ArrayList<>();
             for (EDIFHierPortInst p : hnet.getLeafHierPortInsts(true, true)) {
                 Cell c = p.getPhysicalCell(design);
@@ -419,22 +421,47 @@ public class VersalTimingGraph {
                 if (phys == null) continue;
                 if (p.isOutput()) {
                     if (c.getType() != null && c.getType().startsWith("LUT")) lut = c;
+                    if (c.getType() != null && (c.getType().equals("FDRE") || c.getType().equals("FDSE"))) ff = c;
                 } else sinks.add(c.getName() + "/" + phys);
             }
-            found[i] = new Object[] {lut, sinks};
+            // a flop fed back its own Q (a configuration register holding its INIT for good) drives a constant
+            if (ff != null && !sinks.contains(ff.getName() + "/" + ff.getPhysicalPinMapping("D"))) ff = null;
+            found[i] = new Object[] {lut, sinks, ff};
         });
         // phase 2 (sequential, net order)
+        List<Integer> feedback = new ArrayList<>();
         for (int i = 0; i < nets.size(); i++) {
             if (found[i] == null) continue;
             Net net = nets.get(i);
             Cell lut = (Cell) found[i][0];
             @SuppressWarnings("unchecked") List<String> sinks = (List<String>) found[i][1];
             if (lut != null) lutByOutNet.put(net.getName(), lut);
+            if (found[i][2] != null) feedback.add(i);
             if (!sinks.isEmpty()) netSinks.computeIfAbsent(net.getName(), k -> new ArrayList<>()).addAll(sinks);
             if (net.isStaticNet()) for (String key : sinks) constantPins.put(key, net.isVCCNet() ? 1 : 0);
         }
         boolean changed = true;
         Set<String> constNets = new HashSet<>();
+        // Configuration registers: a flop whose D is its own Q, with no reset that could move it
+        // (its SR pin unconnected or on a constant 0), holds its INIT forever. Vivado's STA does not
+        // know that (the flow states it with set_case_analysis, RapidSA's FlowPipeline); the model
+        // treats the register's Q as that constant, so the LUT arcs it selects (a delay lane's bypass
+        // mux, an SRL's address pins) are pruned like those of any constant, and the paths through a
+        // configured-off mux input are not timed.
+        for (int i : feedback) {
+            Cell ff = (Cell) found[i][2];
+            String sr = ff.getPhysicalPinMapping("R") != null ? ff.getPhysicalPinMapping("R") : ff.getPhysicalPinMapping("S");
+            Integer srValue = sr == null ? null : constantPins.get(ff.getName() + "/" + sr);
+            boolean srConstant = sr == null || srValue == null || srValue == 0;   // unmapped, unconnected or grounded
+            if (!srConstant) continue;
+            Long init = parseInit(ff.getEDIFCellInst() == null ? null : ff.getEDIFCellInst().getProperty("INIT"));
+            if (init == null) continue;
+            String netName = nets.get(i).getName();
+            constNets.add(netName);
+            constantFlops++;
+            for (String sink : netSinks.getOrDefault(netName, Collections.emptyList())) constantPins.put(sink, (int) (init & 1));
+        }
+        if (constantFlops > 0) System.out.println("[Timing] " + constantFlops + " configuration registers (flops fed back their own Q) taken as constants");
         while (changed) {
             changed = false;
             for (Map.Entry<String, Cell> e : lutByOutNet.entrySet()) {
@@ -1613,6 +1640,7 @@ public class VersalTimingGraph {
 
     public int getPrunedLutArcCount() { return prunedLutArcs; }
     public int getConstantLutCount() { return constantLuts; }
+    public int getConstantFlopCount() { return constantFlops; }
     public int getVertexCount() { return vertices.size(); }
     public int getEdgeCount() { return edges.size(); }
     public int getUnknownBelCount() { return unknownBels; }
