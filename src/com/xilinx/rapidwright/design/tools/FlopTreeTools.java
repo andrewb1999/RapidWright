@@ -60,6 +60,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.function.Predicate;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -199,29 +200,37 @@ public class FlopTreeTools {
     }
 
     /**
-     * Wraps a site iterator so that only sites whose tile is not inside any of
-     * {@code noGoBboxes} are yielded. If the list is empty, returns the base
-     * iterator unchanged.
+     * A no-go test over tiles from a list of rectangles: the tiles inside them, collected once
+     * (a footprint list of a few hundred placed modules covers ~100k tiles; testing every
+     * candidate site of a spiral search against every rectangle is what made a tree of a few
+     * thousand flops take minutes). Null or empty means no restriction.
      */
-    private static Iterator<Site> applyNoGoFilter(Iterator<Site> base, List<RelocatableTileRectangle> noGoBboxes) {
-        if (noGoBboxes.isEmpty()) return base;
+    public static Predicate<Tile> noGoPredicate(Device device, List<RelocatableTileRectangle> noGoBboxes) {
+        if (noGoBboxes == null || noGoBboxes.isEmpty()) return t -> false;
+        Set<Tile> tiles = new HashSet<>();
+        for (RelocatableTileRectangle bb : noGoBboxes) {
+            for (int r = bb.getMinRow(); r <= bb.getMaxRow(); r++) {
+                for (int c = bb.getMinColumn(); c <= bb.getMaxColumn(); c++) {
+                    Tile t = device.getTile(r, c);
+                    if (t != null) tiles.add(t);
+                }
+            }
+        }
+        return tiles::contains;
+    }
+
+    /**
+     * Wraps a site iterator so that only sites whose tile {@code noGo} rejects are yielded.
+     */
+    private static Iterator<Site> applyNoGoFilter(Iterator<Site> base, Predicate<Tile> noGo) {
         return new Iterator<Site>() {
             private Site nextSite;
             private boolean exhausted = false;
 
-            private boolean inAnyBbox(Tile t) {
-                for (RelocatableTileRectangle bb : noGoBboxes) {
-                    if (bb.isInside(t)) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-
             private void advance() {
                 while (base.hasNext()) {
                     Site s = base.next();
-                    if (!inAnyBbox(s.getTile())) {
+                    if (!noGo.test(s.getTile())) {
                         nextSite = s;
                         return;
                     }
@@ -358,14 +367,14 @@ public class FlopTreeTools {
     private static Pair<Site, Net> placeFlopNearCentroidOfPortInsts(Design design, String clkName, Net inputNet,
                                                                     String newNetName, List<EDIFHierPortInst> portInsts,
                                                                     Set<SiteInst> siteInstsToRoute, SLR requiredSLR,
-                                                                    List<RelocatableTileRectangle> noGoBboxes) {
+                                                                    Predicate<Tile> noGo) {
         Site centroid = findCentroidOfPortInsts(design, portInsts);
 
         if (centroid == null) {
             throw new RuntimeException("Failed to find centroid of net " + inputNet);
         }
 
-        Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(centroid).iterator(), noGoBboxes);
+        Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(centroid).iterator(), noGo);
         Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, requiredSLR);
         if (loc == null) {
             throw new RuntimeException("Failed to find location to place flop in flop tree"
@@ -393,7 +402,7 @@ public class FlopTreeTools {
     private static void insertFlopTreeForNetInSLR(Design design, SLR slr, String netName, String clkName, int depth,
                                                   List<EDIFHierPortInst> sinkHierPortInsts,
                                                   Set<SiteInst> siteInstsToRoute,
-                                                  List<RelocatableTileRectangle> noGoBboxes) {
+                                                  Predicate<Tile> noGo) {
         Net topNet = design.getNet(netName);
         List<Pair<Net, List<EDIFHierPortInst>>> currPortInstList = new ArrayList<>();
         currPortInstList.add(new Pair<>(topNet, sinkHierPortInsts));
@@ -407,7 +416,7 @@ public class FlopTreeTools {
                 List<EDIFHierPortInst> portInsts = pair.getSecond();
                 String newNetName = netName.replace(EDIFTools.EDIF_HIER_SEP, "_") + "_slr" + slr.getId() + "_d" + currDepth + "_" + i;
                 Pair<Site, Net> centroidNetPair = placeFlopNearCentroidOfPortInsts(design, clkName, net, newNetName,
-                        portInsts, siteInstsToRoute, slr, noGoBboxes);
+                        portInsts, siteInstsToRoute, slr, noGo);
 
                 Site centroid = centroidNetPair.getFirst();
                 Net newNet = centroidNetPair.getSecond();
@@ -444,7 +453,7 @@ public class FlopTreeTools {
                                               SLR targetSLR,
                                               List<EDIFHierPortInst> targetSLRPortInsts,
                                               Set<SiteInst> siteInstsToRoute,
-                                              List<RelocatableTileRectangle> noGoBboxes) {
+                                              Predicate<Tile> noGo) {
         int numCrossings = srcSegmentDepths.length;
         if (numCrossings == 0) return net;
 
@@ -470,7 +479,7 @@ public class FlopTreeTools {
                 List<Point> points = new ArrayList<>();
                 points.add(new Point(currentCol, row));
                 Site target = ECOPlacementHelper.getCentroidOfPoints(design.getDevice(), points, VALID_CENTROID_SITE_TYPES);
-                Iterator<Site> chainItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGoBboxes);
+                Iterator<Site> chainItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGo);
                 Pair<Site, BEL> chainLoc = nextAvailFlopPlacement(design, chainItr, currentSLR);
                 if (chainLoc == null) {
                     throw new RuntimeException("Failed to place src pacing flop in SLR " + currentSLR.getId()
@@ -489,7 +498,7 @@ public class FlopTreeTools {
                     ? ""
                     : "_xing" + crossingIdx) + "_top";
             Site firstSLRSite = getNearestValidSite(design, boundaryRow, currentCol);
-            Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(firstSLRSite).iterator(), noGoBboxes);
+            Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(firstSLRSite).iterator(), noGo);
             Iterator<Site> boundedItr = sitesWithinRowRange(siteItr,
                     boundaryRow - MAX_SLR_XING_TOP_FROM_BOUNDARY_ROWS,
                     boundaryRow,
@@ -517,7 +526,7 @@ public class FlopTreeTools {
                     ? ""
                     : "_xing" + crossingIdx) + "_bottom";
             Site secondSLRSite = getNearestValidSite(design, bottomTargetRow, actualTopCol);
-            Iterator<Site> bottomItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(secondSLRSite).iterator(), noGoBboxes);
+            Iterator<Site> bottomItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(secondSLRSite).iterator(), noGo);
             Pair<Site, BEL> bottomLoc = nextAvailFlopPlacement(design, bottomItr, null);
             if (bottomLoc == null) {
                 throw new RuntimeException("Failed to place " + bottomName + " for crossing " + crossingIdx
@@ -566,7 +575,14 @@ public class FlopTreeTools {
     public static Net insertFlopChain(Design design, Net net, String clkName, int depth,
                                       List<EDIFHierPortInst> portInsts, Set<SiteInst> siteInstsToRoute,
                                       List<RelocatableTileRectangle> noGoBboxes) {
-        if (noGoBboxes == null) noGoBboxes = Collections.emptyList();
+        return insertFlopChain(design, net, clkName, depth, portInsts, siteInstsToRoute,
+                noGoPredicate(design.getDevice(), noGoBboxes));
+    }
+
+    /** As above, with the no-go test as a predicate over tiles (see {@link #noGoPredicate}). */
+    public static Net insertFlopChain(Design design, Net net, String clkName, int depth,
+                                      List<EDIFHierPortInst> portInsts, Set<SiteInst> siteInstsToRoute,
+                                      Predicate<Tile> noGo) {
         List<EDIFHierPortInst> sources = net.getLogicalHierNet().getLeafHierPortInsts(true, false);
         if (sources.isEmpty()) {
             throw new RuntimeException("Net " + net.getName() + " does not have a source");
@@ -596,10 +612,10 @@ public class FlopTreeTools {
             // request and its reply) never share a slice: the deskew must be able to move each
             // stage on its own. Fall back to any free flop BEL if no empty slice is in reach.
             Iterator<Site> siteItr = applyNoGoFilter(unusedSitesOnly(design,
-                    ECOPlacementHelper.spiralOutFrom(target).iterator()), noGoBboxes);
+                    ECOPlacementHelper.spiralOutFrom(target).iterator()), noGo);
             Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, null);
             if (loc == null) {
-                siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGoBboxes);
+                siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGo);
                 loc = nextAvailFlopPlacement(design, siteItr, null);
             }
 
@@ -807,12 +823,33 @@ public class FlopTreeTools {
     public static void insertFlopTreeForNet(Design design, String netName, String clkName, int depth,
                                             int maxDepthPerSLR,
                                             List<RelocatableTileRectangle> noGoBboxes) {
-        if (noGoBboxes == null) noGoBboxes = Collections.emptyList();
+        insertFlopTreeForNet(design, netName, clkName, depth, maxDepthPerSLR, noGoPredicate(design.getDevice(), noGoBboxes));
+    }
+
+    /**
+     * As above, with the no-go test as a predicate over tiles: a caller inserting trees on many
+     * nets builds it once with {@link #noGoPredicate}.
+     */
+    public static void insertFlopTreeForNet(Design design, String netName, String clkName, int depth,
+                                            int maxDepthPerSLR, Predicate<Tile> noGo) {
+        insertFlopTreeForNet(design, netName, clkName, depth, maxDepthPerSLR, noGo, null);
+    }
+
+    /**
+     * As above, but with {@code siteInstsToRoute} non-null the new flops' sites are added to it
+     * instead of being site-routed here, for the caller to route after all its trees: the first
+     * site route after an ECO regenerates the netlist's parent-net map, a pass over the whole
+     * netlist, so routing per net costs a pass per net (about 1.5 s each on a 500k-cell design).
+     */
+    public static void insertFlopTreeForNet(Design design, String netName, String clkName, int depth,
+                                            int maxDepthPerSLR, Predicate<Tile> noGo, Set<SiteInst> siteInstsToRoute) {
+        if (noGo == null) noGo = t -> false;
+        boolean routeHere = siteInstsToRoute == null;
+        if (routeHere) siteInstsToRoute = new HashSet<>();
         EDIFNetlist netlist = design.getNetlist();
         EDIFHierNet parentNet = netlist.getHierNetFromName(netName).getLeafSourcePortInst().getHierarchicalNet();
         Net topNet = design.getNet(parentNet.getHierarchicalNetName());
         List<EDIFHierPortInst> sinkHierPortInsts = topNet.getLogicalHierNet().getLeafHierPortInsts(false);
-        Set<SiteInst> siteInstsToRoute = new HashSet<>();
 
         Map<SLR, List<EDIFHierPortInst>> slrPortInstMap = splitPortInstsBySLR(design, sinkHierPortInsts);
         List<EDIFHierPortInst> sourcePortInsts = topNet.getLogicalHierNet().getSourcePortInsts(false);
@@ -853,18 +890,20 @@ public class FlopTreeTools {
                 slrCrossedNet = topNet;
             } else {
                 slrCrossedNet = insertSourceChainToSLR(design, topNet, clkName, srcSegmentDepths,
-                        slr, portInsts, siteInstsToRoute, noGoBboxes);
+                        slr, portInsts, siteInstsToRoute, noGo);
             }
             if (dstChainDepth > 0) {
                 slrCrossedNet = insertFlopChain(design, slrCrossedNet, clkName, dstChainDepth, portInsts,
-                        siteInstsToRoute, noGoBboxes);
+                        siteInstsToRoute, noGo);
             }
             insertFlopTreeForNetInSLR(design, slr, slrCrossedNet.getName(), clkName, treeDepth, portInsts,
-                    siteInstsToRoute, noGoBboxes);
+                    siteInstsToRoute, noGo);
         }
 
-        for (SiteInst si : siteInstsToRoute) {
-            si.routeSite();
+        if (routeHere) {
+            for (SiteInst si : siteInstsToRoute) {
+                si.routeSite();
+            }
         }
     }
 

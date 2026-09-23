@@ -34,6 +34,7 @@ import com.xilinx.rapidwright.device.BEL;
 import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
+import com.xilinx.rapidwright.edif.EDIFCellInst;
 import com.xilinx.rapidwright.edif.EDIFHierNet;
 import com.xilinx.rapidwright.edif.EDIFHierPortInst;
 import com.xilinx.rapidwright.edif.EDIFHierCellInst;
@@ -438,7 +439,15 @@ public class VersalTimingGraph {
             changed = false;
             for (Map.Entry<String, Cell> e : lutByOutNet.entrySet()) {
                 if (constNets.contains(e.getKey())) continue;
-                Integer v = lutConstantValue(e.getValue());
+                Integer v;
+                try {
+                    v = lutConstantValue(e.getValue());
+                } catch (RuntimeException ex) {
+                    Cell c = e.getValue();
+                    EDIFCellInst ci = c.getEDIFCellInst();
+                    throw new RuntimeException("constant propagation on " + c.getName() + " (type " + c.getType() + ", site " + c.getSite() + ", bel " + c.getBEL()
+                            + ", inst " + ci + ", cellType " + (ci == null ? null : ci.getCellType()) + ", hier " + c.getEDIFHierCellInst() + ") of net " + e.getKey(), ex);
+                }
                 if (v == null) continue;
                 constNets.add(e.getKey());
                 constantLuts++;
