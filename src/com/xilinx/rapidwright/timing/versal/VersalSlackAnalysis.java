@@ -288,9 +288,20 @@ public class VersalSlackAnalysis {
         SitePinInst spi = clockSitePin(q);
         float[] arr = clockArrival(spi, q.cell);
         if (arr == null) { graph.unseedLaunch(q); return false; }
-        graph.seedLaunch(q, arr, launchGroup(spi));
+        Object group = launchGroup(spi);
+        graph.seedLaunch(q, arr, group);
+        if (group != null) leafPin.putIfAbsent(group, new Object[] {spi, q});
         return true;
     }
+
+    /**
+     * One launch (its clock pin and vertex) per arrival group (clock leaf): every launch under a leaf
+     * shares the clock path above it, so the pessimism removal, the common delay and the SLR of any
+     * of them against a capture are those of the representative, and an endpoint's slack per group
+     * needs no walk back to the group's actual launch; only the winning group's is looked up, and a
+     * group on the capture's own leaf is done the long way (a launch there may be the capture's own pin).
+     */
+    private final Map<Object, Object[]> leafPin = new HashMap<>();
 
     /** Extra allowance in the pruning bound for leaf delays set later by the deskew (its taps, ps). */
     private static final float PRUNE_TAP_ALLOWANCE_PS = 600f;
@@ -351,6 +362,7 @@ public class VersalSlackAnalysis {
         if (tags.isEmpty()) return null;
         VersalClockModel.ClockTree tree = getClockTree(cap.getNet());
         Map<VersalTimingGraph.Vertex, float[][]> cprOf = new HashMap<>();   // launch -> {setup {slow, fast}, hold {slow, fast}}
+        Object capGroup = launchGroup(cap);
         Result[] out = new Result[2];
         boolean any = false;
         for (boolean fast : new boolean[] {false, true}) {
@@ -364,29 +376,38 @@ public class VersalSlackAnalysis {
             r.holdCheck = v.check[iMin];
             r.setupSlack = Float.POSITIVE_INFINITY;
             r.holdSlack = Float.POSITIVE_INFINITY;
+            boolean setupByLeaf = false, holdByLeaf = false;
             for (VersalTimingGraph.Tagged tg : tags) {
+                // the group's representative launch stands for its actual one, unless the group is
+                // the capture's own leaf (a launch there may be the capture pin itself)
+                Object[] rep = tg.tag == null || tg.tag.equals(capGroup) ? null : leafPin.get(tg.tag);
                 // setup: the group's latest arrival at the max corner, with its launch's pessimism removal
                 if (!Float.isInfinite(tg.arrival[iMax])) {
-                    VersalTimingGraph.Vertex launch = launchOf(v, iMax, tg.tag);
+                    VersalTimingGraph.Vertex launch = rep != null ? (VersalTimingGraph.Vertex) rep[1] : launchOf(v, iMax, tg.tag);
                     float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
                     float slr = crossesSlr(launch, v) ? (r.captureClockMin - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
                     float slack = periodPs + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival[iMax] - slr;
                     if (slack < r.setupSlack) {
                         r.setupSlack = slack; r.launch = launch; r.setupTag = tg.tag; r.dataMax = tg.arrival[iMax]; r.setupPessimism = cpr[0][fast ? 1 : 0]; r.setupSlrComp = slr;
+                        setupByLeaf = rep != null;
                     }
                 }
                 // hold: the group's earliest arrival at the min corner
                 if (!Float.isInfinite(tg.arrival[iMin])) {
-                    VersalTimingGraph.Vertex launch = launchOf(v, iMin, tg.tag);
+                    VersalTimingGraph.Vertex launch = rep != null ? (VersalTimingGraph.Vertex) rep[1] : launchOf(v, iMin, tg.tag);
                     float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
                     float slr = crossesSlr(launch, v) ? (tg.arrival[iMin] - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
                     float slack = tg.arrival[iMin] - (r.captureClockMax - cpr[1][fast ? 1 : 0] + holdUncertaintyPs + r.holdCheck) - slr;
                     if (slack < r.holdSlack) {
                         r.holdSlack = slack; r.holdLaunch = launch; r.holdTag = tg.tag; r.dataMin = tg.arrival[iMin]; r.holdPessimism = cpr[1][fast ? 1 : 0]; r.holdSlrComp = slr;
+                        holdByLeaf = rep != null;
                     }
                 }
             }
             if (Float.isInfinite(r.setupSlack) || Float.isInfinite(r.holdSlack)) continue;
+            // the winning groups' actual launches, for the report and the hold fixer
+            if (setupByLeaf) r.launch = launchOf(v, iMax, r.setupTag);
+            if (holdByLeaf) r.holdLaunch = launchOf(v, iMin, r.holdTag);
             SitePinInst lp = clockSitePin(r.launch);
             float[] lArr = clockArrival(lp, r.launch.cell);
             r.launchClockMax = lArr == null ? 0 : lArr[iMax];
