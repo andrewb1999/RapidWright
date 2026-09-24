@@ -612,11 +612,25 @@ public class PartialRouter extends RWRoute {
         candidateNodes.addAll(sinkRnode.getAllUphillNodes());
         // Find those preserved nets that are using downhill nodes of the source pin node
         candidateNodes.addAll(sourceRnode.getAllDownhillNodes());
+        // A LUT pin's IMUX is fed by INODEs: when those (or the wires into the one still free) are
+        // all a macro's own routing, the pin has no way in from the fabric and the nets two levels
+        // up are what has to move (a relocated template whose port sink was reached through a
+        // CLE-local node from the harness flop beside it).
+        for (Node up : sinkRnode.getAllUphillNodes()) {
+            for (Node up2 : up.getAllUphillNodes()) {
+                candidateNodes.add(up2);
+                if (routingGraph.getPreservedNet(up2) == null) {
+                    for (Node up3 : up2.getAllUphillNodes()) candidateNodes.add(up3);
+                }
+            }
+        }
 
         for(Node node : candidateNodes) {
             Net toRoute = routingGraph.getPreservedNet(node);
             if(toRoute == null) continue;
             if(toRoute.isClockNet() || toRoute.isStaticNet()) continue;
+            if(crossesSlr(toRoute)) continue;   // a precompiled SLR crossing's SLL path: routed for hold at the precompile, not to be redone here
+            if(onGlobalNodes(toRoute)) continue;   // a net on clock-leaf nodes: the routing graph has no cost for those (RouteNode.setBaseCost throws)
             unpreserveNets.add(toRoute);
         }
 
@@ -631,6 +645,43 @@ public class PartialRouter extends RWRoute {
         });
 
         return unpreserveNets;
+    }
+
+    /** For the diagnostic above: how many candidate nodes, how many preserved by any net, how many by a static or clock net, how many by an SLL net. */
+    private String pickNetsToUnpreserveDiagnostic(Connection connection) {
+        RouteNode sinkRnode = connection.getSinkRnode();
+        int nodes = 0, preserved = 0, staticOrClock = 0, sll = 0, target = 0;
+        List<Node> candidates = new ArrayList<>();
+        candidates.add(sinkRnode);
+        candidates.addAll(sinkRnode.getAllUphillNodes());
+        for (Node up : sinkRnode.getAllUphillNodes()) { for (Node up2 : up.getAllUphillNodes()) { candidates.add(up2); if (routingGraph.getPreservedNet(up2) == null) candidates.addAll(up2.getAllUphillNodes()); } }
+        for (Node node : candidates) {
+            nodes++;
+            Net n = routingGraph.getPreservedNet(node);
+            if (n == null) continue;
+            preserved++;
+            if (n.isClockNet() || n.isStaticNet()) staticOrClock++;
+            else if (crossesSlr(n)) sll++;
+            else if (nets.get(n) != null && !partiallyPreservedNets.contains(nets.get(n))) target++;
+        }
+        return nodes + " candidate nodes, " + preserved + " preserved, " + staticOrClock + " static/clock, " + sll + " SLL, " + target + " already routing targets";
+    }
+
+    /** Whether any of the net's PIPs is on a global (clock) node, which the routing graph cannot represent. */
+    private static boolean onGlobalNodes(Net net) {
+        for (PIP pip : net.getPIPs()) {
+            if (pip.getStartNode().getIntentCode().name().startsWith("NODE_GLOBAL") || pip.getEndNode().getIntentCode().name().startsWith("NODE_GLOBAL")) return true;
+        }
+        return false;
+    }
+
+    /** Whether any of the net's PIPs is on a super long line between SLRs. */
+    private static boolean crossesSlr(Net net) {
+        for (PIP pip : net.getPIPs()) {
+            String w = pip.getStartWireName();
+            if (w.contains("SLL") || w.contains("LAG") || pip.getEndWireName().contains("SLL") || pip.getEndWireName().contains("LAG")) return true;
+        }
+        return false;
     }
 
     /**
@@ -811,22 +862,36 @@ public class PartialRouter extends RWRoute {
         return netWrapper;
     }
 
+    /** How many iterations in a row each connection has been unroutable, and the ones already unpreserved for. */
+    private final Map<Connection, Integer> unroutableStreak = new HashMap<>();
+    private final Set<Connection> unpreservedFor = new HashSet<>();
+
     @Override
     protected boolean handleUnroutableConnection(Connection connection) {
         enlargeBoundingBox(connection);
         if (routeIteration == 1 && swapOutputPin(connection)) {
             return true;
         }
-        if (softPreserve && (
+        // A connection that stays unroutable while its bounding box grows has no path at all, not a
+        // congested one: a sink whose only ways in a preserved net holds can pass the first
+        // iterations on a route the congestion resolution later rips (a LUT route-through of a
+        // slice the preserved macro fills), and only then show as unroutable; so soft preserve
+        // also acts on the second unroutable iteration in a row, once per connection.
+        int streak = unroutableStreak.merge(connection, 1, Integer::sum);
+        if (softPreserve && !unpreservedFor.contains(connection) && (
                 // First iteration, without alternate source
                 (routeIteration == 1 && connection.getNet().getAlternateSource() == null) ||
                 // Second iteration, with alternate source
-                (routeIteration == 2 && connection.getNet().getAlternateSource() != null))
+                (routeIteration == 2 && connection.getNet().getAlternateSource() != null) ||
+                streak >= 2)
         ) {
              int netsUnpreserved = unpreserveNetsAndReleaseResources(connection);
              if (netsUnpreserved > 0) {
+                 unpreservedFor.add(connection);
                  return true;
              }
+             if (streak == 2) System.out.println("INFO: soft preserve found no net to unpreserve for " + connection.getSink() + " of " + connection.getNet().getName()
+                     + " (iteration " + routeIteration + ", " + pickNetsToUnpreserveDiagnostic(connection) + ")");
         }
         abandonConnectionIfUnroutable(connection);
         return false;
