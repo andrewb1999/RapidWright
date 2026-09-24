@@ -40,7 +40,9 @@ import com.xilinx.rapidwright.timing.versal.VersalTimingGraph;
 import com.xilinx.rapidwright.timing.versal.VersalTimingModel;
 import com.xilinx.rapidwright.timing.versal.VersalTimingReport;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -237,6 +239,25 @@ public class HoldFixRouter extends PartialRouter {
         return budgetOfSink;
     }
 
+    /** Diagnostic: the state of the connection(s) on a sink after {@link #route()}. */
+    public String describeSink(SitePinInst sink) {
+        StringBuilder sb = new StringBuilder();
+        for (Connection c : indirectConnections) {
+            if (c.getSink() != sink) continue;
+            sb.append(String.format("indirect connection routed %b direct %b crossSLR %b altSinks %d sinkRnode %s rnodes %d budget %b; ",
+                    c.isRouted(), c.isDirect(), c.isCrossSLR(), c.getAltSinkRnodes().size(), c.getSinkRnode(), c.getRnodes().size(), budgetOfConnection.containsKey(c)));
+        }
+        if (sb.length() == 0) sb.append("no connection on this sink; ");
+        sb.append("pin routed ").append(sink.isRouted()).append(" node ").append(sink.getConnectedNode());
+        Net net = sink.getNet();
+        Node n = RouterHelper.projectInputPinToINTNode(sink);
+        sb.append("; net sinks:");
+        for (SitePinInst q : net.getSinkPins()) sb.append(' ').append(q).append('(').append(q.isRouted() ? "routed" : "unrouted").append(',').append(RouterHelper.projectInputPinToINTNode(q)).append(')');
+        sb.append("; PIPs at ").append(n).append(':');
+        for (PIP pip : net.getPIPs()) if (pip.getStartNode().equals(n) || pip.getEndNode().equals(n)) sb.append(' ').append(pip);
+        return sb.toString();
+    }
+
     /** The delay (router units) the last {@link #route()} achieved for a budgeted sink; NaN if it was not routed, null if it had no budget. */
     public Float getAchievedDelay(SitePinInst sink) {
         for (Map.Entry<Connection, Float> e : achievedDelay.entrySet()) {
@@ -308,7 +329,22 @@ public class HoldFixRouter extends PartialRouter {
             if (c.isDirect() || !c.isRouted() || toRoute.contains(c.getSink())) continue;
             for (RouteNode rnode : c.getRnodes()) routingGraph.preserve(rnode, net);
         }
+        // a deferred sink is left for a later pass: its connection is marked routed with no route, so this
+        // pass neither routes it nor reports it unroutable
+        for (Connection c : netWrapper.getConnections()) {
+            if (!c.isDirect() && !c.isRouted() && deferredSinks.contains(c.getSink())) c.setRouted(true);
+        }
     }
+
+    private final Set<SitePinInst> deferredSinks = new HashSet<>();
+
+    /**
+     * Sinks of the target nets this router leaves unrouted (their pins are not targets, and their
+     * connections are not routed plainly beside the budgeted ones): a sibling that shares a bounce node
+     * with a budgeted sink would otherwise be routed to that node through a shorter driver in the same
+     * pass and the route fixer would keep that driver, discarding the budgeted detour.
+     */
+    public void setDeferredSinks(Collection<SitePinInst> sinks) { deferredSinks.clear(); deferredSinks.addAll(sinks); }
 
     protected static class RouteNodeGraphHoldFix extends RouteNodeGraphPartial {
         private final List<IntentCode> disallowedNodeTypes;
@@ -820,26 +856,57 @@ public class HoldFixRouter extends PartialRouter {
         out.sinksBudgeted = router.getDelayBudgets().size();
         Map<Net, List<PIP>> pipsBefore = new HashMap<>();
         for (Net net : byNet.keySet()) { out.pipsBefore += net.getPIPs().size(); pipsBefore.put(net, new ArrayList<>(net.getPIPs())); }
+        // A sink reached through a bounce node the net also routes on to another of its sinks (an SRL data pin or
+        // a flop's [A-H]X, with a LUT pin of the same slice fed from the same bounce): unrouting the pin alone leaves
+        // the node in the net's PIPs, the partial router then rebuilds the connection from them and never routes it
+        // with its budget (the FSA's last hold endpoints). Its siblings are unrouted with it and routed again plainly
+        // after the budgeted pass, off the detour.
+        List<SitePinInst> siblings = siblingSinksOnBudgetedNodes(byNet);
         for (Map.Entry<Net, List<SitePinInst>> e : byNet.entrySet()) DesignTools.unroutePins(e.getKey(), e.getValue());
+        if (!siblings.isEmpty()) System.out.printf("[HoldFixRouter] %d sibling sinks share a bounce node with a budgeted sink: unrouted with it, routed again after the budgeted pass%n", siblings.size());
+        router.setDeferredSinks(siblings);
 
         t0 = System.currentTimeMillis();
         router.initialize();
         router.route();
         out.routeMs = System.currentTimeMillis() - t0;
         List<SitePinInst> unrouted = new ArrayList<>();
+        int notTried = 0;
         for (Map.Entry<SitePinInst, DelayBudget> e : router.getDelayBudgets().entrySet()) {
             Float a = router.getAchievedDelay(e.getKey());
             if (a != null && !Float.isNaN(a)) { out.routed++; if (a >= e.getValue().min - 10f) out.budgetMet++; }
             else if (!e.getKey().isRouted()) unrouted.add(e.getKey());
+            if (a == null && notTried++ < 30) {
+                System.out.println("[HoldFixRouter] budgeted sink never routed by the budgeted search: " + e.getKey() + " of " + e.getKey().getNet().getName()
+                        + ": " + router.describeSink(e.getKey()));
+            }
         }
+        for (SitePinInst p : siblings) { p.setRouted(false); unrouted.add(p); }
         // A connection the budgeted search and its fallback both abandon must not stay unrouted (the 16x16
         // FSA shipped one such pin in a routed checkpoint): route it again on any wire, like a reverted sink.
+        // The deferred siblings are routed here too, with the budgeted routes of their nets fixed so that
+        // the pass can only join a detour along it (an arc into a fixed PIP's node is locked), not re-drive
+        // its bounce node from a shorter path.
         if (!unrouted.isEmpty()) {
+            List<PIP> locked = new ArrayList<>();
+            for (SitePinInst sib : new HashSet<>(siblings)) {
+                Net net = sib.getNet();
+                Map<Node, PIP> byEnd = new HashMap<>();
+                for (PIP pip : net.getPIPs()) byEnd.put(pip.isReversed() ? pip.getStartNode() : pip.getEndNode(), pip);
+                for (SitePinInst p : byNet.get(net)) {
+                    if (!router.getDelayBudgets().containsKey(p)) continue;
+                    for (PIP pip = byEnd.get(p.getConnectedNode()); pip != null && !pip.isPIPFixed(); pip = byEnd.get(pip.isReversed() ? pip.getEndNode() : pip.getStartNode())) {
+                        pip.setIsPIPFixed(true);
+                        locked.add(pip);
+                    }
+                }
+            }
             HoldFixRouter plain = new HoldFixRouter(design, config, unrouted, false, new ArrayList<>());
             plain.initialize();
             plain.route();
+            for (PIP pip : locked) pip.setIsPIPFixed(false);
             for (SitePinInst p : unrouted) if (!p.isRouted()) out.unroutedSinks++;
-            System.out.printf("[HoldFixRouter] %d sinks left unrouted by the budgeted search routed again plainly; %d still unrouted%n", unrouted.size(), out.unroutedSinks);
+            System.out.printf("[HoldFixRouter] %d sinks left unrouted by the budgeted search routed again plainly (%d deferred siblings, %d PIPs of their nets' budgeted routes held fixed); %d still unrouted%n", unrouted.size(), siblings.size(), locked.size(), out.unroutedSinks);
         }
 
         long[] stats = router.getBudgetedSearchStats();
@@ -892,6 +959,44 @@ public class HoldFixRouter extends PartialRouter {
         System.out.printf("[HoldFixRouter] budgeted search: %d popped, %d pushed, %d stale skipped, %d fallbacks, %d searches out of pops took the best route seen%n", stats[0], stats[1], stats[2], stats[3], stats[4]);
         System.out.println("[HoldFixRouter] " + out);
         return out;
+    }
+
+    /**
+     * The other sink pins of each net whose route passes through the INT node of one of the net's budgeted
+     * sinks: they have to be unrouted with it for its connection to be open to the budgeted search.
+     */
+    private static List<SitePinInst> siblingSinksOnBudgetedNodes(Map<Net, List<SitePinInst>> byNet) {
+        List<SitePinInst> siblings = new ArrayList<>();
+        for (Map.Entry<Net, List<SitePinInst>> e : byNet.entrySet()) {
+            Net net = e.getKey();
+            if (net.getSinkPins().size() <= e.getValue().size()) continue;
+            Map<Node, List<Node>> downhill = new HashMap<>();
+            for (PIP pip : net.getPIPs()) {
+                Node start = pip.isReversed() ? pip.getEndNode() : pip.getStartNode();
+                Node end = pip.isReversed() ? pip.getStartNode() : pip.getEndNode();
+                downhill.computeIfAbsent(start, k -> new ArrayList<>()).add(end);
+            }
+            Set<Node> reached = new HashSet<>();
+            Deque<Node> stack = new ArrayDeque<>();
+            for (SitePinInst p : e.getValue()) {
+                Node n = RouterHelper.projectInputPinToINTNode(p);
+                if (n != null && reached.add(n)) stack.push(n);
+            }
+            while (!stack.isEmpty()) {
+                for (Node child : downhill.getOrDefault(stack.pop(), Collections.emptyList())) if (reached.add(child)) stack.push(child);
+            }
+            Set<SitePinInst> budgeted = new HashSet<>(e.getValue());
+            for (SitePinInst q : net.getSinkPins()) {
+                if (budgeted.contains(q)) continue;
+                // (not q.isRouted(): the flag is stale on a checkpoint no router has refreshed; the walk is the proof)
+                Node n = RouterHelper.projectInputPinToINTNode(q);
+                if ((n != null && reached.contains(n)) || reached.contains(q.getConnectedNode())) {
+                    siblings.add(q);
+                    e.getValue().add(q);
+                }
+            }
+        }
+        return siblings;
     }
 
     /**
