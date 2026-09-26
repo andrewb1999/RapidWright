@@ -516,7 +516,9 @@ public class VersalSlackAnalysis {
             Map<VersalTimingGraph.Vertex, List<VersalTimingGraph.Edge>> level = graph.inEdges(frontier);
             ins.putAll(level);
             Set<VersalTimingGraph.Vertex> next = new HashSet<>();
-            for (List<VersalTimingGraph.Edge> es : level.values()) for (VersalTimingGraph.Edge e : es) if (!e.src.launch && seen.add(e.src)) next.add(e.src);
+            // launches too: one with inputs of its own is also a combinational through-point (a LUTRAM's O6 launches its
+            // write port and passes its read address on), and a flop's Q has none, so it ends the walk anyway
+            for (List<VersalTimingGraph.Edge> es : level.values()) for (VersalTimingGraph.Edge e : es) if (seen.add(e.src)) next.add(e.src);
             frontier = next;
         }
         Map<VersalTimingGraph.Vertex, List<PathSlack>> out = new HashMap<>();
@@ -539,7 +541,9 @@ public class VersalSlackAnalysis {
                         ps.path = path; ps.launch = head; ps.endpoint = v; ps.fast = fast; ps.holdSlack = slack;
                         found.add(ps);
                     }
-                    continue;
+                    // a launch with inputs (a LUTRAM's asynchronous read) goes on to them: the path from the read address
+                    // is the one with a net to lengthen (GEMM 8x8: the input FIFO's rptr -> RAMD64 A -> O6 -> dout, -23 ps, never budgeted)
+                    if (ins.getOrDefault(head, java.util.Collections.emptyList()).isEmpty()) continue;
                 }
                 if (suffix.size() >= maxDepth) continue;
                 for (VersalTimingGraph.Edge e : ins.getOrDefault(head, java.util.Collections.emptyList())) {
