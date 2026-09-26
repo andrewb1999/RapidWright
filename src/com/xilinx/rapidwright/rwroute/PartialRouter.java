@@ -151,7 +151,10 @@ public class PartialRouter extends RWRoute {
         //   (b) only that arc is allowed to enter this end node
         RouteNode prev = endRnode.getPrev();
         if (prev != null) {
-            if (endRnode.isVisited(start.getVisited())) {
+            // (a visited value of 0 is "never visited", not a search: a search that does not mark the nodes it
+            // expands, HoldFixRouter's budgeted one, would otherwise find both ends "visited by 0" and drop the
+            // net's own route from the cached children of its source for the rest of the pass)
+            if (start.getVisited() != 0 && endRnode.isVisited(start.getVisited())) {
                 // Visited possibly from a different arc uphill of end, or possibly from
                 // the same start -> end arc during prepareRouteConnection()
                 return false;
