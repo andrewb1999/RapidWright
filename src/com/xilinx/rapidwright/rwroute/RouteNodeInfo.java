@@ -61,7 +61,7 @@ public class RouteNodeInfo {
         Tile baseTile = node.getTile();
         TileTypeEnum baseTileType = baseTile.getTileTypeEnum();
         TileTypeEnum endTileType;
-        if (Utils.isLaguna(baseTileType) || Utils.isInterConnect(baseTileType)) {
+        if ((Utils.isLaguna(baseTileType) || Utils.isInterConnect(baseTileType)) && !isSllBounceNode(node, baseTileType)) {
             endTileType = baseTileType;
         } else {
             endTileType = TileTypeEnum.INT;
@@ -107,6 +107,20 @@ public class RouteNodeInfo {
         }
 
         return new RouteNodeInfo(type, endTileXCoordinate, endTileYCoordinate, length);
+    }
+
+    /**
+     * Versal SLL tiles count as interconnect (for their super long lines), but they also host the bounce
+     * nodes (BNODE/CNODE) of the INT tile beside them. Like those of CLE_BC_CORE tiles, these end in that
+     * INT tile, which {@link RouteNodeGraph#isAccessible} compares with the sink's tile: ended in the SLL
+     * tile, they were never accessible to an intra-SLR sink, although they can be its only way in.
+     */
+    private static boolean isSllBounceNode(Node node, TileTypeEnum baseTileType) {
+        if (baseTileType != TileTypeEnum.SLL) {
+            return false;
+        }
+        IntentCode ic = node.getIntentCode();
+        return ic == IntentCode.NODE_CLE_BNODE || ic == IntentCode.NODE_CLE_CNODE;
     }
 
     private static short getEndTileXCoordinate(Node node, short endTileXCoordinate) {
