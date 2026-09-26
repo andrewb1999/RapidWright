@@ -146,6 +146,8 @@ public class RWRoute {
 
     /** A set of indices of overused rondes */
     private Set<RouteNode> overUsedRnodes;
+    /** The nets on the overused nodes when the iteration loop ended (see {@link #getNetsOnOverusedNodes()}). */
+    private final Set<Net> netsOnOverusedNodesAtEnd = new HashSet<>();
     /** Class encapsulating the routing resource graph */
     protected RouteNodeGraph routingGraph;
     /** Count of rnodes created in the current routing iteration */
@@ -1044,6 +1046,11 @@ public class RWRoute {
             lastIterationRnodeCount = routingGraph.numNodes();
             lastIterationRnodeTime = rnodesTimer.getTime();
         }
+        netsOnOverusedNodesAtEnd.clear();
+        for (RouteNode rnode : overUsedRnodes) {
+            Map<NetWrapper, Integer> users = rnode.getUsersConnectionCounts();
+            if (users != null) for (NetWrapper w : users.keySet()) netsOnOverusedNodesAtEnd.add(w.getNet());
+        }
         if (routeIteration == config.getMaxIterations()) {
             System.out.println("\nERROR: Routing terminated after " + (routeIteration -1 ) + " iterations.");
             System.out.println("       Unroutable connections: " + getUnroutableConnections().size());
@@ -1052,6 +1059,15 @@ public class RWRoute {
                 System.out.println("              " + rnode);
             }
         }
+    }
+
+    /**
+     * The nets on a node that more than one net still occupied when the iteration loop ended (empty once it
+     * converged): a route whose pins all read routed can still be one of these after the iteration cap.
+     * Recorded when the loop ends, since the post-route steps rip up and rebuild some routes.
+     */
+    public Set<Net> getNetsOnOverusedNodes() {
+        return new HashSet<>(netsOnOverusedNodesAtEnd);
     }
 
     /**
