@@ -77,6 +77,10 @@ public class VersalTimingGraph {
         /** critical predecessor edge per corner */
         public final Edge[] pred;
         public final List<Edge> outs = new ArrayList<>(2);
+        /** live incoming edges, in the order they were added (kept with {@link #outs} by addEdge and dropNetEdges) */
+        public final List<Edge> ins = new ArrayList<>(2);
+        /** inputs not yet relaxed during a Kahn propagation (scratch; replaces a per-propagation HashMap) */
+        int pending;
         public boolean launch;        // clock-to-output pin of a sequential cell
         public boolean endpoint;      // data/control input of a sequential cell
         /** timing check per corner: setup requirement at max corners, hold requirement at min corners (ps) */
@@ -162,7 +166,13 @@ public class VersalTimingGraph {
     private final Design design;
     private final VersalTimingModel model;
     private final int nc;
-    private final Map<String, Vertex> vertices = new LinkedHashMap<>();
+    /**
+     * The vertices of each cell, by the cell's name (its String caches its hash; the former key,
+     * name + "/" + pin, was a new string to build and hash on every lookup), and every vertex in the
+     * order it was created.
+     */
+    private final Map<String, Vertex[]> vertexByCell = new HashMap<>();
+    private final List<Vertex> vertices = new ArrayList<>();
     private final List<Edge> edges = new ArrayList<>();
     private final List<Vertex> endpoints = new ArrayList<>();
     private int unknownBels = 0, unroutedSinks = 0, netsSkipped = 0, prunedLutArcs = 0;
@@ -229,15 +239,22 @@ public class VersalTimingGraph {
     }
 
     public Vertex getVertex(Cell c, String pin) {
-        return vertices.get(c.getName() + "/" + pin);
+        Vertex[] vs = vertexByCell.get(c.getName());
+        if (vs != null) for (Vertex v : vs) if (v.pin.equals(pin)) return v;
+        return null;
     }
 
     private Vertex vertex(Cell c, String pin) {
-        return vertices.computeIfAbsent(c.getName() + "/" + pin, k -> {
-            Vertex v = new Vertex(c, pin, nc);
-            for (int i = 0; i < nc; i++) v.arrival[i] = unset(i);
-            return v;
-        });
+        String name = c.getName();
+        Vertex[] vs = vertexByCell.get(name);
+        if (vs != null) for (Vertex v : vs) if (v.pin.equals(pin)) return v;
+        Vertex v = new Vertex(c, pin, nc);
+        for (int i = 0; i < nc; i++) v.arrival[i] = unset(i);
+        if (vs == null) vs = new Vertex[] {v};
+        else { vs = Arrays.copyOf(vs, vs.length + 1); vs[vs.length - 1] = v; }
+        vertexByCell.put(name, vs);
+        vertices.add(v);
+        return v;
     }
 
     private Edge addEdge(Vertex s, Vertex d, float[] delay, Net net, String kind) {
@@ -247,6 +264,7 @@ public class VersalTimingGraph {
     private Edge addEdge(Vertex s, Vertex d, float[] delay, Net net, String kind, SitePinInst sinkPin, float[] intraSite) {
         Edge e = new Edge(s, d, delay, net, kind, sinkPin, intraSite);
         s.outs.add(e);
+        d.ins.add(e);
         edges.add(e);
         return e;
     }
@@ -340,6 +358,8 @@ public class VersalTimingGraph {
     /** Builds logic arcs and net edges for the whole design. */
     /** Wall time of the build phases: constants, logic arcs, net edges (ms). */
     public final long[] phaseMs = new long[3];
+    /** Wall time of the parallel first half of each of those phases (ms); the rest of phaseMs is the sequential half. */
+    public final long[] parallelMs = new long[3];
     /** Wall time of resolving the hierarchical nets before the build phases (ms). */
     public long hierNetsMs = 0;
 
@@ -408,6 +428,7 @@ public class VersalTimingGraph {
         List<Net> nets = new ArrayList<>(design.getNets());
         Object[][] found = new Object[nets.size()][];   // {LUT cell or null, sink keys, feedback flop or null}
         java.util.stream.IntStream range = java.util.stream.IntStream.range(0, nets.size());
+        long tp = System.currentTimeMillis();
         (parallelNets() ? range.parallel() : range).forEach(i -> {
             Net net = nets.get(i);
             EDIFHierNet hnet = hierNetOf(net);
@@ -428,6 +449,7 @@ public class VersalTimingGraph {
             if (ff != null && !sinks.contains(ff.getName() + "/" + ff.getPhysicalPinMapping("D"))) ff = null;
             found[i] = new Object[] {lut, sinks, ff};
         });
+        parallelMs[0] = System.currentTimeMillis() - tp;
         // phase 2 (sequential, net order)
         List<Integer> feedback = new ArrayList<>();
         for (int i = 0; i < nets.size(); i++) {
@@ -801,41 +823,90 @@ public class VersalTimingGraph {
         // phase 1 (parallel): per cell, BEL indices, arc configuration, delay lookups, LUT pruning
         CellPlan[] plans = new CellPlan[cells.size()];
         java.util.stream.IntStream range = java.util.stream.IntStream.range(0, cells.size());
+        long tp = System.currentTimeMillis();
         (DEBUG_CELL == null && com.xilinx.rapidwright.util.ParallelismTools.getParallel() ? range.parallel() : range)
                 .forEach(i -> plans[i] = planCell(cells.get(i)));
-        // phase 2 (sequential, cell order): the same vertices, launches, edges and endpoints in the same order
-        for (CellPlan p : plans) {
-            Cell c = p.cell;
+        parallelMs[1] = System.currentTimeMillis() - tp;
+        // phase 2a (parallel, per cell): the cell's vertices and arcs. A cell's logic arcs join its own pins
+        // only, and no vertex exists before this phase, so each cell builds its vertices privately, in the
+        // order the sequential version created them.
+        CellBuild[] builds = new CellBuild[plans.length];
+        java.util.stream.IntStream range2 = java.util.stream.IntStream.range(0, plans.length);
+        (DEBUG_CELL == null && com.xilinx.rapidwright.util.ParallelismTools.getParallel() ? range2.parallel() : range2)
+                .forEach(i -> builds[i] = plans[i].unknownBel == null ? buildCell(plans[i]) : null);
+        // phase 2b (sequential, cell order): publish them, so the vertex, edge, launch and endpoint orders
+        // (the topological queue and every tie-break) are those of the sequential version
+        for (int i = 0; i < plans.length; i++) {
+            CellPlan p = plans[i];
             if (p.unknownBel != null) { unknownBels++; unknownBelNames.add(p.unknownBel); continue; }
             prunedLutArcs += p.pruned;
-            int li = 0, ai = 0;
-            for (boolean isLaunch : p.order) {
-                if (isLaunch) {
-                    Object[] l = p.launches.get(li++);
-                    String in = (String) l[0], out = (String) l[1];
-                    float[] d = (float[]) l[2];
-                    Vertex q = vertex(c, out);
-                    for (int i = 0; i < nc; i++) {
-                        float clkq = d == null ? 0 : Math.max(0, d[i]);
-                        q.arrival[i] = q.launch ? (model.isMax(i) ? Math.max(q.arrival[i], clkq) : Math.min(q.arrival[i], clkq)) : clkq;
-                    }
-                    q.launch = true;
-                    clkToQ.put(q, q.arrival.clone());
-                    clockPin.put(q, in);
-                } else {
-                    Object[] a = p.arcs.get(ai++);
-                    addEdge(vertex(c, (String) a[0]), vertex(c, (String) a[1]), (float[]) a[2], null, "logic");
-                }
+            CellBuild cb = builds[i];
+            if (!cb.vertices.isEmpty()) vertexByCell.put(p.cell.getName(), cb.vertices.toArray(new Vertex[0]));
+            vertices.addAll(cb.vertices);
+            edges.addAll(cb.edges);
+            for (Object[] l : cb.launches) {
+                Vertex q = (Vertex) l[0];
+                clkToQ.put(q, (float[]) l[2]);
+                clockPin.put(q, (String) l[1]);
             }
-            for (Object[] k : p.checks) {
-                Vertex v = vertex(c, (String) k[0]);
-                v.endpoint = true;
-                float[] chk = (float[]) k[1];
-                if (chk != null) System.arraycopy(chk, 0, v.check, 0, nc);
-                endpoints.add(v);
-                clockPin.put(v, (String) k[2]);
+            for (Object[] k : cb.checks) {
+                endpoints.add((Vertex) k[0]);
+                clockPin.put((Vertex) k[0], (String) k[1]);
             }
         }
+    }
+
+    /** What {@link #buildCell} made of one cell: its vertices in creation order, its arcs, launches and endpoints. */
+    private static final class CellBuild {
+        final List<Vertex> vertices = new ArrayList<>(4);
+        final List<Edge> edges = new ArrayList<>(4);
+        /** {launch vertex, clock pin, clock-to-output after this launch} in order */
+        final List<Object[]> launches = new ArrayList<>(1);
+        /** {endpoint vertex, clock pin} in order */
+        final List<Object[]> checks = new ArrayList<>(2);
+        Vertex vertex(Cell c, String pin, int nc, VersalTimingGraph g) {
+            for (Vertex v : vertices) if (v.pin.equals(pin)) return v;
+            Vertex v = new Vertex(c, pin, nc);
+            for (int i = 0; i < nc; i++) v.arrival[i] = g.unset(i);
+            vertices.add(v);
+            return v;
+        }
+    }
+
+    /** The graph additions of one cell's plan, touching nothing shared (see buildLogicArcs). */
+    private CellBuild buildCell(CellPlan p) {
+        Cell c = p.cell;
+        CellBuild cb = new CellBuild();
+        int li = 0, ai = 0;
+        for (boolean isLaunch : p.order) {
+            if (isLaunch) {
+                Object[] l = p.launches.get(li++);
+                String in = (String) l[0], out = (String) l[1];
+                float[] d = (float[]) l[2];
+                Vertex q = cb.vertex(c, out, nc, this);
+                for (int i = 0; i < nc; i++) {
+                    float clkq = d == null ? 0 : Math.max(0, d[i]);
+                    q.arrival[i] = q.launch ? (model.isMax(i) ? Math.max(q.arrival[i], clkq) : Math.min(q.arrival[i], clkq)) : clkq;
+                }
+                q.launch = true;
+                cb.launches.add(new Object[] {q, in, q.arrival.clone()});
+            } else {
+                Object[] a = p.arcs.get(ai++);
+                Vertex s = cb.vertex(c, (String) a[0], nc, this), d = cb.vertex(c, (String) a[1], nc, this);
+                Edge e = new Edge(s, d, (float[]) a[2], null, "logic", null, null);
+                s.outs.add(e);
+                d.ins.add(e);
+                cb.edges.add(e);
+            }
+        }
+        for (Object[] k : p.checks) {
+            Vertex v = cb.vertex(c, (String) k[0], nc, this);
+            v.endpoint = true;
+            float[] chk = (float[]) k[1];
+            if (chk != null) System.arraycopy(chk, 0, v.check, 0, nc);
+            cb.checks.add(new Object[] {v, k[2]});
+        }
+        return cb;
     }
 
     private CellPlan planCell(Cell c) {
@@ -953,13 +1024,60 @@ public class VersalTimingGraph {
         // phase 1 (parallel): pure lookups against the design, the device and the model's tables
         NetPlan[] plans = new NetPlan[nets.size()];
         java.util.stream.IntStream range = java.util.stream.IntStream.range(0, nets.size());
+        long tp = System.currentTimeMillis();
         (parallelNets() ? range.parallel() : range).forEach(i -> plans[i] = planNet(nets.get(i)));
-        // phase 2 (sequential, net order): vertices and edges in the same order as before, so the
-        // topological queue and every tie-break are unchanged
-        for (NetPlan p : plans) {
+        parallelMs[2] = System.currentTimeMillis() - tp;
+        // phase 2a (parallel): the source and sink vertices that already exist (read-only lookups)
+        Vertex[][] ends = new Vertex[plans.length][];
+        java.util.stream.IntStream r2 = java.util.stream.IntStream.range(0, plans.length);
+        (parallelNets() ? r2.parallel() : r2).forEach(i -> {
+            NetPlan p = plans[i];
+            if (p.srcCell == null) return;
+            Vertex[] vs = new Vertex[1 + p.sinks.size()];
+            vs[0] = getVertex(p.srcCell, p.srcPhys);
+            for (int k = 0; k < p.sinks.size(); k++) vs[1 + k] = getVertex((Cell) p.sinks.get(k)[0], (String) p.sinks.get(k)[1]);
+            ends[i] = vs;
+        });
+        // phase 2b (sequential, net order): create the missing ones, in the order the sequential version did
+        for (int i = 0; i < plans.length; i++) {
+            Vertex[] vs = ends[i];
+            if (vs == null) continue;
+            NetPlan p = plans[i];
+            if (vs[0] == null) vs[0] = vertex(p.srcCell, p.srcPhys);
+            for (int k = 0; k < p.sinks.size(); k++) if (vs[1 + k] == null) vs[1 + k] = vertex((Cell) p.sinks.get(k)[0], (String) p.sinks.get(k)[1]);
+        }
+        // phase 2c (parallel): the edge objects
+        Edge[][] made = new Edge[plans.length][];
+        (parallelNets() ? java.util.stream.IntStream.range(0, plans.length).parallel() : java.util.stream.IntStream.range(0, plans.length)).forEach(i -> {
+            Vertex[] vs = ends[i];
+            if (vs == null) return;
+            NetPlan p = plans[i];
+            Edge[] es = new Edge[p.sinks.size()];
+            for (int k = 0; k < es.length; k++) {
+                Object[] sk = p.sinks.get(k);
+                if (sk[2] != null) es[k] = new Edge(vs[0], vs[1 + k], (float[]) sk[2], p.net, (String) sk[3], (SitePinInst) sk[4], (float[]) sk[5]);
+            }
+            made[i] = es;
+        });
+        // phase 2d (sequential, net order): link them, so the edge and fan-out orders (the topological
+        // queue and every tie-break) are those of the sequential version
+        for (int i = 0; i < plans.length; i++) {
+            NetPlan p = plans[i];
             netsSkipped += p.skipped;
             unroutedSinks += p.unrouted;
-            applyNetPlan(p, null);
+            netSignature.put(p.net, p.signature);
+            Edge[] es = made[i];
+            if (es == null) continue;
+            List<Edge> list = null;
+            for (Edge e : es) {
+                if (e == null) continue;
+                e.src.outs.add(e);
+                e.dst.ins.add(e);
+                edges.add(e);
+                if (list == null) list = new ArrayList<>(es.length);
+                list.add(e);
+            }
+            if (list != null) netEdges.put(p.net, list);
         }
     }
 
@@ -987,6 +1105,7 @@ public class VersalTimingGraph {
         for (Edge e : old) {
             e.removed = true;
             e.src.outs.remove(e);
+            e.dst.ins.remove(e);
             touched.add(e.dst);
             removedEdges++;
         }
@@ -1173,7 +1292,7 @@ public class VersalTimingGraph {
      * seeding the launches with clock arrivals).
      */
     public void resetArrivals() {
-        for (Vertex v : vertices.values()) resetVertex(v);
+        for (Vertex v : vertices) resetVertex(v);
         arrivalsValid = false;
     }
 
@@ -1319,8 +1438,15 @@ public class VersalTimingGraph {
     public long tagsPruned, tagsKept;
 
     private void pruneTags(Vertex v) {
-        if (v.viewOf != null) return;
-        if (pruneBound == null || v.tags == null || v.tags.size() < 2) { if (v.tags != null) tagsKept += v.tags.size(); return; }
+        long r = pruneTagsOf(v);
+        tagsPruned += r >>> 32;
+        tagsKept += r & 0xffffffffL;
+    }
+
+    /** Prunes one vertex's dominated groups, touching only that vertex; returns (pruned << 32) | kept. */
+    private long pruneTagsOf(Vertex v) {
+        if (v.viewOf != null) return 0;
+        if (pruneBound == null || v.tags == null || v.tags.size() < 2) return v.tags == null ? 0 : v.tags.size();
         float[] extreme = new float[nc];
         for (int i = 0; i < nc; i++) extreme[i] = unset(i);
         for (Tagged t : v.tags) {
@@ -1335,37 +1461,51 @@ public class VersalTimingGraph {
             }
             return true;
         });
-        tagsPruned += before - v.tags.size();
-        tagsKept += v.tags.size();
+        return ((long) (before - v.tags.size()) << 32) | v.tags.size();
     }
 
     public List<Vertex> computeArrivals() {
         tagsPruned = 0; tagsKept = 0; views = 0;
         // Kahn topological order restricted to the reachable graph
-        Map<Vertex, Integer> indeg = new HashMap<>();
-        for (Edge e : edges) if (!e.removed) indeg.merge(e.dst, 1, Integer::sum);
-        inDegree = new HashMap<>(indeg);
-        for (Vertex v : vertices.values()) v.viewOf = null;
+        propagating = true;
+        for (Vertex v : vertices) { v.viewOf = null; v.pending = v.ins.size(); }
         Deque<Vertex> queue = new ArrayDeque<>();
-        for (Vertex v : vertices.values()) if (!indeg.containsKey(v)) queue.add(v);
+        for (Vertex v : vertices) if (v.pending == 0) queue.add(v);
         // launches never seeded through seedLaunch (clock-to-Q only) form the default group
         for (Vertex v : clkToQ.keySet()) if (v.tags == null && isSet(v.arrival[0])) { v.tags = new ArrayList<>(1); v.tags.add(launchTag(v, null)); }
+        // Levelize (Kahn, counters only), then propagate one level at a time, each vertex pulling from its
+        // own in-edges: relax writes only the edge's sink and pruneTags only its vertex, and every source
+        // is in an earlier level, so the vertices of a level are independent and run in parallel.
+        List<List<Vertex>> levels = new ArrayList<>();
+        List<Vertex> level = new ArrayList<>(queue);
         int visited = 0;
-        while (!queue.isEmpty()) {
-            Vertex v = queue.poll();
-            visited++;
-            pruneTags(v);
-            for (Edge e : v.outs) {
-                relax(e);
-                int d = indeg.merge(e.dst, -1, Integer::sum);
-                if (d == 0) queue.add(e.dst);
-            }
+        while (!level.isEmpty()) {
+            levels.add(level);
+            visited += level.size();
+            List<Vertex> next = new ArrayList<>();
+            for (Vertex v : level) for (Edge e : v.outs) if (--e.dst.pending == 0) next.add(e.dst);
+            level = next;
         }
         if (visited != vertices.size()) {
             System.err.println("WARNING: timing graph has a combinational loop; " + (vertices.size() - visited) + " vertices not visited");
         }
-        for (Vertex v : vertices.values()) if (v.viewOf != null) views++;
-        inDegree = null;
+        java.util.concurrent.atomic.LongAdder pruned = new java.util.concurrent.atomic.LongAdder(), kept = new java.util.concurrent.atomic.LongAdder();
+        boolean parallel = com.xilinx.rapidwright.util.ParallelismTools.getParallel() && DEBUG_SINK == null && DEBUG_CELL == null;
+        for (int l = 0; l < levels.size(); l++) {
+            List<Vertex> lv = levels.get(l);
+            boolean first = l == 0;
+            java.util.function.Consumer<Vertex> step = v -> {
+                if (!first) for (Edge e : v.ins) relax(e);
+                long r = pruneTagsOf(v);
+                if (r != 0) { pruned.add(r >>> 32); kept.add(r & 0xffffffffL); }
+            };
+            if (parallel && lv.size() >= 4096) lv.parallelStream().forEach(step);
+            else lv.forEach(step);
+        }
+        tagsPruned += pruned.sum();
+        tagsKept += kept.sum();
+        for (Vertex v : vertices) if (v.viewOf != null) views++;
+        propagating = false;
         arrivalsValid = true;
         return getEndpointsSorted(0);
     }
@@ -1383,7 +1523,7 @@ public class VersalTimingGraph {
      * In-degree of every vertex (non-removed edges) for the propagation in progress: a sink with
      * exactly one input that is not a launch takes its groups as a view of its input's source.
      */
-    private Map<Vertex, Integer> inDegree;
+    private boolean propagating;
 
     private void relax(Edge e) {
         Vertex v = e.src;
@@ -1396,7 +1536,7 @@ public class VersalTimingGraph {
         List<Edge> chain = null;
         if (v.viewOf != null) { chain = new ArrayList<>(2); base = resolveView(v, chain); }
         if (base.tags == null) return;
-        if (!e.dst.launch && inDegree != null && inDegree.getOrDefault(e.dst, 0) == 1 && e.dst.tags == null) {
+        if (!e.dst.launch && propagating && e.dst.ins.size() == 1 && e.dst.tags == null) {
             // the only input: the groups are the source's, shifted; nothing to store
             e.dst.viewOf = e;
             return;
@@ -1433,16 +1573,17 @@ public class VersalTimingGraph {
             for (Edge e : v.outs) if (cone.add(e.dst)) stack.push(e.dst);
         }
         for (Vertex v : cone) resetVertex(v);
-        Map<Vertex, Integer> indeg = new HashMap<>();
-        inDegree = new HashMap<>();
-        for (Edge e : edges) if (!e.removed && cone.contains(e.dst)) inDegree.merge(e.dst, 1, Integer::sum);
-        for (Edge e : edges) {
-            if (e.removed || !cone.contains(e.dst)) continue;
-            if (cone.contains(e.src)) indeg.merge(e.dst, 1, Integer::sum);
-            else relax(e);
+        propagating = true;
+        // the cone's incoming edges only, from each vertex's own list rather than a scan of every edge
+        for (Vertex v : cone) {
+            v.pending = 0;
+            for (Edge e : v.ins) {
+                if (cone.contains(e.src)) v.pending++;
+                else relax(e);
+            }
         }
         Deque<Vertex> queue = new ArrayDeque<>();
-        for (Vertex v : cone) if (!indeg.containsKey(v)) queue.add(v);
+        for (Vertex v : cone) if (v.pending == 0) queue.add(v);
         int visited = 0;
         while (!queue.isEmpty()) {
             Vertex v = queue.poll();
@@ -1450,13 +1591,13 @@ public class VersalTimingGraph {
             pruneTags(v);
             for (Edge e : v.outs) {
                 relax(e);
-                if (indeg.merge(e.dst, -1, Integer::sum) == 0) queue.add(e.dst);
+                if (--e.dst.pending == 0) queue.add(e.dst);
             }
         }
         if (visited != cone.size()) {
             System.err.println("WARNING: timing graph has a combinational loop; " + (cone.size() - visited) + " vertices of the update cone not visited");
         }
-        inDegree = null;
+        propagating = false;
         arrivalsValid = true;
         return cone;
     }
@@ -1654,15 +1795,14 @@ public class VersalTimingGraph {
         short[][] idx = belIndices(c);
         return idx == null ? null : logicDelays(idx, in, out);
     }
-    /** The live edges into each of the given vertices (one scan of the edge list; vertices without any are absent). */
+    /** The live edges into each of the given vertices (vertices without any are absent). */
     public Map<Vertex, List<Edge>> inEdges(Collection<Vertex> of) {
-        Set<Vertex> want = of instanceof Set ? (Set<Vertex>) of : new HashSet<>(of);
         Map<Vertex, List<Edge>> ins = new HashMap<>();
-        for (Edge e : edges) if (!e.removed && want.contains(e.dst)) ins.computeIfAbsent(e.dst, k -> new ArrayList<>(2)).add(e);
+        for (Vertex v : of) if (!v.ins.isEmpty()) ins.put(v, new ArrayList<>(v.ins));
         return ins;
     }
 
     /** Every edge added so far; skip those with {@link Edge#removed} set. */
     public List<Edge> getEdges() { return edges; }
-    public java.util.Collection<Vertex> getVertices() { return vertices.values(); }
+    public java.util.Collection<Vertex> getVertices() { return vertices; }
 }
