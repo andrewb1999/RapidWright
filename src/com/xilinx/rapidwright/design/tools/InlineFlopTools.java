@@ -28,6 +28,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.function.Predicate;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -87,6 +88,28 @@ public class InlineFlopTools {
     public static final String INLINE_SUFFIX = "_rw_inline_flop";
 
     private static final int MAX_FFS_PER_SLICE = 5;
+
+    /**
+     * Minimum distance, in interconnect (INT) tiles, between the INT tile of a harness flop placed by
+     * {@link #createAndPlacePortFlopsOnSide} and the INT tiles of the pblock's sites. An INT tile serves the
+     * slices on both of its sides, so a flop in the first slice past the pblock edge can share the edge
+     * sinks' INT tile and reach them through local nodes that no driver outside the tile can use: once the
+     * harness is removed, those port sinks can be unreachable in context. 1 (the default) keeps the flops off
+     * every INT tile of the pblock's bounding box; larger values move them further out; 0 is the old
+     * placement (the first free slice outside the pblock). Also set by the system property
+     * {@code rapidwright.inlineFlop.minIntTileDistance}.
+     */
+    /**
+     * Optional start site for the harness flop of one port bit (given its bus-member name, e.g.
+     * {@code u_output[23]}) in {@link #createAndPlacePortFlopsOnSide}: the flop spirals out from this
+     * site shifted to the port's side instead of from the common start, so a component can put each
+     * bit's flop across from the logic that will drive or load it (the bit's position along the side
+     * is known from the component's structure before placement). Returning null, or leaving this null,
+     * keeps the common start.
+     */
+    public static java.util.function.Function<String, Site> HARNESS_START_SITE = null;
+
+    public static int HARNESS_MIN_INT_TILE_DISTANCE = Integer.getInteger("rapidwright.inlineFlop.minIntTileDistance", 1);
     private static final Set<SiteTypeEnum> VALID_CENTROID_SITE_TYPES =
             new HashSet<>(Arrays.asList(SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM));
 
@@ -181,6 +204,7 @@ public class InlineFlopTools {
         EDIFHierNet clk = design.getNetlist().getHierNetFromName(clkNet);
 
         Set<SiteInst> siteInstsToRoute = new HashSet<>();
+        Predicate<Site> farEnough = intTileDistanceFilter(keepOut, HARNESS_MIN_INT_TILE_DISTANCE);
 
         for (Entry<EDIFPort, PBlockSide> entry : portSideMap.entrySet()) {
             EDIFPort port = entry.getKey();
@@ -188,7 +212,7 @@ public class InlineFlopTools {
             if (port.getName().equals(clkNet)) {
                 continue;
             }
-            Site shiftedSite = shiftSiteToSide(design.getDevice(), start, keepOut, side);
+            Site commonShiftedSite = shiftSiteToSide(design.getDevice(), start, keepOut, side);
             boolean internallyUnconnected = true;
             for (int i : port.getBitBlastedIndices()) {
                 EDIFPortInst inst = port.getInternalPortInstFromIndex(i);
@@ -200,12 +224,14 @@ public class InlineFlopTools {
                     continue;
                 }
 
+                Site bitStart = HARNESS_START_SITE == null ? null : HARNESS_START_SITE.apply(inst.getName());
+                Site shiftedSite = bitStart == null ? commonShiftedSite : shiftSiteToSide(design.getDevice(), bitStart, keepOut, side);
                 Iterator<Site> siteItr = ECOPlacementHelper.spiralOutFrom(shiftedSite, keepOut, exclude).iterator();
                 siteItr.next(); // Skip the first site, as we are suggesting one inside the pblock
                 // Keep the proxy flop in the kernel's SLR: a kernel at the edge of an SLR would
                 // otherwise get proxies across the boundary, and Vivado then reaches the kernel
                 // through SLL round trips that leave LAG-pin inputs behind once the proxies go.
-                Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, start.getTile().getSLR());
+                Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, start.getTile().getSLR(), farEnough);
                 if (loc == null) {
                     throw new RuntimeException("Failed to find valid placement location for flip-flop");
                 }
@@ -374,10 +400,42 @@ public class InlineFlopTools {
         }
     }
 
+    /**
+     * Accepts a site whose INT tile is at least {@code minDistance} INT tiles (Chebyshev distance on the INT
+     * tile grid) outside the bounding box of the INT tiles serving the pblock's sites; accepts every site
+     * when {@code minDistance} is 0.
+     */
+    private static Predicate<Site> intTileDistanceFilter(PBlock pblock, int minDistance) {
+        if (minDistance <= 0) return s -> true;
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        for (Site s : pblock.getAllSites(null)) {
+            Tile it = s.getIntTile();
+            if (it == null) continue;
+            minX = Math.min(minX, it.getTileXCoordinate()); maxX = Math.max(maxX, it.getTileXCoordinate());
+            minY = Math.min(minY, it.getTileYCoordinate()); maxY = Math.max(maxY, it.getTileYCoordinate());
+        }
+        if (minX > maxX) return s -> true;
+        final int x0 = minX, x1 = maxX, y0 = minY, y1 = maxY;
+        return s -> {
+            Tile it = s.getIntTile();
+            if (it == null) return false;
+            int x = it.getTileXCoordinate(), y = it.getTileYCoordinate();
+            int d = Math.max(Math.max(x0 - x, x - x1), Math.max(y0 - y, y - y1));
+            return d >= minDistance;
+        };
+    }
+
     private static Pair<Site, BEL> nextAvailFlopPlacement(Design design, Iterator<Site> itr, SLR slr) {
+        return nextAvailFlopPlacement(design, itr, slr, s -> true);
+    }
+
+    private static Pair<Site, BEL> nextAvailFlopPlacement(Design design, Iterator<Site> itr, SLR slr, Predicate<Site> accept) {
         while (itr.hasNext()) {
             Site curr = itr.next();
             if (slr != null && curr.getTile().getSLR() != slr) {
+                continue;
+            }
+            if (!accept.test(curr)) {
                 continue;
             }
             SiteInst candidate = design.getSiteInstFromSite(curr);
