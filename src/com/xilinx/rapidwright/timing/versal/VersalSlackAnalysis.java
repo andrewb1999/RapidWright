@@ -423,6 +423,80 @@ public class VersalSlackAnalysis {
         return any ? out : null;
     }
 
+    /**
+     * The worst setup slack of the paths through a vertex (a net's sink pin: the delay a detour of its
+     * connection adds reaches exactly these), at the worse of the two processes: the vertex's arrival per
+     * launch group plus its longest delay to each endpoint its fan-out reaches, against that endpoint's
+     * requirement with the group's pessimism removal and SLR compensation, as {@link #computeSlack} scores
+     * an endpoint. An endpoint's own worst setup can come from a path that does not pass the vertex, and
+     * then says nothing about the room its connection has. NaN when the vertex has no arrival, the fan-out
+     * walk passes {@code maxVertices} vertices, or no clocked endpoint is reached.
+     */
+    public float setupSlackThrough(VersalTimingGraph.Vertex p, int maxVertices) {
+        List<VersalTimingGraph.Tagged> tags = VersalTimingGraph.getTags(p);
+        if (tags == null || tags.isEmpty()) return Float.NaN;
+        // the fan-out cone up to its endpoints, then the longest delay into each vertex of it (Kahn order)
+        Set<VersalTimingGraph.Vertex> cone = new HashSet<>();
+        java.util.ArrayDeque<VersalTimingGraph.Vertex> q = new java.util.ArrayDeque<>();
+        cone.add(p); q.add(p);
+        while (!q.isEmpty()) {
+            VersalTimingGraph.Vertex v = q.poll();
+            if (v.endpoint && v != p) continue;
+            for (VersalTimingGraph.Edge e : v.outs) {
+                if (cone.add(e.dst)) {
+                    if (cone.size() > maxVertices) return Float.NaN;
+                    q.add(e.dst);
+                }
+            }
+        }
+        Map<VersalTimingGraph.Vertex, Integer> pending = new HashMap<>();
+        for (VersalTimingGraph.Vertex v : cone) {
+            if (v.endpoint && v != p) continue;
+            for (VersalTimingGraph.Edge e : v.outs) pending.merge(e.dst, 1, Integer::sum);
+        }
+        Map<VersalTimingGraph.Vertex, float[]> dist = new HashMap<>();   // {slow max, fast max} delay from p
+        dist.put(p, new float[] {0f, 0f});
+        q.add(p);
+        while (!q.isEmpty()) {
+            VersalTimingGraph.Vertex v = q.poll();
+            if (v.endpoint && v != p) continue;
+            float[] dv = dist.get(v);
+            for (VersalTimingGraph.Edge e : v.outs) {
+                float[] dd = dist.computeIfAbsent(e.dst, k -> new float[] {Float.NEGATIVE_INFINITY, Float.NEGATIVE_INFINITY});
+                dd[0] = Math.max(dd[0], dv[0] + e.delay[iSlowMax]);
+                dd[1] = Math.max(dd[1], dv[1] + e.delay[iFastMax]);
+                if (pending.merge(e.dst, -1, Integer::sum) == 0) q.add(e.dst);
+            }
+        }
+        float worst = Float.POSITIVE_INFINITY;
+        for (Map.Entry<VersalTimingGraph.Vertex, float[]> d : dist.entrySet()) {
+            VersalTimingGraph.Vertex v = d.getKey();
+            if (!v.endpoint || (v == p && !p.endpoint)) continue;
+            SitePinInst cap = clockSitePin(v);
+            float[] capArr = cap == null ? null : clockArrival(cap, v.cell);
+            if (capArr == null) continue;
+            VersalClockModel.ClockTree tree = getClockTree(cap.getNet());
+            Object capGroup = launchGroup(cap);
+            Map<VersalTimingGraph.Vertex, float[][]> cprOf = new HashMap<>();
+            for (boolean fast : new boolean[] {false, true}) {
+                int iMax = fast ? iFastMax : iSlowMax, iMin = fast ? iFastMin : iSlowMin;
+                float delay = d.getValue()[fast ? 1 : 0];
+                if (Float.isInfinite(delay)) continue;
+                for (VersalTimingGraph.Tagged tg : tags) {
+                    if (Float.isInfinite(tg.arrival[iMax])) continue;
+                    Object[] rep = tg.tag == null || tg.tag.equals(capGroup) ? null : leafPin.get(tg.tag);
+                    VersalTimingGraph.Vertex launch = rep != null ? (VersalTimingGraph.Vertex) rep[1] : launchOf(p, iMax, tg.tag);
+                    float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
+                    float slr = crossesSlr(launch, v) ? (capArr[iMin] - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
+                    float slack = periodPs + capArr[iMin] + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - v.check[iMax]
+                            - (tg.arrival[iMax] + delay) - slr;
+                    worst = Math.min(worst, slack);
+                }
+            }
+        }
+        return Float.isInfinite(worst) ? Float.NaN : worst;
+    }
+
     /** The launch at the head of an arrival group's path into an endpoint at a corner (the endpoint itself if none). */
     private VersalTimingGraph.Vertex launchOf(VersalTimingGraph.Vertex v, int corner, Object tag) {
         List<VersalTimingGraph.Edge> path = graph.getPath(v, corner, tag);

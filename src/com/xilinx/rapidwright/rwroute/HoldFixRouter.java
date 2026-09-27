@@ -217,6 +217,9 @@ public class HoldFixRouter extends PartialRouter {
      * pin of an accumulator LUTRAM slice, 100,000 pops without reaching it) otherwise falls back to a plain
      * route, shorter than the one it had, and its endpoints stay short. With 1,000,000 it met its window.
      */
+    /** Fan-out vertices the setup-through-a-pin walk may visit before the endpoint's own slack is used instead. */
+    public static final int SETUP_THROUGH_MAX_VERTICES = 20000;
+
     public static final int POP_ESCALATION = 10;
     /** Debug: {@code -Drapidwright.holdfix.legacySearch} turns off the pop escalation and the set-aside of short sinks (to reproduce older routes). */
     private static final boolean LEGACY_SEARCH = Boolean.getBoolean("rapidwright.holdfix.legacySearch");
@@ -826,6 +829,24 @@ public class HoldFixRouter extends PartialRouter {
     private static final java.util.regex.Pattern TRACE = System.getProperty("rapidwright.holdfix.trace") == null ? null
             : java.util.regex.Pattern.compile(System.getProperty("rapidwright.holdfix.trace"));
 
+    /** Debug ({@code -Drapidwright.holdfix.watchNet}): how the pass treats each sink of that net. */
+    private static final String WATCH_NET = System.getProperty("rapidwright.holdfix.watchNet");
+
+    private static void watchSinks(Design design, String stage, HoldFixRouter router, Collection<SitePinInst> siblings, Collection<SitePinInst> unrouted) {
+        if (WATCH_NET == null) return;
+        Net n = design.getNet(WATCH_NET);
+        if (n == null) { System.out.println("[HoldWatch] " + stage + ": net gone"); return; }
+        StringBuilder sb = new StringBuilder();
+        for (SitePinInst sp : n.getSinkPins()) {
+            DelayBudget b = router == null ? null : router.getDelayBudgets().get(sp);
+            Float a = router == null ? null : router.getAchievedDelay(sp);
+            sb.append(String.format("%n[HoldWatch]     %s: %s%s, achieved %s, flag %s%s", sp, b == null ? "no budget" : String.format("budget [%.0f, %.0f]", b.min, b.max),
+                    siblings != null && siblings.contains(sp) ? ", deferred sibling" : "", a == null ? "-" : String.format("%.0f", a), sp.isRouted() ? "routed" : "unrouted",
+                    unrouted != null && unrouted.contains(sp) ? ", in the plain re-route list" : ""));
+        }
+        System.out.println("[HoldWatch] " + stage + ": " + n.getPins().size() + " pins, " + n.getPIPs().size() + " PIPs" + sb);
+    }
+
     private static boolean traced(VersalTimingGraph.Vertex v) { return TRACE != null && TRACE.matcher(v.getName()).matches(); }
 
     public static Outcome fixHoldByDetour(Design design, VersalSlackAnalysis sa, float marginPs, float setupFloorPs, float setupUncertaintyPs, float maxExtraPs) {
@@ -855,6 +876,7 @@ public class HoldFixRouter extends PartialRouter {
         Map<SitePinInst, List<VersalSlackAnalysis.Result>> endpointsOfSink = new HashMap<>();
         Map<VersalTimingGraph.Vertex, Float> setupBefore = new HashMap<>();
         Map<VersalTimingGraph.Vertex, VersalSlackAnalysis.Result> worstOf = new LinkedHashMap<>();
+        Map<VersalTimingGraph.Vertex, Float> setupThrough = new HashMap<>();   // per budgeted pin (see below)
         for (VersalSlackAnalysis.Result r : sa.getResults()) {
             setupBefore.merge(r.endpoint, r.setupSlack, Math::min);
             VersalSlackAnalysis.Result h = worstOf.get(r.endpoint);
@@ -885,9 +907,10 @@ public class HoldFixRouter extends PartialRouter {
             boolean anyNet = false;
             for (VersalSlackAnalysis.PathSlack ps : paths) {
                 SitePinInst sink = null;
+                VersalTimingGraph.Vertex sinkVertex = null;
                 for (int i = ps.path.size() - 1; i >= 0; i--) {
                     VersalTimingGraph.Edge e = ps.path.get(i);
-                    if ("net".equals(e.kind) && e.sinkPin != null) { sink = e.sinkPin; break; }
+                    if ("net".equals(e.kind) && e.sinkPin != null) { sink = e.sinkPin; sinkVertex = e.dst; break; }
                 }
                 Net net = sink == null ? null : sink.getNet();
                 if (net == null || net.getSource() == null || net.isStaticNet() || net.isClockNet()) {
@@ -908,7 +931,15 @@ public class HoldFixRouter extends PartialRouter {
                 // full model on large deficits, and the search settles just above the minimum (32x8: 20 of 2,614
                 // connections met their budget and ended 29-49 ps of hold, costing a second round for +30 ps)
                 float deficit = marginPs + BUDGET_OVERSHOOT_PS - ps.holdSlack;
-                float room = setupBefore.get(v) - setupFloorPs;
+                // the room is the setup of the paths through the budgeted pin, which the detour delays: the
+                // endpoint's own worst setup may come in on another input (8x16 mesh: a LUTRAM read with 2.2 ns of
+                // setup left unfixed at -184 ps because a handshake path into the same flop sat at 149 ps)
+                Float through = setupThrough.get(sinkVertex);
+                if (through == null) {
+                    through = sa.setupSlackThrough(sinkVertex, SETUP_THROUGH_MAX_VERTICES);
+                    setupThrough.put(sinkVertex, through);
+                }
+                float room = (Float.isNaN(through) ? setupBefore.get(v) : through) - setupFloorPs;
                 if (room < deficit) deficit = marginPs - ps.holdSlack;   // no room for the overshoot: the bare deficit
                 if (room < deficit) {
                     out.skippedSetupRoom++;
@@ -969,6 +1000,7 @@ public class HoldFixRouter extends PartialRouter {
         for (Map.Entry<Net, List<SitePinInst>> e : byNet.entrySet()) DesignTools.unroutePins(e.getKey(), e.getValue());
         if (!siblings.isEmpty()) System.out.printf("[HoldFixRouter] %d sibling sinks share a bounce node with a budgeted sink: unrouted with it, routed again after the budgeted pass%n", siblings.size());
         router.setDeferredSinks(siblings);
+        watchSinks(design, "budgeted pass, after unrouting", router, siblings, null);
 
         t0 = System.currentTimeMillis();
         router.initialize();
@@ -993,6 +1025,7 @@ public class HoldFixRouter extends PartialRouter {
             }
         }
         for (SitePinInst p : siblings) { p.setRouted(false); unrouted.add(p); }
+        watchSinks(design, "budgeted pass, after routing", router, siblings, unrouted);
         // A connection the budgeted search and its fallback both abandon must not stay unrouted (the 16x16
         // FSA shipped one such pin in a routed checkpoint): route it again on any wire, like a reverted sink.
         // The deferred siblings are routed here too, with the budgeted routes of their nets fixed so that
@@ -1017,6 +1050,7 @@ public class HoldFixRouter extends PartialRouter {
             plain.route();
             conflicted.addAll(plain.getNetsOnOverusedNodes());
             for (PIP pip : locked) pip.setIsPIPFixed(false);
+            watchSinks(design, "budgeted pass, after the plain re-route", router, siblings, unrouted);
             for (SitePinInst p : unrouted) if (!p.isRouted()) out.unroutedSinks++;
             System.out.printf("[HoldFixRouter] %d sinks left unrouted by the budgeted search routed again plainly (%d deferred siblings, %d PIPs of their nets' budgeted routes held fixed); %d still unrouted%n", unrouted.size(), siblings.size(), locked.size(), out.unroutedSinks);
         }
