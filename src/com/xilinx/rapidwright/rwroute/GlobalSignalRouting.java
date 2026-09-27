@@ -396,7 +396,7 @@ public class GlobalSignalRouting {
         }
         Device device = origCentroid.getDevice();
         // Clock roots on Versal appear to only be possible on odd-numbered columns
-        int clkRootXCoord = origCentroid.getColumn() % 2 == 0 ? origCentroid.getInstanceX() + 1
+        int clkRootXCoord = origCentroid.getColumn() % 2 == 0 ? nearerSpineColumn(origCentroid)
                 : origCentroid.getInstanceX();
         Integer preferredYCoord = VersalClockRouting.getPreferredClockRootYCoord(clk, device, minY, maxY);
         int clkRootYCoord = preferredYCoord == null ? origCentroid.getInstanceY() : preferredYCoord;
@@ -422,6 +422,63 @@ public class GlobalSignalRouting {
         }
         assert (proposedClkRoot != null);
         return new Pair<Node, ClockRegion>(vroute, proposedClkRoot);
+    }
+
+    /**
+     * The odd column whose clock spine is nearer an even-numbered centroid column. A spine runs
+     * along one edge of its region (on xcv80 the right edge, tile column 289 for X3), so of the two
+     * odd neighbours of an even column one spine borders it and the other is a whole region away;
+     * Vivado roots the tree on the bordering one.
+     */
+    private static int nearerSpineColumn(ClockRegion centroid) {
+        int x = centroid.getInstanceX();
+        Tile center = centroid.getApproximateCenter();
+        ClockRegion left = centroid.getNeighborClockRegion(0, -1);
+        ClockRegion right = centroid.getNeighborClockRegion(0, 1);
+        Integer leftSpine = left == null ? null : getSpineTileColumn(left);
+        Integer rightSpine = right == null ? null : getSpineTileColumn(right);
+        if (center == null || leftSpine == null) {
+            return x + 1;
+        }
+        if (rightSpine == null) {
+            return x - 1;
+        }
+        int col = center.getColumn();
+        return Math.abs(leftSpine - col) < Math.abs(rightSpine - col) ? x - 1 : x + 1;
+    }
+
+    private static final Map<ClockRegion, Integer> spineTileColumns = new HashMap<>();
+
+    /**
+     * The tile column of a clock region's vertical clock spine (its NODE_GLOBAL_VROUTE wires), or
+     * null if the region has none.
+     */
+    private static synchronized Integer getSpineTileColumn(ClockRegion cr) {
+        if (spineTileColumns.containsKey(cr)) {
+            return spineTileColumns.get(cr);
+        }
+        Integer spine = null;
+        Tile upperLeft = cr.getUpperLeft();
+        Tile lowerRight = cr.getLowerRight();
+        if (upperLeft != null && lowerRight != null) {
+            Device device = cr.getDevice();
+            search: for (int row = upperLeft.getRow(); row <= lowerRight.getRow(); row++) {
+                for (int col = upperLeft.getColumn(); col <= lowerRight.getColumn(); col++) {
+                    Tile t = device.getTile(row, col);
+                    if (t == null || !t.getTileTypeEnum().name().startsWith("CLK")) {
+                        continue;
+                    }
+                    for (int w = 0; w < t.getWireCount(); w++) {
+                        if (t.getWireIntentCode(w) == IntentCode.NODE_GLOBAL_VROUTE) {
+                            spine = col;
+                            break search;
+                        }
+                    }
+                }
+            }
+        }
+        spineTileColumns.put(cr, spine);
+        return spine;
     }
 
     private static Set<ClockRegion> getClockRegionsOfNodes(Set<Node> nodes) {

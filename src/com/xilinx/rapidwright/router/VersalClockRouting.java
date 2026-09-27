@@ -55,6 +55,7 @@ import com.xilinx.rapidwright.rwroute.NodeStatus;
 import com.xilinx.rapidwright.rwroute.RouterHelper;
 import com.xilinx.rapidwright.rwroute.RouterHelper.NodeWithPrev;
 import com.xilinx.rapidwright.router.VTreeType;
+import com.xilinx.rapidwright.timing.versal.VersalClockModel;
 import com.xilinx.rapidwright.util.FileTools;
 import com.xilinx.rapidwright.util.Pair;
 import com.xilinx.rapidwright.util.Utils;
@@ -258,20 +259,6 @@ public class VersalClockRouting {
                                                                                 Node vroute,
                                                                                 Collection<ClockRegion> clockRegions,
                                                                                 Function<Node, NodeStatus> getNodeStatus) {
-        Map<ClockRegion, Node> crToVdist = new HashMap<>();
-        Queue<NodeWithPrevAndCost> q = new PriorityQueue<>();
-        Set<Node> visited = new HashSet<>();
-        Set<PIP> allPIPs = new HashSet<>();
-
-        Set<IntentCode> allowedIntentCodes = EnumSet.of(
-                IntentCode.NODE_GLOBAL_VDISTR,
-                IntentCode.NODE_GLOBAL_VDISTR_LVL1, 
-                IntentCode.NODE_GLOBAL_VDISTR_LVL2,
-                IntentCode.NODE_GLOBAL_VDISTR_LVL21,
-                IntentCode.NODE_GLOBAL_VDISTR_LVL3, 
-                IntentCode.NODE_GLOBAL_VDISTR_SHARED,
-                IntentCode.NODE_GLOBAL_GCLK);
-
         // The VROUTE node is the precursor to the clock root, technically the first
         // VDISTR node is the center point. If we have more than one VROUTE->VDISTR
         // transition we end up with multiple clock roots
@@ -298,50 +285,12 @@ public class VersalClockRouting {
                     + " while routing clock " + clk + ", skew will be suboptimal.");
         }
 
-        for (ClockRegion cr : verticalSpineCRs) {
-            q.clear();
-            visited.clear();
-            q.add(clockRootNode);
-
-            List<Pair<IntentCode, ClockRegion>> distrPath = getVDistrPath(clkTree, cr);
-            nextDistrLevel: for (Pair<IntentCode, ClockRegion> target : distrPath) {
-                IntentCode targetIC = target.getFirst();
-                ClockRegion targetCR = target.getSecond();
-                Tile crApproxCenterTile = targetCR.getApproximateCenter();
-                
-                while (!q.isEmpty()) {
-                    NodeWithPrevAndCost curr = q.poll();
-                    if (getNodeStatus.apply(curr) != NodeStatus.AVAILABLE) {
-                        continue;
-                    }
-                    IntentCode currIC = curr.getIntentCode();
-                    ClockRegion currCR = curr.getTile().getClockRegion();
-                    if (currCR != null && targetCR == currCR && currIC == targetIC) {
-                        q.clear();
-                        visited.clear();
-                        q.add(curr);
-                        allPIPs.addAll(RouterHelper.getPIPsFromNodes(curr.getPrevPath()));
-                        if (targetIC == IntentCode.NODE_GLOBAL_VDISTR) {
-                            crToVdist.put(cr, curr);
-                        }
-                        continue nextDistrLevel;
-                    }
-    
-                    for (Node downhill : curr.getAllDownhillNodes()) {
-                        if (!allowedIntentCodes.contains(downhill.getIntentCode())) {
-                            continue;
-                        }
-                        if (!visited.add(downhill)) {
-                            continue;
-                        }
-                        int cost = downhill.getTile().getManhattanDistance(crApproxCenterTile) + (curr.depth * 100);
-                        q.add(new NodeWithPrevAndCost(downhill, curr, cost));
-                    }
-                }
-                throw new RuntimeException("ERROR: Couldn't route to distribution line in clock region " + cr);
-            }
-        }
-        clk.getPIPs().addAll(allPIPs);
+        SpineRoute spine = routeSpine(clockRootNode, verticalSpineCRs, clkTree, getNodeStatus,
+                Collections.emptyMap());
+        spine = balanceLvl1Ends(clk, spine, clockRootNode, verticalSpineCRs, clockRegions, clkTree,
+                getNodeStatus);
+        Map<ClockRegion, Node> crToVdist = spine.crToVdist;
+        clk.getPIPs().addAll(spine.pips);
 
         // Propagate all vdist nodes as sources for other non-spine CRs
         for (ClockRegion cr : clockRegions) {
@@ -359,6 +308,270 @@ public class VersalClockRouting {
         }
 
         return crToVdist;
+    }
+
+    /** The vertical distribution from the root to each spine clock region's VDISTR node. */
+    private static class SpineRoute {
+        final Set<PIP> pips = new HashSet<>();
+        final Map<ClockRegion, Node> crToVdist = new HashMap<>();
+    }
+
+    private static final Set<IntentCode> VDISTR_ROUTE_CODES = EnumSet.of(
+            IntentCode.NODE_GLOBAL_VDISTR,
+            IntentCode.NODE_GLOBAL_VDISTR_LVL1,
+            IntentCode.NODE_GLOBAL_VDISTR_LVL2,
+            IntentCode.NODE_GLOBAL_VDISTR_LVL21,
+            IntentCode.NODE_GLOBAL_VDISTR_LVL3,
+            IntentCode.NODE_GLOBAL_VDISTR_SHARED,
+            IntentCode.NODE_GLOBAL_GCLK);
+
+    /**
+     * Routes the root to every spine clock region along the tree's levels. {@code lvl1LowerEnd}
+     * fixes the end each listed NODE_GLOBAL_VDISTR_LVL1 wire is driven from (true: the lower
+     * clock region's driver); the search picks the end of any other.
+     */
+    private static SpineRoute routeSpine(NodeWithPrevAndCost clockRootNode, List<ClockRegion> verticalSpineCRs,
+            VersalClockTree clkTree, Function<Node, NodeStatus> getNodeStatus, Map<Node, Boolean> lvl1LowerEnd) {
+        SpineRoute route = new SpineRoute();
+        Queue<NodeWithPrevAndCost> q = new PriorityQueue<>();
+        Set<Node> visited = new HashSet<>();
+        for (ClockRegion cr : verticalSpineCRs) {
+            q.clear();
+            visited.clear();
+            q.add(clockRootNode);
+
+            List<Pair<IntentCode, ClockRegion>> distrPath = getVDistrPath(clkTree, cr);
+            nextDistrLevel: for (Pair<IntentCode, ClockRegion> target : distrPath) {
+                IntentCode targetIC = target.getFirst();
+                ClockRegion targetCR = target.getSecond();
+                Tile crApproxCenterTile = targetCR.getApproximateCenter();
+
+                while (!q.isEmpty()) {
+                    NodeWithPrevAndCost curr = q.poll();
+                    if (getNodeStatus.apply(curr) != NodeStatus.AVAILABLE) {
+                        continue;
+                    }
+                    IntentCode currIC = curr.getIntentCode();
+                    ClockRegion currCR = curr.getTile().getClockRegion();
+                    if (currCR != null && targetCR == currCR && currIC == targetIC) {
+                        q.clear();
+                        visited.clear();
+                        q.add(curr);
+                        route.pips.addAll(RouterHelper.getPIPsFromNodes(curr.getPrevPath()));
+                        if (targetIC == IntentCode.NODE_GLOBAL_VDISTR) {
+                            route.crToVdist.put(cr, curr);
+                        }
+                        continue nextDistrLevel;
+                    }
+
+                    for (Node downhill : curr.getAllDownhillNodes()) {
+                        if (!VDISTR_ROUTE_CODES.contains(downhill.getIntentCode())) {
+                            continue;
+                        }
+                        Boolean lower = lvl1LowerEnd.get(downhill);
+                        if (lower != null && isLowerEndDriver(curr, downhill) != lower) {
+                            continue;
+                        }
+                        if (!visited.add(downhill)) {
+                            continue;
+                        }
+                        int cost = downhill.getTile().getManhattanDistance(crApproxCenterTile) + (curr.depth * 100);
+                        q.add(new NodeWithPrevAndCost(downhill, curr, cost));
+                    }
+                }
+                throw new RuntimeException("ERROR: Couldn't route to distribution line in clock region " + cr);
+            }
+        }
+        return route;
+    }
+
+    /** A global clock buffer or distribution node above the leaves. */
+    private static boolean isDistributionNode(Node n) {
+        if (n == null) {
+            return false;
+        }
+        IntentCode ic = n.getIntentCode();
+        return ic.name().startsWith("NODE_GLOBAL_") && ic != IntentCode.NODE_GLOBAL_LEAF;
+    }
+
+    private static boolean isLowerEndDriver(Node driver, Node wire) {
+        return driver.getTile().getClockRegion().getInstanceY() < wire.getTile().getClockRegion().getInstanceY();
+    }
+
+    /** At most this many LVL1 wires are balanced together (2^n spine routes). */
+    private static final int MAX_BALANCED_LVL1 = 4;
+    /** A combination of LVL1 ends replaces the search's choice only if it narrows the rows' spread by more. */
+    private static final float BALANCE_MIN_GAIN_PS = 5;
+
+    private static VersalClockModel spineDelayModel;
+    private static boolean spineDelayModelFailed;
+
+    private static synchronized VersalClockModel getSpineDelayModel() {
+        if (spineDelayModel == null && !spineDelayModelFailed) {
+            try {
+                spineDelayModel = new VersalClockModel();
+            } catch (RuntimeException e) {
+                spineDelayModelFailed = true;
+                System.err.println("WARNING: No Versal clock delay model (" + e.getMessage()
+                        + "), clock spines are routed without balancing their LVL1 wires");
+            }
+        }
+        return spineDelayModel;
+    }
+
+    /**
+     * Chooses the end each NODE_GLOBAL_VDISTR_LVL1 wire of the spine is driven from. Such a wire
+     * spans two clock regions with a driver at each end, and the stored trees name its level and
+     * region but not the end; the end sets whether the rows below it take the wire's whole length
+     * or none of it. Vivado picks the ends that balance the rows: on a mesh spanning SLR1 and SLR2
+     * under interSLR it drives the SLR1 wire from its far (lower) end, making SLR1 as late as the
+     * crossing makes SLR2, while the nearer end the search would pick left SLR2 0.6-1.0 ns late at
+     * the crossing. Every combination of ends is routed and the one whose rows' VDISTR arrivals
+     * (slow max corner, clock delay model) spread least is kept: across all rows, or within each
+     * SLR for the intraSLR tree.
+     */
+    private static SpineRoute balanceLvl1Ends(Net clk, SpineRoute spine, NodeWithPrevAndCost clockRootNode,
+            List<ClockRegion> verticalSpineCRs, Collection<ClockRegion> clockRegions, VersalClockTree clkTree,
+            Function<Node, NodeStatus> getNodeStatus) {
+        List<Node> choices = new ArrayList<>();
+        for (PIP p : spine.pips) {
+            Node wire = p.isBidirectional() && p.isReversed() ? p.getStartNode() : p.getEndNode();
+            if (wire == null || wire.getIntentCode() != IntentCode.NODE_GLOBAL_VDISTR_LVL1 || choices.contains(wire)) {
+                continue;
+            }
+            boolean upper = false, lower = false;
+            for (Node up : wire.getAllUphillNodes()) {
+                if (up.getIntentCode() != IntentCode.NODE_GLOBAL_GCLK || getNodeStatus.apply(up) != NodeStatus.AVAILABLE) {
+                    continue;
+                }
+                if (isLowerEndDriver(up, wire)) {
+                    lower = true;
+                } else {
+                    upper = true;
+                }
+            }
+            if (upper && lower) {
+                choices.add(wire);
+            }
+        }
+        if (choices.isEmpty() || choices.size() > MAX_BALANCED_LVL1) {
+            return spine;
+        }
+        VersalClockModel model = getSpineDelayModel();
+        if (model == null) {
+            return spine;
+        }
+        boolean perSLR = clkTree != null && clkTree.getVTreeType() == VTreeType.INTRA_SLR;
+        List<PIP> trunk = pathFromSource(clk, clockRootNode);
+        Float bestSpread = rowSpread(model, clk, trunk, spine, clockRegions, perSLR);
+        if (bestSpread == null) {
+            return spine;
+        }
+        SpineRoute best = spine;
+        float initialSpread = bestSpread;
+        int priced = 0;
+        for (int mask = 0; mask < (1 << choices.size()); mask++) {
+            Map<Node, Boolean> lowerEnd = new HashMap<>();
+            for (int i = 0; i < choices.size(); i++) {
+                lowerEnd.put(choices.get(i), (mask & (1 << i)) != 0);
+            }
+            SpineRoute candidate;
+            try {
+                candidate = routeSpine(clockRootNode, verticalSpineCRs, clkTree, getNodeStatus, lowerEnd);
+            } catch (RuntimeException e) {
+                continue;
+            }
+            Float spread = rowSpread(model, clk, trunk, candidate, clockRegions, perSLR);
+            if (spread == null) {
+                continue;
+            }
+            priced++;
+            if (spread < bestSpread - BALANCE_MIN_GAIN_PS) {
+                best = candidate;
+                bestSpread = spread;
+            }
+        }
+        System.out.printf("INFO: Clock %s spine: %d two-ended LVL1 wires, %d of %d end combinations routed as trees;"
+                + " row arrival spread %.0f ps -> %.0f ps%n", clk, choices.size(), priced, 1 << choices.size(),
+                initialSpread, bestSpread);
+        return best;
+    }
+
+    /** Whether no node is driven by two different PIPs of the list. */
+    private static boolean isTree(List<PIP> pips) {
+        Map<Node, PIP> driver = new HashMap<>();
+        for (PIP p : pips) {
+            Node end = p.isBidirectional() && p.isReversed() ? p.getStartNode() : p.getEndNode();
+            PIP prev = driver.put(end, p);
+            if (prev != null && !prev.equals(p)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The clock net's PIPs from its source to the given node (the root's VROUTE). */
+    private static List<PIP> pathFromSource(Net clk, Node root) {
+        Map<Node, PIP> driving = new HashMap<>();
+        for (PIP p : clk.getPIPs()) {
+            Node end = p.isBidirectional() && p.isReversed() ? p.getStartNode() : p.getEndNode();
+            if (end != null && isDistributionNode(end)) {
+                driving.put(end, p);
+            }
+        }
+        List<PIP> path = new ArrayList<>();
+        Set<Node> seen = new HashSet<>();
+        for (Node n = root; seen.add(n); ) {
+            PIP p = driving.get(n);
+            if (p == null) {
+                break;
+            }
+            path.add(p);
+            n = p.isBidirectional() && p.isReversed() ? p.getEndNode() : p.getStartNode();
+        }
+        return path;
+    }
+
+    /**
+     * The spread (ps, slow max corner) of the modelled arrival at the VDISTR node of each spine row
+     * that has loads: the clock's path from its source to the root plus the spine, from a zero root.
+     */
+    private static Float rowSpread(VersalClockModel model, Net clk, List<PIP> trunk, SpineRoute spine,
+            Collection<ClockRegion> clockRegions, boolean perSLR) {
+        List<PIP> pips = new ArrayList<>(trunk);
+        pips.addAll(spine.pips);
+        if (!isTree(pips)) {
+            // Two paths drive one node (the forced ends can make them meet): not a route to price
+            return null;
+        }
+        Net probe = new Net(clk.getName() + "_spine");
+        probe.setPIPs(pips);
+        VersalClockModel.ClockTree tree = model.analyze(probe);
+        Set<Integer> loadedRows = new HashSet<>();
+        for (ClockRegion cr : clockRegions) {
+            loadedRows.add(cr.getInstanceY());
+        }
+        Map<Integer, float[]> minMaxBySLR = new HashMap<>();
+        for (Map.Entry<ClockRegion, Node> e : spine.crToVdist.entrySet()) {
+            ClockRegion cr = e.getKey();
+            if (!loadedRows.contains(cr.getInstanceY())) {
+                continue;
+            }
+            float[] state = tree.arriving.get(e.getValue());
+            if (state == null) {
+                return null;
+            }
+            float arrival = VersalClockModel.ClockTree.arrival(state)[0];
+            int group = perSLR ? cr.getSLR().getId() : 0;
+            float[] mm = minMaxBySLR.computeIfAbsent(group, k -> new float[] {Float.MAX_VALUE, -Float.MAX_VALUE});
+            mm[0] = Math.min(mm[0], arrival);
+            mm[1] = Math.max(mm[1], arrival);
+        }
+        float spread = 0;
+        for (float[] mm : minMaxBySLR.values()) {
+            spread = Math.max(spread, mm[1] - mm[0]);
+        }
+        return spread;
     }
 
     private static List<Pair<IntentCode, ClockRegion>> getVDistrPath(VersalClockTree clkTree,
