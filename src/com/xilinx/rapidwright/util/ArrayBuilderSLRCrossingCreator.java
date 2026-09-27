@@ -493,6 +493,7 @@ public class ArrayBuilderSLRCrossingCreator {
         private int clockWindowRowsAboveTop = -1;
         private int clockRootColumnX = -1;
         private String topCellName;
+        private boolean holdFalsePathSpilledNets = true;
 
         public double getClkPeriod() { return clkPeriod; }
         public Options setClkPeriod(double clkPeriod) { this.clkPeriod = clkPeriod; return this; }
@@ -535,6 +536,14 @@ public class ArrayBuilderSLRCrossingCreator {
          */
         public int getClockRootColumnX() { return clockRootColumnX; }
         public Options setClockRootColumnX(int x) { this.clockRootColumnX = x; return this; }
+        /**
+         * Whether the nets Vivado routes outside the spanning pblock are re-routed with their hold
+         * checks false-pathed (the default: short, contained routes whose hold is left to the
+         * array's hold fixer). When false they are re-routed with hold timed, and only the nets that
+         * still leave the pblock get the false path.
+         */
+        public boolean isHoldFalsePathSpilledNets() { return holdFalsePathSpilledNets; }
+        public Options setHoldFalsePathSpilledNets(boolean falsePath) { this.holdFalsePathSpilledNets = falsePath; return this; }
         /** Renames the routed design's netlist and top cell before it is written; null keeps the name. */
         public String getTopCellName() { return topCellName; }
         public Options setTopCellName(String topCellName) { this.topCellName = topCellName; return this; }
@@ -720,8 +729,19 @@ public class ArrayBuilderSLRCrossingCreator {
         explorePerformance(topDesign, runDirectory, reusePreviousResults, clkPeriod, noExplore, options.getPostPlaceTclLines());
         Design bestDesign = Design.readCheckpoint(Paths.get(runDirectory, "pblock0_best.dcp").toString());
         List<String> spilled = netsLeavingRectangle(bestDesign, overallPBlock);
-        if (!spilled.isEmpty()) {
-            bestDesign = rerouteSpilledNetsWithoutHoldPadding(runDirectory, spilled);
+        if (!spilled.isEmpty() && !options.isHoldFalsePathSpilledNets()) {
+            bestDesign = rerouteSpilledNets(runDirectory, "pblock0_best.dcp", "pblock0_best_contained_timed.dcp",
+                    spilled, false);
+            spilled = netsLeavingRectangle(bestDesign, overallPBlock);
+            if (!spilled.isEmpty()) {
+                System.out.println("[SLR-CROSSING] " + spilled.size() + " nets still leave the spanning pblock"
+                        + " with hold timed; re-routing only those with hold false-pathed");
+                bestDesign = rerouteSpilledNets(runDirectory, "pblock0_best_contained_timed.dcp",
+                        "pblock0_best_contained.dcp", spilled, true);
+            }
+        } else if (!spilled.isEmpty()) {
+            bestDesign = rerouteSpilledNets(runDirectory, "pblock0_best.dcp", "pblock0_best_contained.dcp",
+                    spilled, true);
         }
         EDIFTools.removeVivadoBusPreventionAnnotations(bestDesign.getNetlist());
         if (options.getPostRouteHook() != null) {
@@ -893,15 +913,18 @@ public class ArrayBuilderSLRCrossingCreator {
     }
 
     /**
-     * Re-routes the spilled nets in Vivado with their hold checks false-pathed, so they
-     * get short, contained routes (their hold is then left to the array's hold fixer);
-     * every other net keeps its routing. Returns the re-read design.
+     * Re-routes the spilled nets in Vivado; every other net keeps its routing. With
+     * {@code holdFalsePath} their hold checks are false-pathed first, so they get short,
+     * contained routes (their hold is then left to the array's hold fixer); without it Vivado
+     * pads them for hold again. Returns the re-read design.
      */
-    private static Design rerouteSpilledNetsWithoutHoldPadding(String runDirectory, List<String> spilled) {
-        Path in = Paths.get(runDirectory, "pblock0_best.dcp");
-        Path out = Paths.get(runDirectory, "pblock0_best_contained.dcp");
-        Path script = Paths.get(runDirectory, "contain_spilled_nets.tcl");
-        Path log = Paths.get(runDirectory, "contain_spilled_nets.log");
+    private static Design rerouteSpilledNets(String runDirectory, String inName, String outName,
+                                             List<String> spilled, boolean holdFalsePath) {
+        Path in = Paths.get(runDirectory, inName);
+        Path out = Paths.get(runDirectory, outName);
+        String base = outName.replace(".dcp", "");
+        Path script = Paths.get(runDirectory, base + "_spilled_nets.tcl");
+        Path log = Paths.get(runDirectory, base + "_spilled_nets.log");
         List<String> tcl = new ArrayList<>();
         tcl.add("open_checkpoint " + in);
         tcl.add("set names [list]");
@@ -911,13 +934,15 @@ public class ArrayBuilderSLRCrossingCreator {
         tcl.add("set bad [get_nets -hier -quiet $names]");
         tcl.add("puts \"spilled nets resolved: [llength $bad] of " + spilled.size() + "\"");
         tcl.add("route_design -unroute -nets $bad");
-        tcl.add("set_false_path -hold -through $bad");
+        if (holdFalsePath) {
+            tcl.add("set_false_path -hold -through $bad");
+        }
         tcl.add("route_design -nets $bad");
         tcl.add("report_route_status");
         tcl.add("write_checkpoint -force " + out);
         FileTools.writeLinesToTextFile(tcl, script.toString());
-        System.out.println("[SLR-CROSSING] re-routing " + spilled.size()
-                + " spilled nets in Vivado with hold false-pathed (log " + log + ")");
+        System.out.println("[SLR-CROSSING] re-routing " + spilled.size() + " spilled nets in Vivado with hold "
+                + (holdFalsePath ? "false-pathed" : "timed") + " (log " + log + ")");
         VivadoTools.runTcl(log, script, true);
         if (!out.toFile().exists()) {
             throw new RuntimeException("Vivado re-route of spilled nets did not produce " + out);
