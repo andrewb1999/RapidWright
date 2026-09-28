@@ -357,6 +357,13 @@ public class ModuleInst extends AbstractModuleInst<Module, Site, ModuleInst>{
                         }
                     }
                 }
+                // A site instance already on its own new site is not in the way: a module instance
+                // fresh from Design.createModuleInst has its site instances registered on the
+                // template's sites while reporting itself unplaced, so placing it at the template's
+                // own anchor used to fail (a memory row lost its best placement to this).
+                if (existingSiteInst == inst) {
+                    existingSiteInst = null;
+                }
                 if (existingSiteInst != null) {
                     unplace();
                     return false;
