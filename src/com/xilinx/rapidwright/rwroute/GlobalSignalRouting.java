@@ -348,6 +348,10 @@ public class GlobalSignalRouting {
         VersalClockRouting.routeNonLCBPins(clk, usedCRsAndNonLCBPinsTuple.getSecond(), getNodeStatus);
 
         VersalClockRouting.routeDistributionToLCBs(clk, upDownDistLines, lcbMappings, getNodeStatus);
+        int pruned = pruneDanglingBranches(clk);
+        if (pruned > 0) {
+            System.out.println("INFO: Removed " + pruned + " PIPs of clock " + clk + " that reached no sink (spine rows without loads)");
+        }
 
         // Populate used routing track for any other clocks being routed
         if (usedRoutingTracks != null) {
@@ -356,11 +360,42 @@ public class GlobalSignalRouting {
                 System.err.println("WARNING: Unable to identify clock track for " + clk);
             } else {
                 clk.getLogicalNet().addProperty("CLOCK_TRACK", track);
-                Set<ClockRegion> collision = usedRoutingTracks.put(track,
-                        new HashSet<>(usedClockRegions));
-                assert (collision == null);
+                // the track may already be held elsewhere by a preserved clock (PartialRouter reserves those)
+                usedRoutingTracks.computeIfAbsent(track, k -> new HashSet<>()).addAll(usedClockRegions);
             }
         }
+    }
+
+    /**
+     * Removes the branches of a routed clock that end at neither a sink pin nor another of its PIPs.
+     * The Versal spine is routed to the vertical distribution of every clock-region row between
+     * the lowest and highest loaded ones; a row with no loads (a clock over a shell at the bottom
+     * of the device and an array at its top) keeps a dangling VDISTR stub, which Vivado reports as
+     * an antenna and counts as a routing error.
+     *
+     * @return the number of PIPs removed
+     */
+    public static int pruneDanglingBranches(Net clk) {
+        Set<Node> sinkNodes = new HashSet<>();
+        for (SitePinInst p : clk.getPins()) {
+            if (!p.isOutPin()) sinkNodes.add(p.getConnectedNode());
+        }
+        List<PIP> pips = new ArrayList<>(clk.getPIPs());
+        int removed = 0;
+        while (true) {
+            Set<Node> drivingNodes = new HashSet<>();
+            for (PIP pip : pips) drivingNodes.add(pip.isReversed() ? pip.getEndNode() : pip.getStartNode());
+            List<PIP> kept = new ArrayList<>(pips.size());
+            for (PIP pip : pips) {
+                Node end = pip.isReversed() ? pip.getStartNode() : pip.getEndNode();
+                if (drivingNodes.contains(end) || sinkNodes.contains(end)) kept.add(pip);
+            }
+            if (kept.size() == pips.size()) break;
+            removed += pips.size() - kept.size();
+            pips = kept;
+        }
+        if (removed > 0) clk.setPIPs(pips);
+        return removed;
     }
 
     /**

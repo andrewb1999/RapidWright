@@ -990,10 +990,19 @@ public class VersalTimingGraph {
     }
 
     /** The data nets the graph times: every WIRE net that is neither static nor a clock. */
+    /**
+     * The nets the graph is built over, of the data nets it takes (not static, not clock); null for
+     * all of them. A flow that merged in a large fixed design it leaves to Vivado to sign off (the
+     * V80 shell: CIPS, the NoC, the memory controllers) keeps that design's own nets out here.
+     */
+    public static java.util.function.Predicate<Net> NET_FILTER = null;
+
     private List<Net> dataNets() {
         List<Net> nets = new ArrayList<>();
+        java.util.function.Predicate<Net> filter = NET_FILTER;
         for (Net net : design.getNets()) {
             if (net.getType() != NetType.WIRE || net.isStaticNet() || net.isClockNet()) continue;
+            if (filter != null && !filter.test(net)) continue;
             nets.add(net);
         }
         return nets;

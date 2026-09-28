@@ -270,6 +270,21 @@ public class PerformanceExplorer {
         this.vivadoPath = vivadoPath;
     }
 
+    /**
+     * Whether the run constrains the clock period on the port named by the clock name
+     * ({@link #updateClockPeriodConstraint}); a top-level design whose clocks come from its IP (e.g.
+     * a clock wizard driving an output port) turns this off and keeps its own constraints.
+     */
+    private boolean constrainClockPort = true;
+
+    public boolean isConstrainClockPort() {
+        return constrainClockPort;
+    }
+
+    public void setConstrainClockPort(boolean constrainClockPort) {
+        this.constrainClockPort = constrainClockPort;
+    }
+
     public boolean isContainRouting() {
         return containRouting;
     }
@@ -366,7 +381,9 @@ public class PerformanceExplorer {
             String pblockName = pblock.getName() == null ? "pe_pblock_1" : pblock.getName();
             lines.add("create_pblock " + pblockName);
             lines.add("resize_pblock "+pblockName+" -add {"+pblock.toString()+"}");
-            lines.add("add_cells_to_pblock "+pblockName+" " + (pblockCells == null ? "-top" : "[get_cells {"+ pblockCells +"}]" ));
+            // the cells: the whole design, a list of names, or a Tcl expression (one starting with '[')
+            String cells = pblockCells == null ? "-top" : pblockCells.startsWith("[") ? pblockCells : "[get_cells {" + pblockCells + "}]";
+            lines.add("add_cells_to_pblock "+pblockName+" " + cells);
             lines.add("set_property IS_SOFT 0 [get_pblocks " + pblockName + "]");
             if (isContainRouting()) {
                 lines.add("set_property CONTAIN_ROUTING 1 [get_pblocks "+ pblockName+"]");
@@ -429,7 +446,9 @@ public class PerformanceExplorer {
         runDirectory = new File(runDirectory).getAbsolutePath();
         String dcpName = runDirectory + File.separator + INITIAL_DCP_NAME;
 
-        updateClockPeriodConstraint(design, getClkName(), getTargetPeriod());
+        if (constrainClockPort) {
+            updateClockPeriodConstraint(design, getClkName(), getTargetPeriod());
+        }
 
         design.writeCheckpoint(dcpName);
         JobQueue jobs = new JobQueue();
@@ -468,7 +487,8 @@ public class PerformanceExplorer {
                         String roundedC = printNS(c);
                         String uniqueID = p.name() + "_" + r.name() + "_" + roundedC;
                         if (pblock != null) {
-                            uniqueID = uniqueID + "_pblock" + pb + "_" + pblock.get(0).getLowerLeftSite() + "-";
+                            // the first range's lower-left corner: a site, or a clock region for a CLOCKREGION range
+                            uniqueID = uniqueID + "_pblock" + pb + "_" + pblock.get(0).toString().split(":")[0] + "-";
                         }
                         System.out.println(uniqueID);
                         String instDir = runDirectory + File.separator + uniqueID;

@@ -30,6 +30,8 @@ import com.xilinx.rapidwright.design.SiteInst;
 import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.design.Unisim;
 import com.xilinx.rapidwright.device.BEL;
+import com.xilinx.rapidwright.device.ClockRegion;
+import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.Wire;
@@ -321,11 +323,50 @@ public class FlopTreeTools {
                     if (sitePinName != null && candidate.getSitePinInst(sitePinName) != null) {
                         continue;
                     }
+                    // nor the input site pin its D takes from outside the site (another cell of the
+                    // slice may already bring a net, or a constant, in on it)
+                    if (dInputSitePinInUse(candidate, b)) {
+                        continue;
+                    }
                 }
                 return new Pair<>(curr, b);
             }
         }
         return null;
+    }
+
+    /**
+     * Whether the flop BEL's way in from outside the site is taken: its D is fed through the flop's
+     * input mux and, on Versal, an input register mux (IMR) from a bypass site pin, and a LUTRAM
+     * in the slice may already bring its data in on that pin and IMR while the flop itself is free.
+     * Walks back from D through the routing and IMR BELs (not through LUTs or flops) to the site
+     * ports.
+     */
+    private static boolean dInputSitePinInUse(SiteInst candidate, BEL ff) {
+        BELPin d = ff.getPin("D");
+        if (d == null) return false;
+        List<BELPin> frontier = new ArrayList<>();
+        frontier.add(d);
+        for (int level = 0; level < 4 && !frontier.isEmpty(); level++) {
+            List<BELPin> next = new ArrayList<>();
+            for (BELPin in : frontier) {
+                BELPin src = in.getSourcePin();
+                if (src == null) continue;
+                if (src.isSitePort()) {
+                    if (candidate.getSitePinInst(src.getName()) != null
+                            || candidate.getNetFromSiteWire(src.getSiteWireName()) != null) return true;
+                    continue;
+                }
+                BEL b = src.getBEL();
+                if (b.isLUT() || (b.isFF() && !b.isAnyIMR())) continue;   // logic, not a way in (an IMR reports isFF)
+                if (candidate.getCell(b) != null) return true;   // an IMR on the way holds a cell
+                for (BELPin p : b.getPins()) {
+                    if (p.isInput()) next.add(p);
+                }
+            }
+            frontier = next;
+        }
+        return false;
     }
 
     private static boolean isExpectedStaticControlNet(Net net, boolean expectGnd) {
@@ -364,6 +405,46 @@ public class FlopTreeTools {
                 && isExpectedStaticControlNet(candidate, sitePinNames.getSecond(), true);
     }
 
+    /**
+     * Whether a tree flop goes to a slice nothing else uses, when one is within
+     * {@link #EMPTY_SITE_REACH} tiles of its sinks' centroid, before a free flop in a used slice. A
+     * tree whose sinks are inside densely packed tiles (a reset) otherwise lands in the tiles'
+     * slices, where the new flop's clock, reset and bypass must share the slice's control set and
+     * input muxes with the tile's cells; Vivado could not lay out several such slices.
+     */
+    public static boolean TREE_PREFERS_EMPTY_SITES = false;
+    /** Tiles (Manhattan) from the centroid within which an empty slice is preferred. */
+    public static int EMPTY_SITE_REACH = 20;
+
+    private static Iterator<Site> withinDistance(Site centre, Iterator<Site> base, int reach) {
+        Tile c = centre.getTile();
+        return new Iterator<Site>() {
+            private Site nextSite;
+            private void advance() {
+                while (nextSite == null && base.hasNext()) {
+                    Site s = base.next();
+                    Tile t = s.getTile();
+                    int d = Math.abs(t.getRow() - c.getRow()) + Math.abs(t.getColumn() - c.getColumn());
+                    if (d > 3 * reach) { while (base.hasNext()) base.next(); return; }   // the spiral has moved past
+                    if (d <= reach) nextSite = s;
+                }
+            }
+            @Override
+            public boolean hasNext() {
+                advance();
+                return nextSite != null;
+            }
+            @Override
+            public Site next() {
+                advance();
+                if (nextSite == null) throw new NoSuchElementException();
+                Site s = nextSite;
+                nextSite = null;
+                return s;
+            }
+        };
+    }
+
     private static Pair<Site, Net> placeFlopNearCentroidOfPortInsts(Design design, String clkName, Net inputNet,
                                                                     String newNetName, List<EDIFHierPortInst> portInsts,
                                                                     Set<SiteInst> siteInstsToRoute, SLR requiredSLR,
@@ -374,8 +455,17 @@ public class FlopTreeTools {
             throw new RuntimeException("Failed to find centroid of net " + inputNet);
         }
 
-        Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(centroid).iterator(), noGo);
-        Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, requiredSLR);
+        Pair<Site, BEL> loc = null;
+        if (TREE_PREFERS_EMPTY_SITES) {
+            // within reach of the centroid, a slice nothing else uses
+            Iterator<Site> emptyItr = applyNoGoFilter(unusedSitesOnly(design, withinDistance(centroid,
+                    ECOPlacementHelper.spiralOutFrom(centroid).iterator(), EMPTY_SITE_REACH)), noGo);
+            loc = nextAvailFlopPlacement(design, emptyItr, requiredSLR);
+        }
+        if (loc == null) {
+            Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(centroid).iterator(), noGo);
+            loc = nextAvailFlopPlacement(design, siteItr, requiredSLR);
+        }
         if (loc == null) {
             throw new RuntimeException("Failed to find location to place flop in flop tree"
                     + (requiredSLR != null ? " (required SLR " + requiredSLR.getId() + ")" : ""));
@@ -399,6 +489,25 @@ public class FlopTreeTools {
         return new Pair<>(centroid, flopNetPair.getSecond());
     }
 
+    /**
+     * Whether the tree's last level has one flop per clock region its sinks occupy. A quadrant of
+     * sinks ignores clock-region boundaries, and a leaf driving sinks in two regions sees the skew
+     * between their branches of the clock tree: 0.77 ns between neighbouring regions under a root
+     * two rows away, which neither hold detours nor the setup side could absorb.
+     */
+    public static boolean TREE_LEAVES_PER_CLOCK_REGION = false;
+
+    private static Map<ClockRegion, List<EDIFHierPortInst>> splitPortInstsByClockRegion(Design design,
+                                                                                       List<EDIFHierPortInst> portInsts) {
+        Map<ClockRegion, List<EDIFHierPortInst>> m = new java.util.TreeMap<>(java.util.Comparator.comparing(ClockRegion::getName));
+        for (EDIFHierPortInst p : portInsts) {
+            Cell cell = p.getPhysicalCell(design);
+            if (cell == null || !cell.isPlaced()) continue;
+            m.computeIfAbsent(cell.getTile().getClockRegion(), k -> new ArrayList<>()).add(p);
+        }
+        return m;
+    }
+
     private static void insertFlopTreeForNetInSLR(Design design, SLR slr, String netName, String clkName, int depth,
                                                   List<EDIFHierPortInst> sinkHierPortInsts,
                                                   Set<SiteInst> siteInstsToRoute,
@@ -414,6 +523,21 @@ public class FlopTreeTools {
             for (Pair<Net, List<EDIFHierPortInst>> pair : currPortInstList) {
                 Net net = pair.getFirst();
                 List<EDIFHierPortInst> portInsts = pair.getSecond();
+                if (currDepth == depth - 1 && TREE_LEAVES_PER_CLOCK_REGION) {
+                    Map<ClockRegion, List<EDIFHierPortInst>> byRegion = splitPortInstsByClockRegion(design, portInsts);
+                    if (byRegion.size() > 1) {
+                        // one leaf per clock region its sinks occupy, each inside that region, all fed by
+                        // the same previous level (so every sink keeps the same depth)
+                        for (Map.Entry<ClockRegion, List<EDIFHierPortInst>> g : byRegion.entrySet()) {
+                            ClockRegion cr = g.getKey();
+                            String leafNetName = netName.replace(EDIFTools.EDIF_HIER_SEP, "_") + "_slr" + slr.getId() + "_d" + currDepth + "_" + i;
+                            Predicate<Tile> outsideRegion = tile -> noGo.test(tile) || !cr.equals(tile.getClockRegion());
+                            placeFlopNearCentroidOfPortInsts(design, clkName, net, leafNetName, g.getValue(), siteInstsToRoute, slr, outsideRegion);
+                            i++;
+                        }
+                        continue;
+                    }
+                }
                 String newNetName = netName.replace(EDIFTools.EDIF_HIER_SEP, "_") + "_slr" + slr.getId() + "_d" + currDepth + "_" + i;
                 Pair<Site, Net> centroidNetPair = placeFlopNearCentroidOfPortInsts(design, clkName, net, newNetName,
                         portInsts, siteInstsToRoute, slr, noGo);

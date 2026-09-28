@@ -57,7 +57,15 @@ public class VersalTimingReport {
     private static final Pattern CREATE_CLOCK = Pattern.compile("create_clock\\s.*?-period\\s+([0-9.]+)");
 
     /** The first create_clock period in the design's XDC constraints, in ps, or 0 if none. */
+    /**
+     * The analysed clock's period in ps, when set (&gt; 0) taken instead of the constraints': a design
+     * merged into a device shell carries the shell's IP clocks' create_clock commands, and its own
+     * clock is generated inside the shell, with no create_clock of its own.
+     */
+    public static float PERIOD_OVERRIDE_PS = 0;
+
     public static float periodFromConstraints(Design design) {
+        if (PERIOD_OVERRIDE_PS > 0) return PERIOD_OVERRIDE_PS;
         float first = 0;
         for (ConstraintGroup g : ConstraintGroup.values()) {
             List<String> xdc = design.getXDCConstraints(g);

@@ -231,7 +231,9 @@ public class InlineFlopTools {
                 // Keep the proxy flop in the kernel's SLR: a kernel at the edge of an SLR would
                 // otherwise get proxies across the boundary, and Vivado then reaches the kernel
                 // through SLL round trips that leave LAG-pin inputs behind once the proxies go.
-                Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, start.getTile().getSLR(), farEnough);
+                // A bit with its own start stays in that start's SLR (a pblock spanning SLRs).
+                Site slrRef = bitStart == null ? start : bitStart;
+                Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, slrRef.getTile().getSLR(), farEnough);
                 if (loc == null) {
                     throw new RuntimeException("Failed to find valid placement location for flip-flop");
                 }

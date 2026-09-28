@@ -29,6 +29,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -214,6 +215,7 @@ public class PartialRouter extends RWRoute {
         Map<Integer, Set<ClockRegion>> usedRoutingTracks = new HashMap<>();
         if (clkNets.isEmpty())
             return;
+        reservePreservedClockTracks(usedRoutingTracks);
 
         for (Net clk : clkNets) {
             List<SitePinInst> clkPins = netToPins.get(clk);
@@ -229,6 +231,44 @@ public class PartialRouter extends RWRoute {
                 UltraScaleClockRouting.incrementalClockRouter(clk, clkPins, gns);
                 preserveNet(clk, false);
             }
+        }
+    }
+
+    /** Versal clock routing and distribution nodes, whose wire names end in their track index. */
+    private static final Set<IntentCode> CLOCK_TRACK_INTENTS = EnumSet.of(IntentCode.NODE_GLOBAL_VROUTE,
+            IntentCode.NODE_GLOBAL_HROUTE, IntentCode.NODE_GLOBAL_HROUTE_HSR, IntentCode.NODE_GLOBAL_VDISTR,
+            IntentCode.NODE_GLOBAL_VDISTR_LVL1, IntentCode.NODE_GLOBAL_VDISTR_LVL2, IntentCode.NODE_GLOBAL_VDISTR_LVL21,
+            IntentCode.NODE_GLOBAL_VDISTR_LVL3, IntentCode.NODE_GLOBAL_HDISTR);
+    private static final java.util.regex.Pattern TRAILING_TRACK = java.util.regex.Pattern.compile("(\\d+)$");
+
+    /**
+     * Marks the clock tracks that already-routed (preserved) clock nets use, in the clock regions
+     * they use them in, so that a clock routed now picks a track free wherever it distributes. The
+     * Versal clock router otherwise only avoids the tracks of clocks routed in the same run: beside
+     * a precompiled shell whose own clocks hold tracks in its regions, it chose one of those and
+     * left the clock's distribution there unfinished (antennas, loads unreached).
+     */
+    private void reservePreservedClockTracks(Map<Integer, Set<ClockRegion>> usedRoutingTracks) {
+        if (design.getSeries() != Series.Versal) return;
+        Set<Net> toRoute = new HashSet<>(clkNets);
+        int nets = 0;
+        for (Net n : design.getNets()) {
+            if (toRoute.contains(n) || n.isStaticNet() || !n.hasPIPs()) continue;
+            boolean counted = false;
+            for (PIP pip : n.getPIPs()) {
+                Node end = pip.getEndNode();
+                if (end == null || !CLOCK_TRACK_INTENTS.contains(end.getIntentCode())) continue;
+                java.util.regex.Matcher m = TRAILING_TRACK.matcher(end.getWireName());
+                ClockRegion cr = end.getTile().getClockRegion();
+                if (!m.find() || cr == null) continue;
+                usedRoutingTracks.computeIfAbsent(Integer.parseInt(m.group(1)), k -> new HashSet<>()).add(cr);
+                counted = true;
+            }
+            if (counted) nets++;
+        }
+        if (nets > 0) {
+            System.out.println("INFO: " + nets + " routed clock nets already hold tracks " + new java.util.TreeSet<>(usedRoutingTracks.keySet())
+                    + " in their clock regions; clocks routed now avoid them there");
         }
     }
 

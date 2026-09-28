@@ -2277,7 +2277,15 @@ public class DesignTools {
             // physical description
             for (SiteInst siteInst : net.getSiteInsts()) {
                 for (int siteWire : siteInst.getSiteWireIndicesFromNet(net)) {
-                    for (BELPin pin : siteInst.getSiteWirePins(siteWire)) {
+                    BELPin[] siteWirePins;
+                    try {
+                        siteWirePins = siteInst.getSiteWirePins(siteWire);
+                    } catch (ArrayIndexOutOfBoundsException e) {
+                        // A hard block of encrypted IP can carry site wires its site instance cannot
+                        // index (the V80 shell's); there is nothing to infer from those.
+                        continue;
+                    }
+                    for (BELPin pin : siteWirePins) {
                         if (!pin.isSitePort()) {
                             continue;
                         }
