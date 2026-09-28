@@ -208,6 +208,15 @@ public class HoldFixRouter extends PartialRouter {
     /** the cheapest entry that reached a target so far in the current search */
     private Entry bestSinkEntry;
     private long capPrunes, loopRejects;
+    /**
+     * The net's other routed connections, as the route tree they make: node -> its parent there. A budgeted
+     * route may follow that tree out of the source and leave it, but not join it anywhere else: the joined node
+     * would have two drivers, and the route fixer keeps the shorter one and cuts the detour off (8x16 mesh: a
+     * LUTRAM data pin whose route the search measured at +588 ps ended +105 ps on its budgeted sibling's route).
+     */
+    private final Map<RouteNode, RouteNode> netTreeParent = new HashMap<>();
+    /** pushes the budgeted search refused because they joined the net's tree off its path from the source */
+    private long treeJoinRejects = 0;
     private int fallbackDiagnostics = 0;
     /** budgeted searches that ran out of pops and took the best route that had reached the sink */
     private int partialSinks = 0;
@@ -308,9 +317,14 @@ public class HoldFixRouter extends PartialRouter {
     public void setHoldPsPerTile(float ps) { holdPsPerTile = ps; }
 
     /**
-     * The delay of an existing route to a sink in the router's units (the sum of the timing-driven
-     * graph's node delays and the long-after-long correction along the net's PIPs from the source),
-     * or NaN when the sink is not reached by the net's PIPs. Usable before {@link #initialize()}.
+     * The delay of an existing route to a sink in the router's units, over the span the budgeted search
+     * counts: the sum of the timing-driven graph's node delays and the long-after-long correction along
+     * the net's PIPs from the source pin's INT node to the sink pin's INT node (RWRoute's connection
+     * source and sink nodes), or NaN when the sink is not reached by the net's PIPs. The pin nodes
+     * outside that span (a CLE output's pin node, 15 ps, and a PINFEED, 75 ps) are left out: counted, they
+     * put every window that far under the routes the search measures, and each detour overshot its
+     * window by them (8x16 mesh: an arbitration LUT's BX detour routed at +350 ps was +440 ps). Usable
+     * before {@link #initialize()}.
      */
     public float routeDelay(Net net, SitePinInst sink) {
         DelayEstimatorBase<?> estimator = getDelayEstimator();
@@ -320,13 +334,16 @@ public class HoldFixRouter extends PartialRouter {
             Node e = p.isReversed() ? p.getStartNode() : p.getEndNode();
             parentOf.putIfAbsent(e, s);
         }
-        Node n = sink.getConnectedNode();
+        Node sinkInt = RouterHelper.projectInputPinToINTNode(sink);
+        Node sourceInt = net.getSource() == null ? null : RouterHelper.projectOutputPinToINTNode(net.getSource());
+        Node n = sinkInt != null && parentOf.containsKey(sinkInt) ? sinkInt : sink.getConnectedNode();
         if (n == null || !parentOf.containsKey(n)) return Float.NaN;
         float delay = 0;
         Set<Node> seen = new HashSet<>();
         while (n != null && seen.add(n)) {
             Node parent = parentOf.get(n);
             delay += RouterHelper.computeNodeDelay(estimator, n);
+            if (n.equals(sourceInt)) break;
             if (parent != null) delay += DelayEstimatorBase.getExtraDelay(n, DelayEstimatorBase.isLong(parent));
             n = parent;
         }
@@ -584,6 +601,12 @@ public class HoldFixRouter extends PartialRouter {
         bestEntry.clear();
         capPrunes = 0;
         loopRejects = 0;
+        netTreeParent.clear();
+        for (Connection other : connection.getNetWrapper().getConnections()) {
+            if (other == connection || other.isDirect() || !other.isRouted()) continue;
+            List<RouteNode> rn = other.getRnodes();   // sink first
+            for (int i = 0; i + 1 < rn.size(); i++) netTreeParent.putIfAbsent(rn.get(i), rn.get(i + 1));
+        }
 
         prepareRouteConnection(state);   // rips up, marks the targets, pushes the source (through push())
 
@@ -649,6 +672,7 @@ public class HoldFixRouter extends PartialRouter {
             connection.setRouted(false);
         }
         bestEntry.clear();
+        netTreeParent.clear();
         // reset the nodes marked as this connection's targets (the base class does this at the end of its own loop)
         for (RouteNode target : state.targets) {
             target.clearTarget();
@@ -683,6 +707,8 @@ public class HoldFixRouter extends PartialRouter {
             for (Entry x = parent; x != null; x = x.prev) {
                 if (x.node == childRnode) { loopRejects++; restorePrev(childRnode); return; }
             }
+            RouteNode treeParent = netTreeParent.get(childRnode);
+            if (treeParent != null && treeParent != parent.node) { treeJoinRejects++; restorePrev(childRnode); return; }
             upstreamDelay = parent.upstreamDelay + childRnode.getDelay()
                     + DelayEstimatorBase.getExtraDelay(childRnode, DelayEstimatorBase.isLong(parent.node));
         }
@@ -743,7 +769,7 @@ public class HoldFixRouter extends PartialRouter {
     public int getBudgetsDroppedForCongestion() { return budgetsDroppedForCongestion; }
 
     public long[] getBudgetedSearchStats() {
-        return new long[] {holdNodesPopped, holdNodesPushed, holdStaleSkipped, fallbacks, partialSinks, popEscalations, shortSinksSetAside};
+        return new long[] {holdNodesPopped, holdNodesPushed, holdStaleSkipped, fallbacks, partialSinks, popEscalations, shortSinksSetAside, treeJoinRejects};
     }
 
     /** Budgeted connections whose route ended below the minimum budget (by more than the tolerance) or unrouted. */
@@ -791,18 +817,44 @@ public class HoldFixRouter extends PartialRouter {
         public long analysisMs, routeMs;
         /** the analysis the round used, current for the design after it */
         public VersalSlackAnalysis analysis;
+        /** sinks of an earlier round routed again here to give back setup; sinks whose detour pushed the paths through them under the floor, to route again next round */
+        public int setupRepairsRouted;
+        public final Map<SitePinInst, SetupRepair> setupRepairs = new HashMap<>();
+        /** sinks whose paths went under the floor with no delay of their own added (another budgeted sink on the paths did it) */
+        public int underFloorNotAttributed;
         @Override
         public String toString() {
             return String.format("hold: WHS %.0f -> %.0f ps, endpoints below 0: %d -> %d, below margin: %d -> %d; setup: WNS %.0f -> %.0f ps; "
-                    + "%d endpoints targeted, %d short paths -> %d sinks budgeted (%d endpoints without a net edge, %d crossing paths left to the ladder, %d paths without setup room, %d sinks without a route delay); "
-                    + "%d routed, %d met their minimum, %d fell back to the plain search; setup pushed under the floor on %d endpoints, "
+                    + "%d endpoints targeted, %d short paths -> %d sinks budgeted (%d endpoints without a net edge, %d crossing paths left to the ladder, %d paths without setup room, %d sinks without a route delay, %d routed again to give back setup); "
+                    + "%d routed, %d met their minimum, %d fell back to the plain search; setup pushed under the floor on %d endpoints, through %d budgeted sinks (%d more not by their own delay), "
                     + "%d sinks no slower than before, %d left unrouted, %d budgets dropped for congestion, %d nets left on overused nodes; PIPs on the touched nets %d -> %d; analysis %d ms, route %d ms",
                     whsBefore, whsAfter, violatingBefore, violatingAfter, belowMarginBefore, belowMarginAfter, wnsBefore, wnsAfter,
-                    endpointsTargeted, pathsBudgeted, sinksBudgeted, skippedNoNetEdge, skippedCrossing, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks,
-                    setupPushedUnderFloor, sinksNotSlower, unroutedSinks, budgetsDroppedForCongestion, netsOnOverusedNodes,
+                    endpointsTargeted, pathsBudgeted, sinksBudgeted, skippedNoNetEdge, skippedCrossing, skippedSetupRoom, skippedNoRouteDelay, setupRepairsRouted, routed, budgetMet, fallbacks,
+                    setupPushedUnderFloor, setupRepairs.size(), underFloorNotAttributed, sinksNotSlower, unroutedSinks, budgetsDroppedForCongestion, netsOnOverusedNodes,
                     pipsBefore, pipsAfter, analysisMs, routeMs);
         }
     }
+
+    /**
+     * A budgeted sink whose detour pushed the setup slack of the paths through its pin under the floor: the
+     * window's top came from the router's count of the detour's delay, and the full model charged more (8x16
+     * mesh: an arbitration LUT's route out of its slice and back, +350 ps to the router, +526 ps of setup, as
+     * EE1 hops across a column edge cost the model 150 ps and the router 67). The next round routes it again
+     * whatever its endpoints' hold, from its connection before the first detour, with the window's top divided
+     * by the ratio this detour showed.
+     */
+    public static class SetupRepair {
+        final List<VersalTimingGraph.Vertex> vertices;
+        /** before the first detour: the connection's delay (router units), the minimum it was given, the setup slack through the pin (ps) */
+        final float lowerBound, min, throughBefore;
+        /** the setup delay the full model charged the detour over the router's count of it */
+        final float modelOverRouter;
+        SetupRepair(List<VersalTimingGraph.Vertex> vertices, float lowerBound, float min, float throughBefore, float modelOverRouter) {
+            this.vertices = vertices; this.lowerBound = lowerBound; this.min = min; this.throughBefore = throughBefore; this.modelOverRouter = modelOverRouter;
+        }
+    }
+    /** A setup repair's window top is the room over its detour's model/router ratio times this. */
+    public static final float SETUP_REPAIR_MARGIN = 1.1f;
 
     /**
      * One round of delay-budgeted detours on a routed Versal design: the model's slack analysis
@@ -850,6 +902,17 @@ public class HoldFixRouter extends PartialRouter {
     private static boolean traced(VersalTimingGraph.Vertex v) { return TRACE != null && TRACE.matcher(v.getName()).matches(); }
 
     public static Outcome fixHoldByDetour(Design design, VersalSlackAnalysis sa, float marginPs, float setupFloorPs, float setupUncertaintyPs, float maxExtraPs) {
+        return fixHoldByDetour(design, sa, marginPs, setupFloorPs, setupUncertaintyPs, maxExtraPs, Collections.emptyMap(), new HashMap<>());
+    }
+
+    /**
+     * As {@link #fixHoldByDetour(Design, VersalSlackAnalysis, float, float, float, float)}, for one of several
+     * rounds: {@code repairs} (the previous round's {@link Outcome#setupRepairs}) are routed again to give back
+     * setup, and {@code modelOverRouter} (sink -> the setup delay the full model charged its detour over the
+     * router's count, kept across rounds and updated here) divides the top of any later window the sink gets.
+     */
+    public static Outcome fixHoldByDetour(Design design, VersalSlackAnalysis sa, float marginPs, float setupFloorPs, float setupUncertaintyPs, float maxExtraPs,
+                                          Map<SitePinInst, SetupRepair> repairs, Map<SitePinInst, Float> modelOverRouter) {
         Outcome out = new Outcome();
         long t0 = System.currentTimeMillis();
         if (sa == null) {
@@ -877,6 +940,8 @@ public class HoldFixRouter extends PartialRouter {
         Map<VersalTimingGraph.Vertex, Float> setupBefore = new HashMap<>();
         Map<VersalTimingGraph.Vertex, VersalSlackAnalysis.Result> worstOf = new LinkedHashMap<>();
         Map<VersalTimingGraph.Vertex, Float> setupThrough = new HashMap<>();   // per budgeted pin (see below)
+        Map<SitePinInst, List<VersalTimingGraph.Vertex>> verticesOfSink = new HashMap<>();   // the cell pins a budgeted sink feeds on its short paths
+        Map<SitePinInst, Float> throughOfSink = new HashMap<>();   // and the setup slack through them before the round (ps)
         for (VersalSlackAnalysis.Result r : sa.getResults()) {
             setupBefore.merge(r.endpoint, r.setupSlack, Math::min);
             VersalSlackAnalysis.Result h = worstOf.get(r.endpoint);
@@ -952,6 +1017,11 @@ public class HoldFixRouter extends PartialRouter {
                 float[] w = want.computeIfAbsent(sink, k -> new float[] {0f, Float.MAX_VALUE});
                 if (deficit > w[0]) { w[0] = deficit; holdCornerOfSink.put(sink, corner); }
                 w[1] = Math.min(w[1], room);
+                if (!Float.isNaN(through)) {
+                    List<VersalTimingGraph.Vertex> vs = verticesOfSink.computeIfAbsent(sink, k -> new ArrayList<>());
+                    if (!vs.contains(sinkVertex)) vs.add(sinkVertex);
+                    throughOfSink.merge(sink, through, Math::min);
+                }
                 List<VersalSlackAnalysis.Result> eps = endpointsOfSink.computeIfAbsent(sink, k -> new ArrayList<>());
                 if (!eps.contains(r)) eps.add(r);
             }
@@ -959,11 +1029,34 @@ public class HoldFixRouter extends PartialRouter {
         }
 
         RWRouteConfig config = new RWRouteConfig(new String[] {"--fixBoundingBox", "--useUTurnNodes", "--nonTimingDriven"});
-        HoldFixRouter router = new HoldFixRouter(design, config, new ArrayList<>(want.keySet()), false, new ArrayList<>());
+        List<SitePinInst> toRoute = new ArrayList<>(want.keySet());
+        for (SitePinInst s : repairs.keySet()) if (!want.containsKey(s) && s.getNet() != null && s.getNet().getSource() != null) toRoute.add(s);
+        HoldFixRouter router = new HoldFixRouter(design, config, toRoute, false, new ArrayList<>());
         Map<Net, List<SitePinInst>> byNet = new HashMap<>();
+        // the previous round's sinks that pushed setup under the floor: routed again from their connection before the
+        // first detour, the window's top divided by the ratio their detour showed, its minimum what hold needed or,
+        // when the top no longer reaches that, a window just under the top (as much hold as the setup leaves)
+        for (Map.Entry<SitePinInst, SetupRepair> e : repairs.entrySet()) {
+            SitePinInst sink = e.getKey();
+            SetupRepair rep = e.getValue();
+            Net net = sink.getNet();
+            if (net == null || net.getSource() == null) continue;
+            float top = Math.max(0f, (rep.throughBefore - setupFloorPs) / (rep.modelOverRouter * SETUP_REPAIR_MARGIN) - router.capTolerancePs);
+            float lo = rep.lowerBound + top >= rep.min ? rep.min : rep.lowerBound + Math.max(0f, top - TARGET_ABOVE_MIN_PS);
+            router.setDelayBudget(sink, lo, rep.lowerBound + top, rep.lowerBound);
+            byNet.computeIfAbsent(net, n -> new ArrayList<>()).add(sink);
+            verticesOfSink.put(sink, rep.vertices);
+            throughOfSink.put(sink, rep.throughBefore);
+            out.setupRepairsRouted++;
+            boolean tracedSink = false;
+            for (VersalTimingGraph.Vertex v : rep.vertices) tracedSink |= traced(v);
+            if (tracedSink) System.out.printf("[HoldTrace]   sink %s of %s: routed again to give back setup, budget [%.0f, %.0f] from %.0f (setup through %.0f before its first detour, model/router %.2f)%n",
+                    sink, net.getName(), lo, rep.lowerBound + top, rep.lowerBound, rep.throughBefore, rep.modelOverRouter);
+        }
         Map<Net, Map<SitePinInst, VersalTimingModel.SinkDelay>> netDelays = new HashMap<>();
         for (Map.Entry<SitePinInst, float[]> e : want.entrySet()) {
             SitePinInst sink = e.getKey();
+            if (repairs.containsKey(sink)) continue;
             Net net = sink.getNet();
             float lb = router.routeDelay(net, sink);
             if (Float.isNaN(lb)) { out.skippedNoRouteDelay++; continue; }
@@ -974,9 +1067,11 @@ public class HoldFixRouter extends PartialRouter {
                 ratio = Math.max(1f, Math.min(4f, sd.interconnect[iMax] / sd.interconnect[iLo]));
             }
             // the hold deficit is at the hold corner and needs the ratio; the setup room is slow-max already
-            // (the router's units), and the full model charges a detour about 1.1x the marginal sum
+            // (the router's units), and the full model charges a detour about 1.1x the marginal sum, or what an
+            // earlier round's detour of this sink showed
             float extra = e.getValue()[0] * ratio;
-            float maxExtra = Math.min(e.getValue()[1] / SETUP_ROOM_SAFETY, extra + maxExtraPs);
+            float safety = Math.max(SETUP_ROOM_SAFETY, modelOverRouter.getOrDefault(sink, 0f) * SETUP_REPAIR_MARGIN);
+            float maxExtra = Math.min(e.getValue()[1] / safety, extra + maxExtraPs);
             boolean tracedSink = false;
             for (VersalSlackAnalysis.Result r : endpointsOfSink.getOrDefault(sink, Collections.emptyList())) tracedSink |= traced(r.endpoint);
             if (maxExtra < extra) {
@@ -1079,6 +1174,33 @@ public class HoldFixRouter extends PartialRouter {
             if (before == null || before < setupFloorPs) continue;
             out.setupPushedUnderFloor++;
         }
+        // and through each budgeted pin: a sink whose own detour took the paths through it under the floor is
+        // routed again next round (SetupRepair); one that added no delay of its own was pushed by another sink
+        Map<VersalTimingGraph.Vertex, Float> throughAfter = new HashMap<>();
+        for (Map.Entry<SitePinInst, DelayBudget> e : router.getDelayBudgets().entrySet()) {
+            SitePinInst sink = e.getKey();
+            List<VersalTimingGraph.Vertex> vs = verticesOfSink.get(sink);
+            Float before = throughOfSink.get(sink);
+            if (vs == null || before == null || before < setupFloorPs) continue;
+            float after = Float.NaN;
+            for (VersalTimingGraph.Vertex v : vs) {
+                Float t = throughAfter.get(v);
+                if (t == null) { t = sa.setupSlackThrough(v, SETUP_THROUGH_MAX_VERTICES); throughAfter.put(v, t); }
+                if (!Float.isNaN(t)) after = Float.isNaN(after) ? t : Math.min(after, t);
+            }
+            if (Float.isNaN(after) || after >= setupFloorPs) continue;
+            DelayBudget b = e.getValue();
+            float now = sink.getNet() == null ? Float.NaN : router.routeDelay(sink.getNet(), sink);
+            if (Float.isNaN(now) || now - b.lowerBound < 10f) { out.underFloorNotAttributed++; continue; }
+            float k = Math.min(4f, Math.max(SETUP_ROOM_SAFETY, (before - after) / (now - b.lowerBound)));
+            k = modelOverRouter.merge(sink, k, Math::max);
+            SetupRepair prev = repairs.get(sink);
+            out.setupRepairs.put(sink, new SetupRepair(vs, b.lowerBound, prev != null ? prev.min : b.min, before, k));
+            boolean tracedSink = false;
+            for (VersalTimingGraph.Vertex v : vs) tracedSink |= traced(v);
+            if (tracedSink) System.out.printf("[HoldTrace]   sink %s: setup through its pin %.0f -> %.0f, under the floor; route %.0f from %.0f (router), model/router %.2f: routed again next round%n",
+                    sink, before, after, now, b.lowerBound, k);
+        }
         for (Map.Entry<SitePinInst, DelayBudget> e : router.getDelayBudgets().entrySet()) {
             Float a = router.getAchievedDelay(e.getKey());
             if (a == null || Float.isNaN(a) || a < e.getValue().lowerBound + 10f) out.sinksNotSlower++;
@@ -1111,7 +1233,7 @@ public class HoldFixRouter extends PartialRouter {
             sb.append('\n');
         }
         System.out.print(sb);
-        System.out.printf("[HoldFixRouter] budgeted search: %d popped, %d pushed, %d stale skipped, %d fallbacks, %d searches out of pops took the best route seen, %d searched again with %dx the pops, %d short sink routes set aside%n", stats[0], stats[1], stats[2], stats[3], stats[4], stats[5], POP_ESCALATION, stats[6]);
+        System.out.printf("[HoldFixRouter] budgeted search: %d popped, %d pushed, %d stale skipped, %d fallbacks, %d searches out of pops took the best route seen, %d searched again with %dx the pops, %d short sink routes set aside, %d pushes refused for joining the net's tree off its path%n", stats[0], stats[1], stats[2], stats[3], stats[4], stats[5], POP_ESCALATION, stats[6], stats[7]);
         System.out.println("[HoldFixRouter] " + out);
         return out;
     }
