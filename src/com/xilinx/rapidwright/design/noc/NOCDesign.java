@@ -323,6 +323,9 @@ public class NOCDesign implements Serializable {
         nocConnections.add(np);
     }
 
+    /** The port Vivado's paths name on a slave without a port list (an NSU). */
+    public static final String SINGLE_PORT = "PORT0";
+
     /** Vivado's default latency requirement for a new path, in ns. */
     public static final int DEFAULT_LATENCY = 300;
     /** Vivado's default average burst length for a new path. */
@@ -335,7 +338,8 @@ public class NOCDesign implements Serializable {
      * ({@link #DEFAULT_AVERAGE_BURST}).
      * @param masterName The name of the master client, which the design must have.
      * @param slaveName The name of the slave client, which the design must have.
-     * @param port The slave's port, one of {@link NOCSlave#getPorts()}; null for a slave without ports.
+     * @param port The slave's port, one of {@link NOCSlave#getPorts()}; for a slave without a port
+     *        list (an NSU), {@link #SINGLE_PORT} or null, which stands for it (Vivado names it so).
      * @param readBandwidth The read bandwidth required, in MB/s.
      * @param writeBandwidth The write bandwidth required, in MB/s.
      * @return The new connection, added to the design.
@@ -354,9 +358,12 @@ public class NOCDesign implements Serializable {
             throw new IllegalArgumentException("No NOC slave client named " + slaveName);
         }
         List<String> ports = dest.getPorts();
-        if (ports.isEmpty() ? port != null : !ports.contains(port)) {
-            throw new IllegalArgumentException("NOC slave " + slaveName + (ports.isEmpty() ? " has no ports, not " : " has ports "
-                    + ports + ", not ") + port);
+        if (ports.isEmpty() && port == null) {
+            port = SINGLE_PORT;
+        }
+        if (ports.isEmpty() ? !SINGLE_PORT.equals(port) : !ports.contains(port)) {
+            throw new IllegalArgumentException("NOC slave " + slaveName + " has port(s) "
+                    + (ports.isEmpty() ? SINGLE_PORT : ports) + ", not " + port);
         }
         if (source.getProtocol() != null && dest.getProtocol() != null && source.getProtocol() != dest.getProtocol()) {
             throw new IllegalArgumentException("NOC master " + masterName + " is " + source.getProtocol() + ", slave "

@@ -351,6 +351,13 @@ public class TestNOCDesign {
         Assertions.assertEquals(2, found);
         Assertions.assertEquals(87, loadTraffic(written.toString()).getAllConnections().size());
 
+        // an NSU's one port is PORT0, as Vivado names it, whether given or not
+        String nsu = "v80_base_i/axi_noc_cips/inst/M00_AXI_nsu/bd_c2de_M00_AXI_nsu_0_top_INST/NOC_NSU512_INST";
+        NOCMaster host = nd.getMasterClients().get("v80_base_i/axi_noc_cips/inst/S00_AXI_nmu/bd_c2de_S00_AXI_nmu_0_top_INST/NOC_NMU128_INST");
+        Assertions.assertEquals(NOCDesign.SINGLE_PORT, nd.addConnection(host.getName(), nsu, null, 1, 1).getPort());
+        Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(nmu0, nsu, "PORT1", 1, 1));
+        nd.removeConnection(host.getConnections().get(host.getConnections().size() - 1));
+
         // refused: a port the controller lacks, none for a controller, a client the design lacks, a repeat
         Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(nmu0, hbm0, "PORT4", 16, 16));
         Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(nmu0, hbm0, null, 16, 16));
