@@ -22,6 +22,7 @@ package com.xilinx.rapidwright.design.noc;
 
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -60,6 +61,18 @@ public class NOCConnection implements Serializable {
     boolean isDestLocked;
 
 
+    /** The fields of this path as read that RapidWright does not model, written back unchanged. */
+    private JSONObject unmodeled;
+
+    /** The traffic path fields RapidWright models and writes itself. */
+    private static final Set<String> PATH_FIELDS = new HashSet<>(Arrays.asList(
+            NOCJSONUtil.JSON_FIELD_PHASE, NOCJSONUtil.JSON_FIELD_FROM_CELL, NOCJSONUtil.JSON_FIELD_TO_CELL,
+            NOCJSONUtil.JSON_FIELD_PORT, NOCJSONUtil.JSON_FIELD_COMMUNICATION_TYPE,
+            NOCJSONUtil.JSON_FIELD_READ_BANDWIDTH, NOCJSONUtil.JSON_FIELD_WRITE_BANDWIDTH,
+            NOCJSONUtil.JSON_FIELD_READ_LATENCY, NOCJSONUtil.JSON_FIELD_WRITE_LATENCY,
+            NOCJSONUtil.JSON_FIELD_READ_AVERAGE_BURST, NOCJSONUtil.JSON_FIELD_WRITE_AVERAGE_BURST,
+            NOCJSONUtil.JSON_FIELD_EXCLUSIVE_GROUP));
+
     private static final ArrayList<String> unsupportedFields = new ArrayList<String>();
     private static final Set<String> warnedUnsupportedFields = new HashSet<>();
     static {
@@ -79,7 +92,9 @@ public class NOCConnection implements Serializable {
     }
 
     /**
-     * Creates a NOC connection by copying traffic properties from a template path.
+     * Creates a NOC connection by copying traffic properties from a template path. The template's
+     * unmodeled fields ({@link #getUnmodeledFields()}, e.g. {@code InitialBoot}) are not copied:
+     * they describe that path, not a new one.
      * @param source The source master client.
      * @param dest The destination slave client.
      * @param templatePath The connection that provides the traffic properties to copy.
@@ -113,7 +128,9 @@ public class NOCConnection implements Serializable {
         phase = json.getInt(NOCJSONUtil.JSON_FIELD_PHASE);
         source = nd.getMasterClients().get(json.getString(NOCJSONUtil.JSON_FIELD_FROM_CELL));
         dest = nd.getSlaveClients().get(json.getString(NOCJSONUtil.JSON_FIELD_TO_CELL));
-        port = json.getString(NOCJSONUtil.JSON_FIELD_PORT);
+        if (json.has(NOCJSONUtil.JSON_FIELD_PORT)) {
+            port = json.getString(NOCJSONUtil.JSON_FIELD_PORT);
+        }
         commType = CommunicationType.stringToValue(json.getString(NOCJSONUtil.JSON_FIELD_COMMUNICATION_TYPE));
         readBandwidth = json.getInt(NOCJSONUtil.JSON_FIELD_READ_BANDWIDTH);
         writeBandwidth = json.getInt(NOCJSONUtil.JSON_FIELD_WRITE_BANDWIDTH);
@@ -124,6 +141,27 @@ public class NOCConnection implements Serializable {
         if (json.has(NOCJSONUtil.JSON_FIELD_EXCLUSIVE_GROUP)) {
             exclusiveGroup = json.getString(NOCJSONUtil.JSON_FIELD_EXCLUSIVE_GROUP);
         }
+        unmodeled = NOCJSONUtil.unmodeledFields(json, PATH_FIELDS);
+    }
+
+    /**
+     * The fields this path was read with that RapidWright does not model (e.g. {@code InitialBoot},
+     * which puts the path in the boot image's NoC configuration, and {@code WriteOrder}), written
+     * back unchanged. The object may be modified to change or add such a field.
+     * @return The unmodeled fields, or null if there are none.
+     * @since 2026.1.0
+     */
+    public JSONObject getUnmodeledFields() {
+        return unmodeled;
+    }
+
+    /**
+     * Sets the unmodeled fields of this path ({@link #getUnmodeledFields()}).
+     * @param unmodeled The fields, or null for none.
+     * @since 2026.1.0
+     */
+    public void setUnmodeledFields(JSONObject unmodeled) {
+        this.unmodeled = unmodeled;
     }
 
     /**
@@ -134,9 +172,9 @@ public class NOCConnection implements Serializable {
     public void checkUnsupportedFields(JSONObject json) {
         for (String s : unsupportedFields) {
             if (json.has(s) && warnedUnsupportedFields.add(s)) {
-                System.out.println("WARNING: Unsupported NOC field '" + s +
-                    "' encountered (e.g., Path " + source + " -> " + dest +
-                    "); field will be ignored.");
+                System.out.println("INFO: NOC field '" + s +
+                    "' is not modeled (e.g., Path " + source + " -> " + dest +
+                    "); it is kept and written back unchanged.");
             }
         }
     }
@@ -151,7 +189,9 @@ public class NOCConnection implements Serializable {
         obj.put(NOCJSONUtil.JSON_FIELD_PHASE, phase);
         obj.put(NOCJSONUtil.JSON_FIELD_FROM_CELL,source.getName());
         obj.put(NOCJSONUtil.JSON_FIELD_TO_CELL,dest.getName());
-        obj.put(NOCJSONUtil.JSON_FIELD_PORT,port);
+        if (port != null) {
+            obj.put(NOCJSONUtil.JSON_FIELD_PORT,port);
+        }
         obj.put(NOCJSONUtil.JSON_FIELD_COMMUNICATION_TYPE,commType);
         obj.put(NOCJSONUtil.JSON_FIELD_READ_BANDWIDTH,readBandwidth);
         obj.put(NOCJSONUtil.JSON_FIELD_READ_LATENCY,readLatency);
@@ -162,6 +202,7 @@ public class NOCConnection implements Serializable {
         if (exclusiveGroup != null) {
             obj.put(NOCJSONUtil.JSON_FIELD_EXCLUSIVE_GROUP, exclusiveGroup);
         }
+        NOCJSONUtil.putUnmodeledFields(obj, unmodeled);
         return obj;
     }
 
@@ -570,7 +611,9 @@ public class NOCConnection implements Serializable {
         obj.put(NOCJSONUtil.JSON_FIELD_PATH_SRC_LOCKED,isSourceLocked);
         obj.put(NOCJSONUtil.JSON_FIELD_TO_CELL,dest.getName());
         obj.put(NOCJSONUtil.JSON_FIELD_PATH_DST_LOCKED,isDestLocked);
-        obj.put(NOCJSONUtil.JSON_FIELD_PORT,port);
+        if (port != null) {
+            obj.put(NOCJSONUtil.JSON_FIELD_PORT,port);
+        }
         obj.put(NOCJSONUtil.JSON_FIELD_READ_TRAFFIC_CLASS,source.getReadTC().toString());
         obj.put(NOCJSONUtil.JSON_FIELD_WRITE_TRAFFIC_CLASS,source.getWriteTC().toString());
         obj.put(NOCJSONUtil.JSON_FIELD_READ_BANDWIDTH,readBandwidth);

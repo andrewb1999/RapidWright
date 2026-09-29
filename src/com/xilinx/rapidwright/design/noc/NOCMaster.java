@@ -24,6 +24,9 @@ package com.xilinx.rapidwright.design.noc;
 
 import java.io.Serializable;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -67,6 +70,18 @@ public class NOCMaster extends NOCClient implements Serializable {
         writeTC = TrafficClass.stringToValue(json.getString(NOCJSONUtil.JSON_FIELD_WRITE_TRAFFIC_CLASS));
     }
 
+    /** The fields a master models: a client's and its traffic classes. */
+    private static final Set<String> MASTER_FIELDS = new HashSet<>(CLIENT_FIELDS);
+    static {
+        MASTER_FIELDS.add(NOCJSONUtil.JSON_FIELD_READ_TRAFFIC_CLASS);
+        MASTER_FIELDS.add(NOCJSONUtil.JSON_FIELD_WRITE_TRAFFIC_CLASS);
+    }
+
+    @Override
+    protected Set<String> modeledFields() {
+        return MASTER_FIELDS;
+    }
+
     /**
      * Gets the corresponding connection based on slave client name.
      * 
@@ -93,7 +108,11 @@ public class NOCMaster extends NOCClient implements Serializable {
         obj.put(NOCJSONUtil.JSON_FIELD_IS_MASTER,true);
         obj.put(NOCJSONUtil.JSON_FIELD_WRITE_TRAFFIC_CLASS, writeTC.toString());
         obj.put(NOCJSONUtil.JSON_FIELD_READ_TRAFFIC_CLASS, readTC.toString());
-        obj.put(NOCJSONUtil.JSON_FIELD_MEMORY_APERTURES, new JSONArray());
+        // a master's SysAddresses is not modeled: written as read, else empty
+        JSONObject unmodeled = getUnmodeledFields();
+        if (unmodeled == null || !unmodeled.has(NOCJSONUtil.JSON_FIELD_MEMORY_APERTURES)) {
+            obj.put(NOCJSONUtil.JSON_FIELD_MEMORY_APERTURES, new JSONArray());
+        }
         return obj;
     }
 

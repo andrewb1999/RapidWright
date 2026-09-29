@@ -74,6 +74,18 @@ public class NOCDesign implements Serializable {
     }
 
     /**
+     * The traffic file's top-level and SystemProperties fields RapidWright does not model (e.g.
+     * Vivado 2026.1's {@code DeviceName}), written back unchanged.
+     */
+    private JSONObject unmodeledTraffic, unmodeledSystemProperties;
+
+    private static final Set<String> TRAFFIC_FIELDS = new HashSet<>(Arrays.asList(
+            NOCJSONUtil.JSON_FIELD_SYSTEM_PROPERTIES, NOCJSONUtil.JSON_FIELD_CLIENT_INSTANCES,
+            NOCJSONUtil.JSON_FIELD_PATHS));
+    private static final Set<String> SYSTEM_PROPERTY_FIELDS = new HashSet<>(Arrays.asList(
+            NOCJSONUtil.JSON_FIELD_FREQUENCY, NOCJSONUtil.JSON_FIELD_DFX_PATHS));
+
+    /**
      * Creates an empty NOC design.
      * @since 2026.1.0
      */
@@ -336,9 +348,11 @@ public class NOCDesign implements Serializable {
 
         //Read JSON File
         JSONObject jsonTraffic = new JSONObject(String.join("\n", FileTools.getLinesFromInputStream(in)));
+        unmodeledTraffic = NOCJSONUtil.unmodeledFields(jsonTraffic, TRAFFIC_FIELDS);
 
         //System Properties
         JSONObject sysProps = jsonTraffic.getJSONObject(NOCJSONUtil.JSON_FIELD_SYSTEM_PROPERTIES);
+        unmodeledSystemProperties = NOCJSONUtil.unmodeledFields(sysProps, SYSTEM_PROPERTY_FIELDS);
         if (sysProps.has(NOCJSONUtil.JSON_FIELD_FREQUENCY)) {
             nocFrequency = sysProps.getInt(NOCJSONUtil.JSON_FIELD_FREQUENCY);
         }
@@ -451,13 +465,15 @@ public class NOCDesign implements Serializable {
                 dfxPathsArray.put(rpCellName);
             sysProps.put(NOCJSONUtil.JSON_FIELD_DFX_PATHS,dfxPathsArray);
         }
+        NOCJSONUtil.putUnmodeledFields(sysProps, unmodeledSystemProperties);
         nocTraffic.put(NOCJSONUtil.JSON_FIELD_SYSTEM_PROPERTIES, sysProps);
         for (NOCClient nc : getClients().values()) {
-            nocTraffic.append(NOCJSONUtil.JSON_FIELD_CLIENT_INSTANCES, nc.toJSONObject());
+            nocTraffic.append(NOCJSONUtil.JSON_FIELD_CLIENT_INSTANCES, nc.toTrafficJSONObject());
         }
         for (NOCConnection connection : nocConnections) {
             nocTraffic.append(NOCJSONUtil.JSON_FIELD_PATHS,connection.getTrafficJSONObject());
         }
+        NOCJSONUtil.putUnmodeledFields(nocTraffic, unmodeledTraffic);
         NOCJSONUtil.writeFormattedJSONString(nocTraffic, out);
     }
 

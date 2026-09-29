@@ -23,11 +23,19 @@
 
 package com.xilinx.rapidwright.design.noc;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -129,5 +137,105 @@ public class TestNOCDesign {
                 Assertions.assertEquals(goldCh.getRequiredLatency(),testCh.getRequiredLatency());
             }
         }
+    }
+
+    /** A 2026.1 traffic file (Vivado 2026.1, Alveo V80 AMR shell: HBM and DDR controllers, CIPS, a PL NSU). */
+    private static final String TRAFFIC_2026_1 = "/noc/v80_base_2026_1.nts";
+
+    private static String readResource(String name) throws IOException {
+        try (InputStream in = TestNOCDesign.class.getResourceAsStream(name)) {
+            Assertions.assertNotNull(in, "missing test resource " + name);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static NOCDesign loadTraffic(String json) {
+        NOCDesign nd = new NOCDesign();
+        nd.loadTraffic(new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
+        return nd;
+    }
+
+    private static JSONObject writeTraffic(NOCDesign nd) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        nd.writeTraffic(out);
+        return new JSONObject(new String(out.toByteArray(), StandardCharsets.UTF_8));
+    }
+
+    private static Map<String, JSONObject> byKey(JSONArray a, String... fields) {
+        Map<String, JSONObject> m = new HashMap<>();
+        for (int i = 0; i < a.length(); i++) {
+            JSONObject o = a.getJSONObject(i);
+            StringBuilder key = new StringBuilder();
+            for (String f : fields) key.append(o.optString(f)).append('|');
+            Assertions.assertNull(m.put(key.toString(), o), "duplicate " + key);
+        }
+        return m;
+    }
+
+    /** Every instance, path and system property of {@code gold}, field by field, in {@code test}. */
+    private static void assertTrafficEquivalent(JSONObject gold, JSONObject test) {
+        Assertions.assertEquals(gold.keySet(), test.keySet());
+        Assertions.assertTrue(gold.getJSONObject("SystemProperties").similar(test.getJSONObject("SystemProperties")),
+                "SystemProperties " + gold.getJSONObject("SystemProperties") + " vs " + test.getJSONObject("SystemProperties"));
+        for (String[] list : new String[][] {{"LogicalInstances", "Name"}, {"Paths", "From", "To", "Port"}}) {
+            String[] key = java.util.Arrays.copyOfRange(list, 1, list.length);
+            Map<String, JSONObject> g = byKey(gold.getJSONArray(list[0]), key), r = byKey(test.getJSONArray(list[0]), key);
+            Assertions.assertEquals(g.keySet(), r.keySet(), list[0]);
+            for (Entry<String, JSONObject> e : g.entrySet()) {
+                Assertions.assertTrue(e.getValue().similar(r.get(e.getKey())),
+                        list[0] + " " + e.getKey() + ":\n  gold " + e.getValue() + "\n  test " + r.get(e.getKey()));
+            }
+        }
+    }
+
+    @Test
+    public void testTrafficRoundTrip2026_1() throws IOException {
+        String json = readResource(TRAFFIC_2026_1);
+        NOCDesign nd = loadTraffic(json);
+        Assertions.assertEquals(27, nd.getClients().size());
+        Assertions.assertEquals(84, nd.getAllConnections().size());
+        // the HBM controllers' ports and memory parameters are modeled, like a DDR controller's
+        NOCSlave hbm = nd.getSlaveClients().get("v80_base_i/axi_noc_cips/inst/MC_hbmc/inst/hbm_st1/I_hbm_chnl2/I_hbm_mc");
+        Assertions.assertEquals(ComponentType.HBMMC, hbm.getComponentType());
+        Assertions.assertEquals(java.util.Arrays.asList("PORT0", "PORT1", "PORT2", "PORT3"), hbm.getPorts());
+        Assertions.assertEquals("1", hbm.getMemParams().get("StackNumber"));
+        // what is not modeled is kept: the paths' InitialBoot and WriteOrder, a master's Remap
+        NOCMaster pcie = nd.getMasterClients().get("v80_base_i/axi_noc_cips/inst/S00_AXI_nmu/bd_c2de_S00_AXI_nmu_0_top_INST/NOC_NMU128_INST");
+        Assertions.assertTrue(pcie.getUnmodeledFields().has("Remap"));
+
+        assertTrafficEquivalent(new JSONObject(json), writeTraffic(nd));
+        // a second round trip is stable too
+        assertTrafficEquivalent(new JSONObject(json), writeTraffic(loadTraffic(writeTraffic(nd).toString())));
+    }
+
+    @Test
+    public void testTrafficEditsAndCopies2026_1() throws IOException {
+        NOCDesign nd = loadTraffic(readResource(TRAFFIC_2026_1));
+        // a modeled field changed in RapidWright is what is written, unmodeled fields stay
+        NOCConnection path = nd.getAllConnections().get(0);
+        path.setReadBandwidth(123);
+        JSONObject written = null;
+        JSONArray paths = writeTraffic(nd).getJSONArray("Paths");
+        for (int i = 0; i < paths.length(); i++) {
+            JSONObject p = paths.getJSONObject(i);
+            if (p.getString("From").equals(path.getSource().getName()) && p.getString("To").equals(path.getDest().getName())
+                    && p.getString("Port").equals(path.getPort())) {
+                written = p;
+            }
+        }
+        Assertions.assertNotNull(written);
+        Assertions.assertEquals(123, written.getInt("ReadBW"));
+        Assertions.assertEquals(path.getUnmodeledFields().getBoolean("InitialBoot"), written.getBoolean("InitialBoot"));
+        // copies carry everything, and do not share it
+        NOCSlave hbm = nd.getSlaveClients().get("v80_base_i/axi_noc_cips/inst/MC_hbmc/inst/hbm_st1/I_hbm_chnl2/I_hbm_mc");
+        NOCSlave copy = new NOCSlave(hbm);
+        Assertions.assertTrue(hbm.toTrafficJSONObject().similar(copy.toTrafficJSONObject()));
+        copy.getMemParams().put("StackNumber", "0");
+        copy.getUnmodeledFields().put("DesignName", "changed");
+        Assertions.assertEquals("1", hbm.getMemParams().get("StackNumber"));
+        Assertions.assertEquals("/axi_noc_cips/HBM10", hbm.getUnmodeledFields().getString("DesignName"));
     }
 }

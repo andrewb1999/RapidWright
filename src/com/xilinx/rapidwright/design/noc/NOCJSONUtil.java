@@ -27,6 +27,7 @@ import java.io.OutputStream;
 import java.io.Serializable;
 import java.lang.reflect.Field;
 import java.util.LinkedHashMap;
+import java.util.Set;
 
 import org.json.JSONObject;
 
@@ -116,6 +117,51 @@ public class NOCJSONUtil implements Serializable {
             mapField.set(result, new LinkedHashMap<>());
         } catch (Exception e) {}
         return result;
+    }
+
+    /**
+     * The fields of a JSON object that RapidWright does not model, in a new ordered object, so that
+     * they can be written back unchanged: whatever Vivado writes that RapidWright does not (yet)
+     * represent survives a read and a write (e.g. a traffic path's {@code InitialBoot} and
+     * {@code WriteOrder}, a master's {@code Remap}; and fields a later Vivado adds).
+     * @param json The JSON object as read.
+     * @param modeled The names of the fields RapidWright models (and writes itself).
+     * @return The other fields, or null if there are none.
+     * @since 2026.1.0
+     */
+    public static JSONObject unmodeledFields(JSONObject json, Set<String> modeled) {
+        JSONObject extra = null;
+        for (String key : json.keySet()) {
+            if (modeled.contains(key)) continue;
+            if (extra == null) extra = createOrderedJSONObject();
+            extra.put(key, json.get(key));
+        }
+        return extra;
+    }
+
+    /**
+     * Adds the unmodeled fields of an object as read ({@link #unmodeledFields}) to its JSON
+     * representation as RapidWright writes it; a field the representation already has is kept.
+     * @param obj The JSON representation being written.
+     * @param extra The unmodeled fields (may be null).
+     * @since 2026.1.0
+     */
+    public static void putUnmodeledFields(JSONObject obj, JSONObject extra) {
+        if (extra == null) return;
+        for (String key : extra.keySet()) {
+            if (!obj.has(key)) obj.put(key, extra.get(key));
+        }
+    }
+
+    /**
+     * A deep copy of a JSON object (null for null), for copies of clients and connections that
+     * must not share their unmodeled fields.
+     * @param json The JSON object to copy.
+     * @return The copy.
+     * @since 2026.1.0
+     */
+    public static JSONObject copy(JSONObject json) {
+        return json == null ? null : new JSONObject(json.toString());
     }
 
     /**

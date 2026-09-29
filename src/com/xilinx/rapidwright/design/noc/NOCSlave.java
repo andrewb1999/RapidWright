@@ -25,8 +25,10 @@ package com.xilinx.rapidwright.design.noc;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 import org.json.JSONArray;
@@ -72,12 +74,28 @@ public class NOCSlave extends NOCClient implements Serializable {
         super(ns);
         init();
         this.ports.addAll(ns.ports);
-        this.sysAddresses.addAll(ns.sysAddresses);
-        if (this.isDDRC()) {
-            memParams = new TreeMap<String,String>();
-            memParams.putAll(ns.memParams);
-            this.portDestIDs.putAll(ns.portDestIDs);
+        for (Pair<String,String> addr : ns.sysAddresses) {
+            this.sysAddresses.add(new Pair<String,String>(addr.getFirst(), addr.getSecond()));
         }
+        if (ns.memParams != null) {
+            memParams = new TreeMap<String,String>(ns.memParams);
+        }
+        this.portDestIDs.putAll(ns.portDestIDs);
+        this.interleaveSize = ns.interleaveSize;
+    }
+
+    /** The fields a slave models: a client's, its address apertures and its memory controller ports and parameters. */
+    private static final Set<String> SLAVE_FIELDS = new HashSet<>(CLIENT_FIELDS);
+    static {
+        SLAVE_FIELDS.add(NOCJSONUtil.JSON_FIELD_MEMORY_APERTURES);
+        SLAVE_FIELDS.add(NOCJSONUtil.JSON_FIELD_LOGICAL_PORTS);
+        SLAVE_FIELDS.add(NOCJSONUtil.JSON_FIELD_DDRC_PARAMS);
+        SLAVE_FIELDS.add(NOCJSONUtil.JSON_FIELD_INTERLEAVE_SIZE);
+    }
+
+    @Override
+    protected Set<String> modeledFields() {
+        return SLAVE_FIELDS;
     }
 
     /**
@@ -95,19 +113,23 @@ public class NOCSlave extends NOCClient implements Serializable {
             JSONObject segment = apertures.getJSONObject(i);
             sysAddresses.add(new Pair<String,String>(segment.getString(NOCJSONUtil.JSON_FIELD_ADDRESS_BASE), segment.getString(NOCJSONUtil.JSON_FIELD_ADDRESS_SIZE)));
         }
-        if (this.isDDRC()) {
+        // A memory controller's parameters and ports: a DDR controller's (DDRC) and, as of Vivado
+        // 2026.1 traffic, an HBM controller's (HBMMC: PORT0-3 over its two pseudo channels)
+        if (json.has(NOCJSONUtil.JSON_FIELD_DDRC_PARAMS)) {
             memParams = new TreeMap<String,String>();
             JSONObject memParamArray = json.getJSONObject(NOCJSONUtil.JSON_FIELD_DDRC_PARAMS);
             for (String key : memParamArray.keySet()) {
-                memParams.put(key,memParamArray.getString(key));
+                memParams.put(key,memParamArray.get(key).toString());
             }
+        }
+        if (json.has(NOCJSONUtil.JSON_FIELD_LOGICAL_PORTS)) {
             JSONArray portArray = json.getJSONArray(NOCJSONUtil.JSON_FIELD_LOGICAL_PORTS);
             for (int i=0; i<portArray.length(); i++) {
                 ports.add(portArray.getString(i));
             }
-            if (json.has(NOCJSONUtil.JSON_FIELD_INTERLEAVE_SIZE)) {
-                interleaveSize = json.getInt(NOCJSONUtil.JSON_FIELD_INTERLEAVE_SIZE);
-            }
+        }
+        if (json.has(NOCJSONUtil.JSON_FIELD_INTERLEAVE_SIZE)) {
+            interleaveSize = json.getInt(NOCJSONUtil.JSON_FIELD_INTERLEAVE_SIZE);
         }
     }
 
@@ -277,15 +299,15 @@ public class NOCSlave extends NOCClient implements Serializable {
             addressArray.put(addrObj);
         }
         obj.put(NOCJSONUtil.JSON_FIELD_MEMORY_APERTURES, addressArray);
-        if (this.isDDRC()) {
+        if (memParams != null) {
             JSONObject memParamArray = NOCJSONUtil.createOrderedJSONObject();
             for (Map.Entry<String,String> param : memParams.entrySet()) {
                 memParamArray.put(param.getKey(),param.getValue());
             }
             obj.put(NOCJSONUtil.JSON_FIELD_DDRC_PARAMS, memParamArray);
-            if (interleaveSize != 0) {
-                obj.put(NOCJSONUtil.JSON_FIELD_INTERLEAVE_SIZE, interleaveSize);
-            }
+        }
+        if (interleaveSize != 0) {
+            obj.put(NOCJSONUtil.JSON_FIELD_INTERLEAVE_SIZE, interleaveSize);
         }
         return obj;
     }

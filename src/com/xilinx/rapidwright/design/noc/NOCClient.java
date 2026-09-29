@@ -56,6 +56,17 @@ public class NOCClient implements Serializable {
 
     private Map<String, String> simMetaData;
 
+    /** The fields of this client as read that RapidWright does not model, written back unchanged. */
+    private JSONObject unmodeled;
+
+    /** The client fields every client models (a master or a slave adds its own). */
+    protected static final Set<String> CLIENT_FIELDS = new HashSet<>(Arrays.asList(
+            NOCJSONUtil.JSON_FIELD_NAME, NOCJSONUtil.JSON_FIELD_IS_MASTER,
+            NOCJSONUtil.JSON_FIELD_HAS_PARITY_ADDR, NOCJSONUtil.JSON_FIELD_HAS_PARITY_DATA,
+            NOCJSONUtil.JSON_FIELD_COMPONENT_TYPE, NOCJSONUtil.JSON_FIELD_PROTOCOL,
+            NOCJSONUtil.JSON_FIELD_IS_VIRTUAL, NOCJSONUtil.JSON_FIELD_EXTERNAL_CONNECTIONS,
+            NOCJSONUtil.JSON_FIELD_AXI_DATA_WIDTH, NOCJSONUtil.JSON_FIELD_SIM_META_DATA));
+
     private static final ArrayList<String> unsupportedFields = new ArrayList<String>();
     private static final Set<String> warnedUnsupportedFields = new HashSet<>();
 
@@ -94,6 +105,9 @@ public class NOCClient implements Serializable {
         this.destID = nc.destID;
         this.compType = nc.compType;
         this.protocol = nc.protocol;
+        this.externalConnections.addAll(nc.externalConnections);
+        if (nc.simMetaData != null) this.simMetaData = new HashMap<>(nc.simMetaData);
+        this.unmodeled = NOCJSONUtil.copy(nc.unmodeled);
     }
 
     /**
@@ -132,6 +146,37 @@ public class NOCClient implements Serializable {
                 simMetaData.put(key, value);
             }
         }
+        unmodeled = NOCJSONUtil.unmodeledFields(json, modeledFields());
+    }
+
+    /**
+     * The JSON fields this client models and writes itself; any other field it was read with is
+     * kept and written back unchanged ({@link #getUnmodeledFields()}).
+     * @return The names of the modeled fields.
+     * @since 2026.1.0
+     */
+    protected Set<String> modeledFields() {
+        return CLIENT_FIELDS;
+    }
+
+    /**
+     * The fields this client was read with that RapidWright does not model (e.g. a master's
+     * {@code Remap}, or a {@code DesignName}), written back unchanged. The object may be modified
+     * to change or add such a field.
+     * @return The unmodeled fields, or null if there are none.
+     * @since 2026.1.0
+     */
+    public JSONObject getUnmodeledFields() {
+        return unmodeled;
+    }
+
+    /**
+     * Sets the unmodeled fields of this client ({@link #getUnmodeledFields()}).
+     * @param unmodeled The fields, or null for none.
+     * @since 2026.1.0
+     */
+    public void setUnmodeledFields(JSONObject unmodeled) {
+        this.unmodeled = unmodeled;
     }
 
     /**
@@ -142,8 +187,8 @@ public class NOCClient implements Serializable {
     public void checkUnsupportedFields(JSONObject json) {
         for (String s : unsupportedFields) {
             if (json.has(s) && warnedUnsupportedFields.add(s)) {
-                System.out.println("WARNING: Unsupported NOC field '" + s +
-                    "' encountered (e.g., client " + name + "); field will be ignored.");
+                System.out.println("INFO: NOC field '" + s +
+                    "' is not modeled (e.g., client " + name + "); it is kept and written back unchanged.");
             }
         }
     }
@@ -177,6 +222,18 @@ public class NOCClient implements Serializable {
             obj.put(NOCJSONUtil.JSON_FIELD_SIM_META_DATA, simMetaData);
         }
 
+        return obj;
+    }
+
+    /**
+     * Converts this client to its JSON representation with the unmodeled fields it was read with
+     * ({@link #getUnmodeledFields()}): what a traffic file gets.
+     * @return The complete JSON representation of this client.
+     * @since 2026.1.0
+     */
+    public JSONObject toTrafficJSONObject() {
+        JSONObject obj = toJSONObject();
+        NOCJSONUtil.putUnmodeledFields(obj, unmodeled);
         return obj;
     }
 
