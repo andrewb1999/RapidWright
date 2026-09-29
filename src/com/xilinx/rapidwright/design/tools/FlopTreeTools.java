@@ -47,6 +47,7 @@ import com.xilinx.rapidwright.edif.EDIFHierNet;
 import com.xilinx.rapidwright.edif.EDIFHierPortInst;
 import com.xilinx.rapidwright.edif.EDIFNet;
 import com.xilinx.rapidwright.edif.EDIFNetlist;
+import com.xilinx.rapidwright.edif.EDIFPortInst;
 import com.xilinx.rapidwright.edif.EDIFTools;
 import com.xilinx.rapidwright.placer.blockplacer.Point;
 import com.xilinx.rapidwright.util.Pair;
@@ -54,6 +55,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -121,11 +123,19 @@ public class FlopTreeTools {
             clkHierPortInst = flopHierCellInst.getPortInst("C");
         }
         EDIFTools.connectPortInstsThruHier(clk, clkHierPortInst, newNetName + "_clk");
+        // and physically, as its other pins below: its site pin and the site route to the flop, which
+        // SiteInst.routeSite would otherwise add after the fact, finding the net through the
+        // netlist's parent net map (rebuilt after every ECO, a pass over the whole netlist). Net.connect
+        // leaves the logical connection made above as it is.
+        Net physClk = clockPhysicalNet(design, clk.getHierarchicalNetName());
+        if (physClk != null) physClk.connect(flop, "C");
         EDIFNet origNet = logicalNet.getNet();
-        ECOTools.disconnectNet(design, portInsts.stream().filter(EDIFHierPortInst::isInput).collect(Collectors.toList()));
-        Map<EDIFHierNet, List<EDIFHierPortInst>> netToPortInsts = new HashMap<>();
-        netToPortInsts.put(net.getLogicalHierNet(), portInsts);
-        ECOTools.connectNet(design, netToPortInsts, null);
+        if (!portInsts.isEmpty()) {
+            ECOTools.disconnectNet(design, portInsts.stream().filter(EDIFHierPortInst::isInput).collect(Collectors.toList()));
+            Map<EDIFHierNet, List<EDIFHierPortInst>> netToPortInsts = new HashMap<>();
+            netToPortInsts.put(net.getLogicalHierNet(), portInsts);
+            ECOTools.connectNet(design, netToPortInsts, null);
+        }
         Net origPhysNet = design.getNet(logicalNet.getHierarchicalNetName());
         if (origPhysNet == null) {
             if (origNet.isGND()) {
@@ -293,7 +303,7 @@ public class FlopTreeTools {
     }
 
     private static Pair<Site, BEL> nextAvailFlopPlacement(Design design, Iterator<Site> itr, SLR slr, String clkName) {
-        String clock = clockParentNetName(design, clkName);
+        Set<String> clock = clockAliases(design, clkName);
         while (itr.hasNext()) {
             Site curr = itr.next();
             if (slr != null && curr.getTile().getSLR() != slr) {
@@ -341,13 +351,122 @@ public class FlopTreeTools {
         return null;
     }
 
-    /** The parent (physical) net name of a clock given by its hierarchical net name, or null. */
-    private static String clockParentNetName(Design design, String clkName) {
+    /** A clock as the tools need it: the names of its segments and its physical net. */
+    private static final class ClockNets {
+        final Set<String> aliases;
+        final Net physical;
+
+        ClockNets(Set<String> aliases, Net physical) {
+            this.aliases = aliases;
+            this.physical = physical;
+        }
+    }
+
+    /** {@link #clockNets}' cache: the netlist its names are of, and each clock by name. */
+    private static java.lang.ref.WeakReference<EDIFNetlist> clockAliasNetlist = new java.lang.ref.WeakReference<>(null);
+    private static final Map<String, ClockNets> clockAliasCache = new HashMap<>();
+
+    /**
+     * The hierarchical names of every segment of a clock net given by one of them, or null for no
+     * such net: a used slice's flops must all be on one of these to take a flop of that clock.
+     * Computed once per clock between public entry points ({@link #resetClockAliases}): asking the
+     * netlist for each flop's parent clock net instead rebuilt its parent net map after every flop
+     * inserted (ECOTools' connectNet and disconnectNet reset the map), a pass over all 334k cells
+     * of the 32x8 GEMM beside the V80 shell per flop, most of its reset tree's time. A flop
+     * connected to the clock through an alias made since counts as on another clock: its slice is
+     * not shared.
+     */
+    private static Set<String> clockAliases(Design design, String clkName) {
+        ClockNets c = clockNets(design, clkName);
+        return c == null ? null : c.aliases;
+    }
+
+    /**
+     * The physical net of a clock given by the name of one of its segments: that of its parent net,
+     * the segment its driver (a leaf cell's output or a top-level input) is on, as physical nets take
+     * their parent's name, created if there is none yet; or null. Other segments may carry physical
+     * nets too, empty ones a module's relocation left behind (each tile's clk in the merged mesh).
+     */
+    private static Net clockPhysicalNet(Design design, String clkName) {
+        ClockNets c = clockNets(design, clkName);
+        return c == null ? null : c.physical;
+    }
+
+    /** Whether a net segment carries its net's driver: a leaf cell's output, or a top-level input. */
+    private static boolean drivesNet(EDIFHierNet segment) {
+        boolean top = segment.getHierarchicalInst().isTopLevelInst();
+        for (EDIFPortInst p : segment.getNet().getPortInsts()) {
+            if (p.getCellInst() == null) {
+                if (top && p.isInput()) return true;
+            } else if (p.isOutput() && p.getCellInst().getCellType().isLeafCellOrBlackBox()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static ClockNets clockNets(Design design, String clkName) {
         if (clkName == null) return null;
-        EDIFHierNet clk = design.getNetlist().getHierNetFromName(clkName);
-        if (clk == null) return null;
-        EDIFHierNet parent = design.getNetlist().getParentNet(clk);
-        return (parent != null ? parent : clk).getHierarchicalNetName();
+        EDIFNetlist netlist = design.getNetlist();
+        if (clockAliasNetlist.get() != netlist) {
+            clockAliasCache.clear();
+            clockAliasNetlist = new java.lang.ref.WeakReference<>(netlist);
+        }
+        if (clockAliasCache.containsKey(clkName)) return clockAliasCache.get(clkName);
+        EDIFHierNet clk = netlist.getHierNetFromName(clkName);
+        ClockNets c = null;
+        if (clk != null) {
+            Set<String> aliases = new HashSet<>();
+            EDIFHierNet parent = null;
+            for (EDIFHierNet a : netlist.getNetAliases(clk)) {
+                aliases.add(a.getHierarchicalNetName());
+                if (parent == null && drivesNet(a)) parent = a;
+            }
+            Net physical = null;
+            if (parent != null) {
+                physical = design.getNet(parent.getHierarchicalNetName());
+                if (physical == null) {
+                    // none yet (the GEMM's clk before its buffer): created as routeSite's lookup would
+                    physical = design.createNet(parent.getHierarchicalNetName());
+                    physical.setLogicalHierNet(parent);
+                }
+            }
+            c = new ClockNets(aliases, physical);
+        }
+        clockAliasCache.put(clkName, c);
+        return c;
+    }
+
+    /**
+     * Site-routes the sites the tools placed flops in, of those that need it: a flop is created with
+     * every pin connected and routed in its site, so only one whose clock had no single physical net
+     * to connect to is left, and a site of other cells a caller added. {@link SiteInst#routeSite}
+     * finds each pin's net through the netlist's parent net map, rebuilt by the first call after an
+     * ECO: about 6 s on the 32x8 GEMM, three times over when each tree routed its own sites.
+     */
+    public static void routeSites(Collection<SiteInst> siteInsts) {
+        for (SiteInst si : siteInsts) {
+            if (needsSiteRoute(si)) si.routeSite();
+        }
+    }
+
+    /**
+     * Whether a site has a flop whose clock is not routed in the site: the one pin the tools may
+     * leave (the other cells of a shared slice may map pins that nothing drives).
+     */
+    private static boolean needsSiteRoute(SiteInst si) {
+        for (Cell c : si.getCells()) {
+            if (!c.isPlaced() || c.getBEL() == null || c.isRoutethru() || !c.getBEL().isFF() || c.getBEL().isAnyIMR()) continue;
+            BELPin clk = c.getBEL().getPin("CLK");
+            if (clk != null && c.getPinMappingsP2L().containsKey("CLK") && si.getNetFromSiteWire(clk.getSiteWireName()) == null) return true;
+        }
+        return false;
+    }
+
+    /** Forgets {@link #clockAliases}' names: each public entry point starts from the netlist as it is. */
+    private static void resetClockAliases() {
+        clockAliasCache.clear();
+        clockAliasNetlist = new java.lang.ref.WeakReference<>(null);
     }
 
     /**
@@ -356,7 +475,7 @@ public class FlopTreeTools {
      * cells tie: Vivado could not route the clock to it, "prohibited IMUX pin CLK"), all on that
      * clock. An empty slice (no cells) may.
      */
-    private static boolean sharesClockWith(Design design, SiteInst candidate, String clock) {
+    private static boolean sharesClockWith(Design design, SiteInst candidate, Set<String> clock) {
         boolean flops = false, cells = false;
         for (Cell c : candidate.getCells()) {
             if (!c.isPlaced() || c.getBEL() == null || c.isRoutethru() || c.getBEL().isAnyIMR()) continue;
@@ -366,9 +485,7 @@ public class FlopTreeTools {
             if (clock == null || c.getEDIFHierCellInst() == null) continue;
             EDIFHierPortInst cp = c.getEDIFHierCellInst().getPortInst("C");
             EDIFHierNet net = cp == null ? null : cp.getHierarchicalNet();
-            if (net == null) return false;
-            EDIFHierNet parent = design.getNetlist().getParentNet(net);
-            if (!clock.equals((parent != null ? parent : net).getHierarchicalNetName())) return false;
+            if (net == null || !clock.contains(net.getHierarchicalNetName())) return false;
         }
         return !cells || flops;
     }
@@ -535,6 +652,68 @@ public class FlopTreeTools {
      */
     public static boolean TREE_LEAVES_PER_CLOCK_REGION = false;
 
+    /**
+     * Most sink pins one flop of the tree's last level drives (0: no limit). The quadrants split at
+     * the sinks' centroid, not their median, so a dense cluster keeps its sinks together; a larger
+     * group at the last level is bisected at its median along its longer side until each part fits,
+     * and each part gets its own leaf, all fed by the same previous level. Beside the V80 shell a
+     * reset leaf drove 236 pins of a GEMM input edge buffer over 45 rows, and the route to the far
+     * ones took 1.5 ns (Vivado: 1.59 ns, 70 ps short of setup at 2 ns).
+     */
+    public static int TREE_MAX_LEAF_FANOUT = 0;
+
+    /**
+     * The sinks in parts of at most {@code max}, halved at the median along their longer side, never
+     * inside a tile: the flops of a slice share its control site pins (a cut through a slice's flops
+     * put two of its reset pins, one RST site pin, on two leaves). A part in a single tile is kept.
+     */
+    private static List<List<EDIFHierPortInst>> bisectToFanout(Design design, List<EDIFHierPortInst> portInsts, int max) {
+        List<List<EDIFHierPortInst>> parts = new ArrayList<>();
+        if (max <= 0 || portInsts.size() <= max) {
+            parts.add(portInsts);
+            return parts;
+        }
+        Map<EDIFHierPortInst, Tile> tiles = new HashMap<>();
+        int minRow = Integer.MAX_VALUE, maxRow = Integer.MIN_VALUE, minCol = Integer.MAX_VALUE, maxCol = Integer.MIN_VALUE;
+        for (EDIFHierPortInst p : portInsts) {
+            Cell cell = p.getPhysicalCell(design);
+            if (cell == null || !cell.isPlaced()) continue;
+            Tile t = cell.getTile();
+            tiles.put(p, t);
+            minRow = Math.min(minRow, t.getRow());
+            maxRow = Math.max(maxRow, t.getRow());
+            minCol = Math.min(minCol, t.getColumn());
+            maxCol = Math.max(maxCol, t.getColumn());
+        }
+        boolean byRow = maxRow - minRow >= maxCol - minCol;
+        List<EDIFHierPortInst> sorted = new ArrayList<>(portInsts);
+        // by the longer side, then the other: each tile's sinks contiguous
+        sorted.sort(java.util.Comparator.<EDIFHierPortInst>comparingInt(p -> {
+            Tile t = tiles.get(p);
+            return t == null ? -1 : byRow ? t.getRow() : t.getColumn();
+        }).thenComparingInt(p -> {
+            Tile t = tiles.get(p);
+            return t == null ? -1 : byRow ? t.getColumn() : t.getRow();
+        }));
+        // the cut nearest the median between two tiles
+        int n = sorted.size(), cut = -1;
+        for (int d = 0; d < n && cut < 0; d++) {
+            for (int c : new int[] {n / 2 + d, n / 2 - d}) {
+                if (c > 0 && c < n && !java.util.Objects.equals(tiles.get(sorted.get(c)), tiles.get(sorted.get(c - 1)))) {
+                    cut = c;
+                    break;
+                }
+            }
+        }
+        if (cut < 0) {
+            parts.add(portInsts);
+            return parts;
+        }
+        parts.addAll(bisectToFanout(design, sorted.subList(0, cut), max));
+        parts.addAll(bisectToFanout(design, sorted.subList(cut, n), max));
+        return parts;
+    }
+
     private static Map<ClockRegion, List<EDIFHierPortInst>> splitPortInstsByClockRegion(Design design,
                                                                                        List<EDIFHierPortInst> portInsts) {
         Map<ClockRegion, List<EDIFHierPortInst>> m = new java.util.TreeMap<>(java.util.Comparator.comparing(ClockRegion::getName));
@@ -561,16 +740,30 @@ public class FlopTreeTools {
             for (Pair<Net, List<EDIFHierPortInst>> pair : currPortInstList) {
                 Net net = pair.getFirst();
                 List<EDIFHierPortInst> portInsts = pair.getSecond();
-                if (currDepth == depth - 1 && TREE_LEAVES_PER_CLOCK_REGION) {
-                    Map<ClockRegion, List<EDIFHierPortInst>> byRegion = splitPortInstsByClockRegion(design, portInsts);
+                if (currDepth == depth - 1 && (TREE_LEAVES_PER_CLOCK_REGION || TREE_MAX_LEAF_FANOUT > 0)) {
+                    // one leaf per clock region its sinks occupy, each inside that region, and per part
+                    // of at most TREE_MAX_LEAF_FANOUT sinks, all fed by the same previous level (so every
+                    // sink keeps the same depth)
+                    List<Pair<ClockRegion, List<EDIFHierPortInst>>> leaves = new ArrayList<>();
+                    Map<ClockRegion, List<EDIFHierPortInst>> byRegion = TREE_LEAVES_PER_CLOCK_REGION
+                            ? splitPortInstsByClockRegion(design, portInsts) : Collections.emptyMap();
                     if (byRegion.size() > 1) {
-                        // one leaf per clock region its sinks occupy, each inside that region, all fed by
-                        // the same previous level (so every sink keeps the same depth)
                         for (Map.Entry<ClockRegion, List<EDIFHierPortInst>> g : byRegion.entrySet()) {
-                            ClockRegion cr = g.getKey();
+                            for (List<EDIFHierPortInst> part : bisectToFanout(design, g.getValue(), TREE_MAX_LEAF_FANOUT)) {
+                                leaves.add(new Pair<>(g.getKey(), part));
+                            }
+                        }
+                    } else {
+                        for (List<EDIFHierPortInst> part : bisectToFanout(design, portInsts, TREE_MAX_LEAF_FANOUT)) {
+                            leaves.add(new Pair<>(null, part));
+                        }
+                    }
+                    if (leaves.size() > 1) {
+                        for (Pair<ClockRegion, List<EDIFHierPortInst>> leaf : leaves) {
+                            ClockRegion cr = leaf.getFirst();
                             String leafNetName = netName.replace(EDIFTools.EDIF_HIER_SEP, "_") + "_slr" + slr.getId() + "_d" + currDepth + "_" + i;
-                            Predicate<Tile> outsideRegion = tile -> noGo.test(tile) || !cr.equals(tile.getClockRegion());
-                            placeFlopNearCentroidOfPortInsts(design, clkName, net, leafNetName, g.getValue(), siteInstsToRoute, slr, outsideRegion);
+                            Predicate<Tile> where = cr == null ? noGo : tile -> noGo.test(tile) || !cr.equals(tile.getClockRegion());
+                            placeFlopNearCentroidOfPortInsts(design, clkName, net, leafNetName, leaf.getSecond(), siteInstsToRoute, slr, where);
                             i++;
                         }
                         continue;
@@ -652,7 +845,7 @@ public class FlopTreeTools {
                 }
                 Pair<Cell, Net> chainPair = createAndPlaceFlopForTree(design, currentNet.getLogicalHierNet(),
                         slrCrossingNamePrefix + "_xing" + crossingIdx + "_src_ff" + i, chainLoc,
-                        design.getNetlist().getHierNetFromName(clkName), targetSLRPortInsts);
+                        design.getNetlist().getHierNetFromName(clkName), Collections.emptyList());
                 siteInstsToRoute.add(chainPair.getFirst().getSiteInst());
                 currentNet = chainPair.getSecond();
             }
@@ -678,7 +871,7 @@ public class FlopTreeTools {
             }
             Pair<Cell, Net> topNetCellPair = createAndPlaceFlopForTree(design, currentNet.getLogicalHierNet(),
                     topName, loc,
-                    design.getNetlist().getHierNetFromName(clkName), targetSLRPortInsts);
+                    design.getNetlist().getHierNetFromName(clkName), Collections.emptyList());
             siteInstsToRoute.add(topNetCellPair.getFirst().getSiteInst());
 
             // Far-side ("bottom") flop one SLL hop across from where the near-side ("top") one landed.
@@ -697,9 +890,11 @@ public class FlopTreeTools {
                 throw new RuntimeException("Failed to place " + bottomName + " for crossing " + crossingIdx
                         + " of net " + net.getName());
             }
+            // the sinks move once, onto the final crossing's far flop (as insertFlopChain)
             Pair<Cell, Net> bottomNetCellPair = createAndPlaceFlopForTree(design,
                     topNetCellPair.getSecond().getLogicalHierNet(), bottomName, bottomLoc,
-                    design.getNetlist().getHierNetFromName(clkName), targetSLRPortInsts);
+                    design.getNetlist().getHierNetFromName(clkName),
+                    crossingIdx == numCrossings - 1 ? targetSLRPortInsts : Collections.emptyList());
             siteInstsToRoute.add(bottomNetCellPair.getFirst().getSiteInst());
 
             // Advance state for the next crossing iteration.
@@ -748,6 +943,7 @@ public class FlopTreeTools {
     public static Net insertFlopChain(Design design, Net net, String clkName, int depth,
                                       List<EDIFHierPortInst> portInsts, Set<SiteInst> siteInstsToRoute,
                                       Predicate<Tile> noGo) {
+        resetClockAliases();
         List<EDIFHierPortInst> sources = net.getLogicalHierNet().getLeafHierPortInsts(true, false);
         if (sources.isEmpty()) {
             throw new RuntimeException("Net " + net.getName() + " does not have a source");
@@ -789,9 +985,12 @@ public class FlopTreeTools {
                         + " for net " + currentNet.getName());
             }
 
+            // the stages in series, the sinks moved once onto the last: moving them at every stage
+            // cost a pass over their net per sink sharing a site pin (the V80 shell's reset: 8442
+            // sinks, 13 stages, half an hour)
             Pair<Cell, Net> netCellPair = createAndPlaceFlopForTree(design, currentNet.getLogicalHierNet(),
                     currentNet.getName().replace(EDIFTools.EDIF_HIER_SEP, "_") + "_ff" + i, loc,
-                    netlist.getHierNetFromName(clkName), portInsts);
+                    netlist.getHierNetFromName(clkName), i == depth - 1 ? portInsts : Collections.emptyList());
 
             siteInstsToRoute.add(netCellPair.getFirst().getSiteInst());
             currentNet = netCellPair.getSecond();
@@ -1009,6 +1208,7 @@ public class FlopTreeTools {
     public static void insertFlopTreeForNet(Design design, String netName, String clkName, int depth,
                                             int maxDepthPerSLR, Predicate<Tile> noGo, Set<SiteInst> siteInstsToRoute) {
         if (noGo == null) noGo = t -> false;
+        resetClockAliases();
         boolean routeHere = siteInstsToRoute == null;
         if (routeHere) siteInstsToRoute = new HashSet<>();
         EDIFNetlist netlist = design.getNetlist();
@@ -1066,9 +1266,7 @@ public class FlopTreeTools {
         }
 
         if (routeHere) {
-            for (SiteInst si : siteInstsToRoute) {
-                si.routeSite();
-            }
+            routeSites(siteInstsToRoute);
         }
     }
 

@@ -479,6 +479,10 @@ public class ECOTools {
         // Modify the physical netlist
         EDIFCell ecGnd = netlist.getHDIPrimitive(Unisim.GND);
         EDIFCell ecVcc = netlist.getHDIPrimitive(Unisim.VCC);
+        // The driving net of each net a site pin's other port insts are on, found once: the logical
+        // connections are all made above, and finding it walks the whole net, which per sink made
+        // moving the n sinks of a large net (a reset, 8442 sinks) cost n passes over it.
+        Map<EDIFHierNet, EDIFHierNet> sourceNetOf = new HashMap<>();
         nextNet: for (Map.Entry<EDIFHierNet,List<EDIFHierPortInst>> e : netToPortInsts.entrySet()) {
             EDIFHierNet ehn = e.getKey();
             Net newPhysNet = null;
@@ -562,7 +566,8 @@ public class ECOTools {
                                 continue;
                             }
                             // TODO: Use getLeafHierPortInst() to get parent net?
-                            EDIFHierNet otherParentNet = otherEhpi.getHierarchicalNet().getLeafSourcePortInst().getHierarchicalNet();
+                            EDIFHierNet otherParentNet = sourceNetOf.computeIfAbsent(otherEhpi.getHierarchicalNet(),
+                                    n -> n.getLeafSourcePortInst().getHierarchicalNet());
                             if (!otherParentNet.equals(parentNet)) {
                                 // This SPI also services a different port inst that is connected to a
                                 // different net than the new one we're trying to connect up
