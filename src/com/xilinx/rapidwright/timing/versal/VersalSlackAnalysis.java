@@ -54,8 +54,61 @@ import java.util.Set;
  * more hold slack. Arrivals are therefore propagated per launch clock group (the launch's clock leaf
  * node, {@link VersalTimingGraph.Tagged}) and each endpoint takes the worst slack over its groups,
  * as a tagged STA engine does.
+ * <p>
+ * "Period" is the setup requirement of the analysis's clock; a design with clocks of other periods
+ * lists them in {@link #CLOCK_PERIOD_PS}, and a path is then timed against its capture clock's
+ * period ({@link #requirementPs}).
  */
 public class VersalSlackAnalysis {
+
+    /**
+     * Periods of the design's clocks other than the analysis's own, in ps, by clock net name: a path
+     * captured on a listed clock is timed against that clock's period, and a path between two clocks
+     * against the closest capture edge after a launch edge (the clocks taken to be related, their
+     * edges aligned at time 0, as the outputs of one MMCM are). Empty: every path is timed against the
+     * analysis's period, as before. Set before the analysis runs (the flow sets it for a design in a
+     * shell, whose control clock is slower than the array's).
+     */
+    public static Map<String, Float> CLOCK_PERIOD_PS = new HashMap<>();
+
+    /**
+     * The setup requirement of a path from a launch to a capture clock pin (ps): the capture clock's
+     * period ({@link #CLOCK_PERIOD_PS}, else the analysis's), or for two clocks of different periods
+     * the smallest positive time from a launch edge to the next capture edge.
+     */
+    float requirementPs(SitePinInst launchClock, SitePinInst captureClock) {
+        if (CLOCK_PERIOD_PS.isEmpty()) return periodPs;
+        float capture = periodOf(captureClock);
+        if (launchClock == null || launchClock.getNet() == null || captureClock == null || launchClock.getNet() == captureClock.getNet()) {
+            return capture;
+        }
+        return edgeRequirementPs(periodOf(launchClock), capture);
+    }
+
+    /**
+     * The setup requirement between two related clocks of these periods (ps, edges aligned at 0):
+     * the smallest positive time from a launch edge to the next capture edge; the period when the
+     * two are equal. 3 ns to 2 ns: 1 ns (launch at 3, capture at 4).
+     */
+    public static float edgeRequirementPs(float launchPs, float capturePs) {
+        long l = Math.round(launchPs), c = Math.round(capturePs);
+        if (l == c || l <= 0 || c <= 0) return capturePs;
+        long lcm = l / gcd(l, c) * c, best = c;
+        for (long edge = 0; edge < lcm && edge < 1_000_000_000L; edge += l) {
+            long next = (edge / c + 1) * c;   // the first capture edge after this launch edge
+            best = Math.min(best, next - edge);
+        }
+        return best;
+    }
+
+    private float periodOf(SitePinInst clockPin) {
+        Float p = clockPin == null || clockPin.getNet() == null ? null : CLOCK_PERIOD_PS.get(clockPin.getNet().getName());
+        return p != null ? p : periodPs;
+    }
+
+    private static long gcd(long a, long b) {
+        return b == 0 ? a : gcd(b, a % b);
+    }
 
     /** One endpoint's result at one process (slow or fast). */
     public static class Result {
@@ -387,7 +440,7 @@ public class VersalSlackAnalysis {
                     VersalTimingGraph.Vertex launch = rep != null ? (VersalTimingGraph.Vertex) rep[1] : launchOf(v, iMax, tg.tag);
                     float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
                     float slr = crossesSlr(launch, v) ? (r.captureClockMin - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
-                    float slack = periodPs + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival[iMax] - slr;
+                    float slack = requirementPs(clockSitePin(launch), cap) + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival[iMax] - slr;
                     if (slack < r.setupSlack) {
                         r.setupSlack = slack; r.launch = launch; r.setupTag = tg.tag; r.dataMax = tg.arrival[iMax]; r.setupPessimism = cpr[0][fast ? 1 : 0]; r.setupSlrComp = slr;
                         setupByLeaf = rep != null;
@@ -488,7 +541,7 @@ public class VersalSlackAnalysis {
                     VersalTimingGraph.Vertex launch = rep != null ? (VersalTimingGraph.Vertex) rep[1] : launchOf(p, iMax, tg.tag);
                     float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
                     float slr = crossesSlr(launch, v) ? (capArr[iMin] - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
-                    float slack = periodPs + capArr[iMin] + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - v.check[iMax]
+                    float slack = requirementPs(clockSitePin(launch), cap) + capArr[iMin] + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - v.check[iMax]
                             - (tg.arrival[iMax] + delay) - slr;
                     worst = Math.min(worst, slack);
                 }
@@ -541,7 +594,7 @@ public class VersalSlackAnalysis {
             r.setupSlrComp = (r.captureClockMin - ccd) * SLR_PRORATING;
             r.holdSlrComp = (r.dataMin - ccd) * SLR_PRORATING;
         }
-        r.setupSlack = periodPs + r.captureClockMin + r.setupPessimism - setupUncertaintyPs - r.setupCheck - r.dataMax - r.setupSlrComp;
+        r.setupSlack = requirementPs(lp, cap) + r.captureClockMin + r.setupPessimism - setupUncertaintyPs - r.setupCheck - r.dataMax - r.setupSlrComp;
         r.holdSlack = r.dataMin - (r.captureClockMax - r.holdPessimism + holdUncertaintyPs + r.holdCheck) - r.holdSlrComp;
         return r;
     }
@@ -638,7 +691,7 @@ public class VersalSlackAnalysis {
         List<VersalTimingGraph.Edge> path = graph.getPathFrom(r.launch, r.endpoint, setup ? iMax : iMin);
         StringBuilder sb = new StringBuilder();
         if (setup) sb.append(String.format("setup slack %.0f ps (%s process): launch %s clock %.0f + data %.0f = arrival %.0f; required = %.0f + capture %.0f + cpr %.0f - unc %.0f - setup %.0f - slr %.0f%n",
-                r.setupSlack, r.fast ? "fast" : "slow", r.launch, r.launchClockMax, r.dataMax - r.launchClockMax, r.dataMax, periodPs, r.captureClockMin, r.setupPessimism, setupUncertaintyPs, r.setupCheck, r.setupSlrComp));
+                r.setupSlack, r.fast ? "fast" : "slow", r.launch, r.launchClockMax, r.dataMax - r.launchClockMax, r.dataMax, requirementPs(clockSitePin(r.launch), clockSitePin(r.endpoint)), r.captureClockMin, r.setupPessimism, setupUncertaintyPs, r.setupCheck, r.setupSlrComp));
         else sb.append(String.format("hold slack %.0f ps (%s process): launch clock %.0f + data %.0f = arrival %.0f; required = capture %.0f - cpr %.0f + unc %.0f + hold %.0f + slr %.0f%n",
                 r.holdSlack, r.fast ? "fast" : "slow", r.launchClockMin, r.dataMin - r.launchClockMin, r.dataMin, r.captureClockMax, r.holdPessimism, holdUncertaintyPs, r.holdCheck, r.holdSlrComp));
         sb.append(graph.formatPath(path, r.endpoint, setup ? iMax : iMin));
@@ -685,6 +738,7 @@ public class VersalSlackAnalysis {
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("period %.0f ps, setup uncertainty %.0f ps, hold uncertainty %.0f ps; %d endpoints x 2 processes; unclocked launches %d, endpoints %d%n",
                 periodPs, setupUncertaintyPs, holdUncertaintyPs, getResults().size() / 2, unclockedLaunches, unclockedEndpoints));
+        if (!CLOCK_PERIOD_PS.isEmpty()) sb.append("clocks with their own periods (ps): " + CLOCK_PERIOD_PS + "\n");
         for (Map.Entry<Net, VersalClockModel.ClockTree> e : clocks.getClockTrees().entrySet()) sb.append("clock net ").append(e.getKey().getName()).append(": ").append(e.getValue().sinkArrival.size()).append(" sinks\n");
         for (Map.Entry<Net, String> e : clockModel.getRootDescriptions().entrySet()) sb.append("  root of ").append(e.getKey().getName()).append(": ").append(e.getValue()).append('\n');
         sb.append("clock model tiers: ").append(clockModel.getTierUse()).append(", intra-site misses ").append(clockModel.getSiteMissCount()).append('\n');
@@ -699,7 +753,7 @@ public class VersalSlackAnalysis {
         if (setup) {
             sb.append(String.format("WNS %.0f ps at %s (%s process): launch %s clock %.0f + data %.0f = arrival %.0f; required = %.0f + capture %.0f + cpr %.0f - unc %.0f - setup %.0f - slr %.0f%n",
                     r.setupSlack, r.endpoint, r.fast ? "fast" : "slow", r.launch, r.launchClockMax, r.dataMax - r.launchClockMax, r.dataMax,
-                    periodPs, r.captureClockMin, r.setupPessimism, setupUncertaintyPs, r.setupCheck, r.setupSlrComp));
+                    requirementPs(clockSitePin(r.launch), clockSitePin(r.endpoint)), r.captureClockMin, r.setupPessimism, setupUncertaintyPs, r.setupCheck, r.setupSlrComp));
             sb.append(graph.formatPath(graph.getPath(r.endpoint, iMax, r.setupTag), r.endpoint, iMax));
         } else {
             sb.append(String.format("WHS %.0f ps at %s (%s process): launch clock %.0f + data %.0f = arrival %.0f; required = capture %.0f - cpr %.0f + unc %.0f + hold %.0f + slr %.0f%n",
