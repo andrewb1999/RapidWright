@@ -37,6 +37,7 @@ import com.xilinx.rapidwright.design.Design;
 import com.xilinx.rapidwright.design.DesignTools;
 import com.xilinx.rapidwright.design.Net;
 import com.xilinx.rapidwright.design.SiteInst;
+import com.xilinx.rapidwright.design.noc.NOCDesign;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.edif.EDIFCellInst;
 import com.xilinx.rapidwright.edif.EDIFNet;
@@ -108,6 +109,17 @@ public class MergeDesigns {
             }
         }
 
+        // Merge NOC traffic: the clients keep their names, as the cell instances do
+        NOCDesign noc1 = design1.getNOCDesign();
+        if (noc1 != null && !(noc1.getClients().isEmpty() && noc1.getAllConnections().isEmpty())) {
+            NOCDesign noc0 = design0.getNOCDesign();
+            if (noc0 == null) {
+                noc0 = new NOCDesign(design0);
+                design0.setNOCDesign(noc0);
+            }
+            noc0.merge(noc1);
+        }
+
         // Merge encrypted cells
         if (design1.getNetlist().hasEncryptedCells()) {
             design0.getNetlist().addEncryptedCells(design1.getNetlist().getEncryptedCells());
@@ -124,7 +136,7 @@ public class MergeDesigns {
 
     /**
      * Merges two or more designs together into a single design.  Merges both logical and physical
-     * netlist.  Assumes that designs are compatible for merging. Assumes that if there are duplicate
+     * netlist, and the NOC traffic (clients and connections; see {@link NOCDesign#merge}).  Assumes that designs are compatible for merging. Assumes that if there are duplicate
      * cells in the set of designs to be merged that they are flip-flops and that they are always
      * connected to a top-level port.
      * @param merger The specific design merger instance to use to merge the designs

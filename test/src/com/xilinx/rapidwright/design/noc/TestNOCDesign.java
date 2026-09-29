@@ -306,4 +306,71 @@ public class TestNOCDesign {
         Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(new NOCConnection()));
         Assertions.assertEquals(85, nd.getAllConnections().size());
     }
+
+    @Test
+    public void testMergeConnectRemove2026_1() throws IOException {
+        NOCDesign nd = loadTraffic(readResource(TRAFFIC_2026_1));
+        String hbm0 = "v80_base_i/axi_noc_cips/inst/MC_hbmc/inst/hbm_st0/I_hbm_chnl0/I_hbm_mc";
+        String nmu = "mem_tile_bd_i/axi_noc_0/inst/HBM00_AXI_nmu/bd_e038_HBM00_AXI_nmu_0_top_INST/NOC_NMU_HBM2E_INST";
+        String nmu0 = "mem_x0/" + nmu, nmu1 = "mem_x1/" + nmu;
+
+        // another design's clients (a memory row's HBM NMUs) join the shell's
+        NOCDesign row = new NOCDesign();
+        row.addClient(hbmNmu(nmu0));
+        row.addClient(hbmNmu(nmu1));
+        nd.merge(row);
+        Assertions.assertEquals(29, nd.getClients().size());
+        Assertions.assertEquals(84, nd.getAllConnections().size());
+        // a client both have: refused, and nothing merged
+        NOCDesign again = new NOCDesign();
+        again.addClient(hbmNmu("mem_x2/" + nmu));
+        again.addClient(hbmNmu(nmu0));
+        IllegalArgumentException e = Assertions.assertThrows(IllegalArgumentException.class, () -> nd.merge(again));
+        Assertions.assertTrue(e.getMessage().contains(nmu0));
+        Assertions.assertEquals(29, nd.getClients().size());
+
+        // connected by name to both of a controller's pseudo channels, at Vivado's defaults
+        NOCConnection pc0 = nd.addConnection(nmu0, hbm0, "PORT0", 16, 16);
+        NOCConnection pc1 = nd.addConnection(nmu0, hbm0, "PORT2", 16, 16);
+        nd.addConnection(nmu1, hbm0, "PORT1", 16, 16);
+        Assertions.assertEquals(87, nd.getAllConnections().size());
+        Assertions.assertEquals(CommunicationType.MEMORY_MAPPED_FULL, pc0.getCommType());
+        Assertions.assertEquals(NOCDesign.DEFAULT_LATENCY, pc1.getReadLatency());
+        Assertions.assertEquals(NOCDesign.DEFAULT_AVERAGE_BURST, pc1.getWriteAverageBurst());
+        JSONObject written = writeTraffic(nd);
+        int found = 0;
+        for (Object o : written.getJSONArray(NOCJSONUtil.JSON_FIELD_PATHS)) {
+            JSONObject path = (JSONObject) o;
+            if (!path.getString("From").equals(nmu0)) continue;
+            found++;
+            Assertions.assertEquals(hbm0, path.getString("To"));
+            Assertions.assertEquals("MM_ReadWrite", path.getString("CommType"));
+            Assertions.assertEquals(16, path.getInt("ReadBW"));
+            Assertions.assertEquals(300, path.getInt("WriteLatency"));
+        }
+        Assertions.assertEquals(2, found);
+        Assertions.assertEquals(87, loadTraffic(written.toString()).getAllConnections().size());
+
+        // refused: a port the controller lacks, none for a controller, a client the design lacks, a repeat
+        Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(nmu0, hbm0, "PORT4", 16, 16));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(nmu0, hbm0, null, 16, 16));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection("mem_x9/" + nmu, hbm0, "PORT0", 16, 16));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(nmu0, hbm0, "PORT0", 16, 16));
+        Assertions.assertEquals(87, nd.getAllConnections().size());
+
+        // removing a client removes its connections, from the controller's list too
+        int hbmPaths = nd.getSlaveClients().get(hbm0).getConnections().size();
+        nd.removeClient(nmu0);
+        Assertions.assertNull(nd.getMasterClients().get(nmu0));
+        Assertions.assertEquals(85, nd.getAllConnections().size());
+        Assertions.assertEquals(hbmPaths - 2, nd.getSlaveClients().get(hbm0).getConnections().size());
+        nd.removeClient(nmu0);
+        Assertions.assertEquals(28, nd.getClients().size());
+
+        // an address range off a controller with two
+        NOCSlave mc = nd.getSlaveClients().get(hbm0);
+        Assertions.assertEquals(2, mc.getSysAddresses().size());
+        mc.removeSysAddress(mc.getSysAddresses().get(0).getFirst());
+        Assertions.assertEquals(1, mc.getSysAddresses().size());
+    }
 }

@@ -40,6 +40,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -269,22 +270,19 @@ public class NOCDesign implements Serializable {
     }
 
     /**
-     * Removes a NOC client from this design by name.
+     * Removes a NOC client from this design by name, and its connections. A name the design does
+     * not have is ignored.
      * @param clientName The name of the client to remove.
      * @since 2026.1.0
      */
     public void removeClient(String clientName) {
-        NOCClient nc = getClients().get(clientName);
-        if (nc instanceof NOCMaster) {
-            masterClients.remove(nc.getName());
-        } else {
-            slaveClients.remove(nc.getName());
+        NOCClient nc = masterClients.containsKey(clientName) ? masterClients.remove(clientName) : slaveClients.remove(clientName);
+        if (nc == null) {
+            return;
         }
-        List<NOCConnection> connections = nc.getConnections();
-        for (NOCConnection np : connections) {
-            nocConnections.remove(np);
-            np.getSource().removeConnection(np);
-            np.getDest().removeConnection(np);
+        // removing a connection takes it off the client's own list
+        for (NOCConnection np : new ArrayList<>(nc.getConnections())) {
+            removeConnection(np);
         }
     }
 
@@ -323,6 +321,97 @@ public class NOCDesign implements Serializable {
         source.addConnection(np);
         dest.addConnection(np);
         nocConnections.add(np);
+    }
+
+    /** Vivado's default latency requirement for a new path, in ns. */
+    public static final int DEFAULT_LATENCY = 300;
+    /** Vivado's default average burst length for a new path. */
+    public static final int DEFAULT_AVERAGE_BURST = 4;
+
+    /**
+     * Connects a master client to a slave client (to one of its ports, for a memory controller)
+     * with a new path in phase 0: read and write for memory-mapped clients, a stream otherwise, at
+     * Vivado's default latency ({@link #DEFAULT_LATENCY}) and average burst
+     * ({@link #DEFAULT_AVERAGE_BURST}).
+     * @param masterName The name of the master client, which the design must have.
+     * @param slaveName The name of the slave client, which the design must have.
+     * @param port The slave's port, one of {@link NOCSlave#getPorts()}; null for a slave without ports.
+     * @param readBandwidth The read bandwidth required, in MB/s.
+     * @param writeBandwidth The write bandwidth required, in MB/s.
+     * @return The new connection, added to the design.
+     * @throws IllegalArgumentException if the design lacks either client, the port is not one of
+     *         the slave's, the two clients' protocols differ, or the design already connects them
+     *         (on that port).
+     * @since 2026.1.0
+     */
+    public NOCConnection addConnection(String masterName, String slaveName, String port, int readBandwidth, int writeBandwidth) {
+        NOCMaster source = masterClients.get(masterName);
+        NOCSlave dest = slaveClients.get(slaveName);
+        if (source == null) {
+            throw new IllegalArgumentException("No NOC master client named " + masterName);
+        }
+        if (dest == null) {
+            throw new IllegalArgumentException("No NOC slave client named " + slaveName);
+        }
+        List<String> ports = dest.getPorts();
+        if (ports.isEmpty() ? port != null : !ports.contains(port)) {
+            throw new IllegalArgumentException("NOC slave " + slaveName + (ports.isEmpty() ? " has no ports, not " : " has ports "
+                    + ports + ", not ") + port);
+        }
+        if (source.getProtocol() != null && dest.getProtocol() != null && source.getProtocol() != dest.getProtocol()) {
+            throw new IllegalArgumentException("NOC master " + masterName + " is " + source.getProtocol() + ", slave "
+                    + slaveName + " " + dest.getProtocol());
+        }
+        for (NOCConnection c : source.getConnections()) {
+            if (c.getDest() == dest && c.getPhase() == 0 && Objects.equals(c.getPort(), port)) {
+                throw new IllegalArgumentException("NOC master " + masterName + " is already connected to " + slaveName
+                        + (port != null ? " " + port : ""));
+            }
+        }
+        NOCConnection np = new NOCConnection();
+        np.setSource(source);
+        np.setDest(dest);
+        np.setPort(port);
+        np.setCommType(source.getProtocol() == ProtocolType.AXI_STREAM ? CommunicationType.STREAM
+                : CommunicationType.MEMORY_MAPPED_FULL);
+        np.setReadBandwidth(readBandwidth);
+        np.setWriteBandwidth(writeBandwidth);
+        np.setReadLatency(DEFAULT_LATENCY);
+        np.setWriteLatency(DEFAULT_LATENCY);
+        np.setReadAverageBurst(DEFAULT_AVERAGE_BURST);
+        np.setWriteAverageBurst(DEFAULT_AVERAGE_BURST);
+        addConnection(np);
+        return np;
+    }
+
+    /**
+     * Moves another NOC design's clients, connections and DFX paths into this one, as when merging
+     * the designs they belong to; the other design keeps them too, and should not be used after.
+     * Only the traffic merges: the other design's solution is left out, and this design's, if it
+     * has one, does not cover what the merge adds (the NoC compiler routes it).
+     * @param other The NOC design to merge into this one.
+     * @throws IllegalArgumentException if both designs have a client of the same name (nothing is
+     *         merged then).
+     * @since 2026.1.0
+     */
+    public void merge(NOCDesign other) {
+        List<String> clashes = new ArrayList<>();
+        for (String name : other.getClients().keySet()) {
+            if (masterClients.containsKey(name) || slaveClients.containsKey(name)) {
+                clashes.add(name);
+            }
+        }
+        if (!clashes.isEmpty()) {
+            throw new IllegalArgumentException("Both NOC designs have client(s) " + clashes);
+        }
+        masterClients.putAll(other.masterClients);
+        slaveClients.putAll(other.slaveClients);
+        nocConnections.addAll(other.nocConnections);
+        for (String dfx : other.dfxPaths) {
+            if (!dfxPaths.contains(dfx)) {
+                dfxPaths.add(dfx);
+            }
+        }
     }
 
     /**

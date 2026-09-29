@@ -212,11 +212,7 @@ public class NOCSlave extends NOCClient implements Serializable {
      * @since 2026.1.0
      */
     public void removeSysAddress(String base) {
-        for (Pair<String,String> addr : sysAddresses) {
-            if (addr.getFirst().equals(base)) {
-                sysAddresses.remove(addr);
-            }
-        }
+        sysAddresses.removeIf(addr -> addr.getFirst().equals(base));
     }
 
     /**
