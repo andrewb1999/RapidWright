@@ -292,7 +292,8 @@ public class FlopTreeTools {
         };
     }
 
-    private static Pair<Site, BEL> nextAvailFlopPlacement(Design design, Iterator<Site> itr, SLR slr) {
+    private static Pair<Site, BEL> nextAvailFlopPlacement(Design design, Iterator<Site> itr, SLR slr, String clkName) {
+        String clock = clockParentNetName(design, clkName);
         while (itr.hasNext()) {
             Site curr = itr.next();
             if (slr != null && curr.getTile().getSLR() != slr) {
@@ -306,10 +307,15 @@ public class FlopTreeTools {
                         usedBelNames.add(c.getBEL().getName());
                     }
                 }
+                if (!sharesClockWith(design, candidate, clock)) continue;
             }
             for (BEL b : curr.getBELs()) {
                 if (!b.isFF() || b.isAnyIMR()) continue;
                 if (usedBelNames.contains(b.getName())) continue;
+                // the flop's letter's LUTs in use: their outputs may take the flop's input and output
+                // muxes (Vivado: "L6 does not drive FF" on FFMUXA1_L6O6 and OUTMUXA1_FF)
+                String letter = b.getName().substring(0, 1);
+                if (usedBelNames.contains(letter + "6LUT") || usedBelNames.contains(letter + "5LUT")) continue;
                 if (!isControlSetCompatibleForInsertedFDRE(candidate, b)) continue;
                 String belName = b.getName();
                 if (candidate != null) {
@@ -333,6 +339,38 @@ public class FlopTreeTools {
             }
         }
         return null;
+    }
+
+    /** The parent (physical) net name of a clock given by its hierarchical net name, or null. */
+    private static String clockParentNetName(Design design, String clkName) {
+        if (clkName == null) return null;
+        EDIFHierNet clk = design.getNetlist().getHierNetFromName(clkName);
+        if (clk == null) return null;
+        EDIFHierNet parent = design.getNetlist().getParentNet(clk);
+        return (parent != null ? parent : clk).getHierarchicalNetName();
+    }
+
+    /**
+     * Whether a used slice may take a flop of the given clock: it has flops of its own (a slice of
+     * logic only has no clock brought in, and its control set's wires can carry the constants its
+     * cells tie: Vivado could not route the clock to it, "prohibited IMUX pin CLK"), all on that
+     * clock. An empty slice (no cells) may.
+     */
+    private static boolean sharesClockWith(Design design, SiteInst candidate, String clock) {
+        boolean flops = false, cells = false;
+        for (Cell c : candidate.getCells()) {
+            if (!c.isPlaced() || c.getBEL() == null || c.isRoutethru() || c.getBEL().isAnyIMR()) continue;
+            cells = true;
+            if (!c.getBEL().isFF()) continue;
+            flops = true;
+            if (clock == null || c.getEDIFHierCellInst() == null) continue;
+            EDIFHierPortInst cp = c.getEDIFHierCellInst().getPortInst("C");
+            EDIFHierNet net = cp == null ? null : cp.getHierarchicalNet();
+            if (net == null) return false;
+            EDIFHierNet parent = design.getNetlist().getParentNet(net);
+            if (!clock.equals((parent != null ? parent : net).getHierarchicalNetName())) return false;
+        }
+        return !cells || flops;
     }
 
     /**
@@ -460,11 +498,11 @@ public class FlopTreeTools {
             // within reach of the centroid, a slice nothing else uses
             Iterator<Site> emptyItr = applyNoGoFilter(unusedSitesOnly(design, withinDistance(centroid,
                     ECOPlacementHelper.spiralOutFrom(centroid).iterator(), EMPTY_SITE_REACH)), noGo);
-            loc = nextAvailFlopPlacement(design, emptyItr, requiredSLR);
+            loc = nextAvailFlopPlacement(design, emptyItr, requiredSLR, clkName);
         }
         if (loc == null) {
             Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(centroid).iterator(), noGo);
-            loc = nextAvailFlopPlacement(design, siteItr, requiredSLR);
+            loc = nextAvailFlopPlacement(design, siteItr, requiredSLR, clkName);
         }
         if (loc == null) {
             throw new RuntimeException("Failed to find location to place flop in flop tree"
@@ -563,14 +601,14 @@ public class FlopTreeTools {
     }
 
     /**
-     * Builds a per-destination chain of SLR crossings from the source SLR down to
-     * a single {@code targetSLR}, with the given source-side pacing depth in each
-     * pre-crossing segment. Returns the bottom flop's net of the final crossing
-     * (the tap usable as the in-target-SLR fanout source).
-     * <p>
-     * Currently only handles downward traversal (sinks physically below source
-     * = larger tile rows). {@code srcSegmentDepths.length} must equal the number
-     * of crossings (i.e. {@code |targetSLR.id - sourceSLR.id|}).
+     * Builds a per-destination chain of SLR crossings from the source SLR to a
+     * single {@code targetSLR}, below it (larger tile rows) or above it, with the
+     * given source-side pacing depth in each pre-crossing segment. Each crossing is
+     * a flop within {@link #MAX_SLR_XING_TOP_FROM_BOUNDARY_ROWS} rows of the
+     * boundary on the near side and one an SLL hop away on the far side. Returns
+     * the far flop's net of the final crossing (the tap usable as the
+     * in-target-SLR fanout source). {@code srcSegmentDepths.length} must equal
+     * the number of crossings (i.e. {@code |targetSLR.id - sourceSLR.id|}).
      */
     private static Net insertSourceChainToSLR(Design design, Net net, String clkName,
                                               int[] srcSegmentDepths,
@@ -592,8 +630,11 @@ public class FlopTreeTools {
         int currentCol = sourceSite.getTile().getColumn();
         SLR currentSLR = sourceSLR;
 
+        // down: the sinks are below the source (larger tile rows); up, above it (a reset from a
+        // shell in the bottom SLR to an array over all three)
+        boolean down = targetSLR.getUpperLeft().getRow() > sourceSLR.getLowerRight().getRow();
         for (int crossingIdx = 0; crossingIdx < numCrossings; crossingIdx++) {
-            int boundaryRow = currentSLR.getLowerRight().getRow();
+            int boundaryRow = down ? currentSLR.getLowerRight().getRow() : currentSLR.getUpperLeft().getRow();
             int thisChainDepth = srcSegmentDepths[crossingIdx];
 
             // Source-side pacing chain for THIS segment: from currentRow → boundaryRow.
@@ -604,7 +645,7 @@ public class FlopTreeTools {
                 points.add(new Point(currentCol, row));
                 Site target = ECOPlacementHelper.getCentroidOfPoints(design.getDevice(), points, VALID_CENTROID_SITE_TYPES);
                 Iterator<Site> chainItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGo);
-                Pair<Site, BEL> chainLoc = nextAvailFlopPlacement(design, chainItr, currentSLR);
+                Pair<Site, BEL> chainLoc = nextAvailFlopPlacement(design, chainItr, currentSLR, clkName);
                 if (chainLoc == null) {
                     throw new RuntimeException("Failed to place src pacing flop in SLR " + currentSLR.getId()
                             + " for crossing " + crossingIdx + " of net " + net.getName());
@@ -624,10 +665,10 @@ public class FlopTreeTools {
             Site firstSLRSite = getNearestValidSite(design, boundaryRow, currentCol);
             Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(firstSLRSite).iterator(), noGo);
             Iterator<Site> boundedItr = sitesWithinRowRange(siteItr,
-                    boundaryRow - MAX_SLR_XING_TOP_FROM_BOUNDARY_ROWS,
-                    boundaryRow,
+                    down ? boundaryRow - MAX_SLR_XING_TOP_FROM_BOUNDARY_ROWS : boundaryRow,
+                    down ? boundaryRow : boundaryRow + MAX_SLR_XING_TOP_FROM_BOUNDARY_ROWS,
                     100_000);
-            Pair<Site, BEL> loc = nextAvailFlopPlacement(design, boundedItr, null);
+            Pair<Site, BEL> loc = nextAvailFlopPlacement(design, boundedItr, null, clkName);
             if (loc == null) {
                 throw new RuntimeException("Could not place " + topName + " within "
                         + MAX_SLR_XING_TOP_FROM_BOUNDARY_ROWS
@@ -640,18 +681,18 @@ public class FlopTreeTools {
                     design.getNetlist().getHierNetFromName(clkName), targetSLRPortInsts);
             siteInstsToRoute.add(topNetCellPair.getFirst().getSiteInst());
 
-            // Bottom flop one SLL hop below where the top flop actually landed.
+            // Far-side ("bottom") flop one SLL hop across from where the near-side ("top") one landed.
             Site placedTopSite = topNetCellPair.getFirst().getSiteInst().getSite();
             int actualTopRow = placedTopSite.getTile().getRow();
             int actualTopCol = placedTopSite.getTile().getColumn();
-            int bottomTargetRow = actualTopRow + SLL_WIRE_LENGTH_ROWS;
+            int bottomTargetRow = actualTopRow + (down ? SLL_WIRE_LENGTH_ROWS : -SLL_WIRE_LENGTH_ROWS);
 
             String bottomName = slrCrossingNamePrefix + (numCrossings == 1
                     ? ""
                     : "_xing" + crossingIdx) + "_bottom";
             Site secondSLRSite = getNearestValidSite(design, bottomTargetRow, actualTopCol);
             Iterator<Site> bottomItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(secondSLRSite).iterator(), noGo);
-            Pair<Site, BEL> bottomLoc = nextAvailFlopPlacement(design, bottomItr, null);
+            Pair<Site, BEL> bottomLoc = nextAvailFlopPlacement(design, bottomItr, null, clkName);
             if (bottomLoc == null) {
                 throw new RuntimeException("Failed to place " + bottomName + " for crossing " + crossingIdx
                         + " of net " + net.getName());
@@ -737,10 +778,10 @@ public class FlopTreeTools {
             // stage on its own. Fall back to any free flop BEL if no empty slice is in reach.
             Iterator<Site> siteItr = applyNoGoFilter(unusedSitesOnly(design,
                     ECOPlacementHelper.spiralOutFrom(target).iterator()), noGo);
-            Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, null);
+            Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, null, clkName);
             if (loc == null) {
                 siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGo);
-                loc = nextAvailFlopPlacement(design, siteItr, null);
+                loc = nextAvailFlopPlacement(design, siteItr, null, clkName);
             }
 
             if (loc == null) {
