@@ -289,18 +289,36 @@ public class NOCDesign implements Serializable {
     }
 
     /**
-     * Adds a NOC connection to this design.
+     * Adds a NOC connection to this design, and its source and destination clients if the design
+     * does not have them yet (by name). Adding the same connection again does nothing.
      * @param np The NOC connection to add.
+     * @throws IllegalArgumentException if the connection has no source or destination, or if the
+     *         design already has a different client of the source's or destination's name (the
+     *         traffic written would name one client and connect another).
      * @since 2026.1.0
      */
     public void addConnection(NOCConnection np) {
         NOCMaster source = np.getSource();
         NOCSlave dest = np.getDest();
-        if (masterClients.get(source.getName()) != null) {
-            masterClients.put(source.getName(),source);
+        if (source == null || dest == null) {
+            throw new IllegalArgumentException("NOC connection without a " + (source == null ? "source" : "destination"));
         }
-        if (slaveClients.get(dest.getName()) != null) {
-            slaveClients.put(dest.getName(),dest);
+        NOCMaster knownSource = masterClients.get(source.getName());
+        NOCSlave knownDest = slaveClients.get(dest.getName());
+        if (knownSource != null && knownSource != source) {
+            throw new IllegalArgumentException("The NOC design already has a different master client named " + source.getName());
+        }
+        if (knownDest != null && knownDest != dest) {
+            throw new IllegalArgumentException("The NOC design already has a different slave client named " + dest.getName());
+        }
+        if (nocConnections.contains(np)) {
+            return;
+        }
+        if (knownSource == null) {
+            masterClients.put(source.getName(), source);
+        }
+        if (knownDest == null) {
+            slaveClients.put(dest.getName(), dest);
         }
         source.addConnection(np);
         dest.addConnection(np);

@@ -238,4 +238,72 @@ public class TestNOCDesign {
         Assertions.assertEquals("1", hbm.getMemParams().get("StackNumber"));
         Assertions.assertEquals("/axi_noc_cips/HBM10", hbm.getUnmodeledFields().getString("DesignName"));
     }
+
+    /** An HBM NMU as a memory tile brings one (its name under the array's hierarchy). */
+    private static NOCMaster hbmNmu(String name) {
+        NOCMaster m = new NOCMaster();
+        m.setName(name);
+        m.setComponentType(ComponentType.HBM_NMU);
+        m.setProtocol(ProtocolType.AXI_MEMORY_MAPPED);
+        m.setReadTC(TrafficClass.BEST_EFFORT);
+        m.setWriteTC(TrafficClass.BEST_EFFORT);
+        return m;
+    }
+
+    private static NOCConnection path(NOCMaster from, NOCSlave to, String port) {
+        NOCConnection c = new NOCConnection();
+        c.setSource(from);
+        c.setDest(to);
+        c.setPort(port);
+        c.setCommType(CommunicationType.MEMORY_MAPPED_FULL);
+        c.setReadBandwidth(500);
+        c.setWriteBandwidth(500);
+        c.setReadLatency(300);
+        c.setWriteLatency(300);
+        c.setReadAverageBurst(4);
+        c.setWriteAverageBurst(4);
+        return c;
+    }
+
+    @Test
+    public void testAddConnection2026_1() throws IOException {
+        NOCDesign nd = loadTraffic(readResource(TRAFFIC_2026_1));
+        String hbmName = "v80_base_i/axi_noc_cips/inst/MC_hbmc/inst/hbm_st1/I_hbm_chnl2/I_hbm_mc";
+        NOCSlave hbm = nd.getSlaveClients().get(hbmName);
+        NOCMaster nmu = hbmNmu("mem_x0/mem_tile_bd_i/axi_noc_0/inst/HBM00_AXI_nmu/bd_e038_HBM00_AXI_nmu_0_top_INST/NOC_NMU_HBM2E_INST");
+
+        // a new client is registered with the design; the existing destination is kept
+        NOCConnection c = path(nmu, hbm, "PORT0");
+        nd.addConnection(c);
+        Assertions.assertSame(nmu, nd.getMasterClients().get(nmu.getName()));
+        Assertions.assertSame(hbm, nd.getSlaveClients().get(hbmName));
+        Assertions.assertEquals(28, nd.getClients().size());
+        Assertions.assertEquals(85, nd.getAllConnections().size());
+        Assertions.assertTrue(nmu.getConnections().contains(c) && hbm.getConnections().contains(c));
+        // adding it again changes nothing
+        nd.addConnection(c);
+        Assertions.assertEquals(85, nd.getAllConnections().size());
+        Assertions.assertEquals(1, nmu.getConnections().size());
+
+        // written and read back: the new client and path are there, the rest as before
+        JSONObject written = writeTraffic(nd);
+        NOCDesign back = loadTraffic(written.toString());
+        Assertions.assertEquals(28, back.getClients().size());
+        Assertions.assertEquals(85, back.getAllConnections().size());
+        NOCMaster nmuBack = back.getMasterClients().get(nmu.getName());
+        Assertions.assertNotNull(nmuBack);
+        Assertions.assertEquals(ComponentType.HBM_NMU, nmuBack.getComponentType());
+        NOCConnection cBack = nmuBack.getConnections().get(0);
+        Assertions.assertEquals(hbmName, cBack.getDest().getName());
+        Assertions.assertEquals("PORT0", cBack.getPort());
+        Assertions.assertEquals(500, cBack.getReadBandwidth());
+
+        // a different client under a name the design already uses is refused
+        Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(path(hbmNmu(nmu.getName()), hbm, "PORT1")));
+        NOCSlave impostor = new NOCSlave(hbm);
+        Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(path(nmu, impostor, "PORT1")));
+        // and a connection without an end
+        Assertions.assertThrows(IllegalArgumentException.class, () -> nd.addConnection(new NOCConnection()));
+        Assertions.assertEquals(85, nd.getAllConnections().size());
+    }
 }
