@@ -51,8 +51,10 @@ import java.util.Map;
  * and INT-tile half, e.g. EE_E) for horizontal wires, and the parent fanout bucket is its number
  * of children (1..4, 4 meaning 4 or more). Lookup falls back from the exact
  * (class, children, siblings, fanout) key to (class, children, siblings, *), (class, children, *, *),
- * the same three with the bare intent code, then to the maximum over the single child intents
- * present, then to EDGE_DEFAULT.
+ * the same three with the bare intent code, then, for a set of two or more children, to the
+ * count-weighted mean of the (class, children, *, *) rows with as many children (or the largest
+ * smaller count, its total held), then to the maximum over the single child intents present, then
+ * to EDGE_DEFAULT.
  */
 public class VersalDelayTerms {
 
@@ -63,6 +65,11 @@ public class VersalDelayTerms {
 
     /** parent class (intent name, optionally ":family") -> node intent -> "children/siblings/fanout" -> ps */
     private final Map<String, Map<IntentCode, Map<String, Float>>> edge = new HashMap<>();
+    /**
+     * Count-weighted mean of the (class, children, *, *) rows by number of children (2 and up), per
+     * "parent class/node intent": the fallback for a child set the fit never saw (see {@link #edgeDelay}).
+     */
+    private final Map<String, java.util.TreeMap<Integer, Float>> edgeByChildCount = new HashMap<>();
     /** EDGEX: correction per (parent class or intent, node class (intent[:OUT]), crossing signature of the parent wire) */
     private final Map<String, Map<String, Map<String, Float>>> edgeX = new HashMap<>();
     /** Parent fanout buckets are 1..MAX_PARENT_FANOUT_BUCKET (the last one means "or more"). */
@@ -96,6 +103,7 @@ public class VersalDelayTerms {
     }
 
     public VersalDelayTerms(String fileName) {
+        Map<String, float[]> byChildCount = new HashMap<>();
         try (BufferedReader br = new BufferedReader(new FileReader(fileName))) {
             String line;
             while ((line = br.readLine()) != null) {
@@ -120,6 +128,13 @@ public class VersalDelayTerms {
                         else { key = f[3] + "/*/*"; v = Float.parseFloat(f[4]); }
                         edge.computeIfAbsent(f[1], k -> new EnumMap<>(IntentCode.class))
                             .computeIfAbsent(n, k -> new HashMap<>()).put(key, v);
+                        if (f.length >= 8 && f[4].equals("*") && f[5].equals("*") && f[3].indexOf('|') >= 0 && f[3].charAt(0) != '#') {
+                            int children = f[3].split("\\|").length;
+                            float samples = Float.parseFloat(f[7]);
+                            float[] a = byChildCount.computeIfAbsent(f[1] + "/" + n.name() + "/" + children, k -> new float[2]);
+                            a[0] += v * samples;
+                            a[1] += samples;
+                        }
                         break;
                     }
                     case "EDGEX": {
@@ -179,6 +194,12 @@ public class VersalDelayTerms {
         } catch (IOException e) {
             throw new RuntimeException("Could not read Versal delay terms from " + fileName, e);
         }
+        for (Map.Entry<String, float[]> e : byChildCount.entrySet()) {
+            if (e.getValue()[1] <= 0) continue;
+            int s = e.getKey().lastIndexOf('/');
+            edgeByChildCount.computeIfAbsent(e.getKey().substring(0, s), k -> new java.util.TreeMap<>())
+                    .put(Integer.parseInt(e.getKey().substring(s + 1)), e.getValue()[0] / e.getValue()[1]);
+        }
     }
 
     private IntentCode intent(String name) {
@@ -225,6 +246,27 @@ public class VersalDelayTerms {
             for (String suffix : suffixes) {
                 Float v = byKey.get(suffix);
                 if (v != null) return v;
+            }
+        }
+        // A child set the fit never saw: the rows of other child sets with as many children. The fit
+        // solves FANOUT jointly with a row per child set, and a node's fan-out is charged mostly in
+        // its row (the SDQ node's FANOUT is 29-53 ps per extra child while Vivado charges 4-11: a
+        // single into an SDQ node is EDGE 30.8 for one child, 4.1 for two, -21.4 for three, each
+        // plus FANOUT 29 per extra child at fast_min), so a single-child row plus FANOUT is far too
+        // much: a four-way branch RWRoute made was charged 117 ps where Vivado charges 36. With no
+        // row of as many children, the largest smaller count, its total held (no more FANOUT).
+        int children = childKey.isEmpty() ? 0 : childKey.split("\\|").length;
+        if (children >= 2) {
+            for (String pc : classes) {
+                java.util.TreeMap<Integer, Float> byCount = edgeByChildCount.get(pc + "/" + node.name());
+                if (byCount == null) continue;
+                Float same = byCount.get(children);
+                if (same != null) return same;
+                Map.Entry<Integer, Float> lower = byCount.lowerEntry(children);
+                if (lower != null) {
+                    return lower.getValue() - fanoutTerm(node) * (Math.min(MAX_FANOUT_CHILDREN, children - 1)
+                            - Math.min(MAX_FANOUT_CHILDREN, lower.getKey() - 1));
+                }
             }
         }
         Map<IntentCode, Map<String, Float>> byNode = edge.get(parent.name());
