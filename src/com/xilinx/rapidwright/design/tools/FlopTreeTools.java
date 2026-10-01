@@ -943,6 +943,18 @@ public class FlopTreeTools {
     public static Net insertFlopChain(Design design, Net net, String clkName, int depth,
                                       List<EDIFHierPortInst> portInsts, Set<SiteInst> siteInstsToRoute,
                                       Predicate<Tile> noGo) {
+        return insertFlopChain(design, net, clkName, depth, portInsts, siteInstsToRoute, noGo,
+                net.getName().replace(EDIFTools.EDIF_HIER_SEP, "_"));
+    }
+
+    /**
+     * As above, the first flop and its net named {@code name + "_ff0"} (each next one after the
+     * previous: {@code _ff1}, ...) instead of after {@code net}: two chains from one net, each to its
+     * own sinks, would otherwise take the same names.
+     */
+    public static Net insertFlopChain(Design design, Net net, String clkName, int depth,
+                                      List<EDIFHierPortInst> portInsts, Set<SiteInst> siteInstsToRoute,
+                                      Predicate<Tile> noGo, String name) {
         resetClockAliases();
         List<EDIFHierPortInst> sources = net.getLogicalHierNet().getLeafHierPortInsts(true, false);
         if (sources.isEmpty()) {
@@ -989,7 +1001,7 @@ public class FlopTreeTools {
             // cost a pass over their net per sink sharing a site pin (the V80 shell's reset: 8442
             // sinks, 13 stages, half an hour)
             Pair<Cell, Net> netCellPair = createAndPlaceFlopForTree(design, currentNet.getLogicalHierNet(),
-                    currentNet.getName().replace(EDIFTools.EDIF_HIER_SEP, "_") + "_ff" + i, loc,
+                    (i == 0 ? name : currentNet.getName().replace(EDIFTools.EDIF_HIER_SEP, "_")) + "_ff" + i, loc,
                     netlist.getHierNetFromName(clkName), i == depth - 1 ? portInsts : Collections.emptyList());
 
             siteInstsToRoute.add(netCellPair.getFirst().getSiteInst());
