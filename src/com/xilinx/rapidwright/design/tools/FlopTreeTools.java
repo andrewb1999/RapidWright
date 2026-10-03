@@ -604,21 +604,33 @@ public class FlopTreeTools {
                                                                     String newNetName, List<EDIFHierPortInst> portInsts,
                                                                     Set<SiteInst> siteInstsToRoute, SLR requiredSLR,
                                                                     Predicate<Tile> noGo) {
+        return placeFlopNearCentroidOfPortInsts(design, clkName, inputNet, newNetName, portInsts, siteInstsToRoute, requiredSLR, noGo, null);
+    }
+
+    /**
+     * As above, the flop near {@code target} instead when it is given; the sinks' centroid is returned
+     * either way (the point their quadrants split at).
+     */
+    private static Pair<Site, Net> placeFlopNearCentroidOfPortInsts(Design design, String clkName, Net inputNet,
+                                                                    String newNetName, List<EDIFHierPortInst> portInsts,
+                                                                    Set<SiteInst> siteInstsToRoute, SLR requiredSLR,
+                                                                    Predicate<Tile> noGo, Site target) {
         Site centroid = findCentroidOfPortInsts(design, portInsts);
 
         if (centroid == null) {
             throw new RuntimeException("Failed to find centroid of net " + inputNet);
         }
+        Site near = target != null ? target : centroid;
 
         Pair<Site, BEL> loc = null;
         if (TREE_PREFERS_EMPTY_SITES) {
             // within reach of the centroid, a slice nothing else uses
-            Iterator<Site> emptyItr = applyNoGoFilter(unusedSitesOnly(design, withinDistance(centroid,
-                    ECOPlacementHelper.spiralOutFrom(centroid).iterator(), EMPTY_SITE_REACH)), noGo);
+            Iterator<Site> emptyItr = applyNoGoFilter(unusedSitesOnly(design, withinDistance(near,
+                    ECOPlacementHelper.spiralOutFrom(near).iterator(), EMPTY_SITE_REACH)), noGo);
             loc = nextAvailFlopPlacement(design, emptyItr, requiredSLR, clkName);
         }
         if (loc == null) {
-            Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(centroid).iterator(), noGo);
+            Iterator<Site> siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(near).iterator(), noGo);
             loc = nextAvailFlopPlacement(design, siteItr, requiredSLR, clkName);
         }
         if (loc == null) {
@@ -653,6 +665,33 @@ public class FlopTreeTools {
     public static boolean TREE_LEAVES_PER_CLOCK_REGION = false;
 
     /**
+     * Whether a flop above the tree's last level sits midway between its children (the centre of its
+     * quadrants' centroids) rather than at its sinks' centroid. Sinks in a ring around an empty middle
+     * pull the centroid toward the heavier side: the reset of a GEMM, whose sinks are its edge buffers
+     * above and to the right and its drains below, had its root 71 rows above the lower children and
+     * 194 below the upper, and that hop missed setup at 2 ns by 0.17 ns (the 2x8-PE tile's 16x4 array).
+     */
+    public static boolean TREE_FLOPS_BETWEEN_CHILDREN = false;
+
+    /** The centre of the bounding box of the sinks' quadrants' centroids (the quadrants split at the sinks' centroid). */
+    private static Site centreOfQuadrantCentroids(Design design, List<EDIFHierPortInst> portInsts) {
+        Site centroid = findCentroidOfPortInsts(design, portInsts);
+        if (centroid == null) return null;
+        int minRow = Integer.MAX_VALUE, maxRow = Integer.MIN_VALUE, minCol = Integer.MAX_VALUE, maxCol = Integer.MIN_VALUE;
+        for (List<EDIFHierPortInst> quadrant : splitPortInstsIntoQuadrants(design, portInsts, centroid)) {
+            if (quadrant.isEmpty()) continue;
+            Site c = findCentroidOfPortInsts(design, quadrant);
+            if (c == null) continue;
+            Tile t = c.getTile();
+            minRow = Math.min(minRow, t.getRow());
+            maxRow = Math.max(maxRow, t.getRow());
+            minCol = Math.min(minCol, t.getColumn());
+            maxCol = Math.max(maxCol, t.getColumn());
+        }
+        return minRow > maxRow ? centroid : getNearestValidSite(design, (minRow + maxRow) / 2, (minCol + maxCol) / 2);
+    }
+
+    /**
      * Most sink pins one flop of the tree's last level drives (0: no limit). The quadrants split at
      * the sinks' centroid, not their median, so a dense cluster keeps its sinks together; a larger
      * group at the last level is bisected at its median along its longer side until each part fits,
@@ -663,9 +702,21 @@ public class FlopTreeTools {
     public static int TREE_MAX_LEAF_FANOUT = 0;
 
     /**
-     * The sinks in parts of at most {@code max}, halved at the median along their longer side, never
-     * inside a tile: the flops of a slice share its control site pins (a cut through a slice's flops
-     * put two of its reset pins, one RST site pin, on two leaves). A part in a single tile is kept.
+     * Tiles of a row closer than this many columns can share routing to their pins: on Versal a CLE
+     * tile shares its INT tile with the CLE three columns over and an SLL tile, whose control nodes
+     * feed the reset and clock-enable pins on both sides, with the CLE two columns over.
+     */
+    private static final int SHARED_PIN_ROUTING_COLUMNS = 3;
+
+    /**
+     * The sinks in parts of at most {@code max}, halved near the median along their longer side, only
+     * where the tiles on the two sides share no routing to their pins: between rows, or across more
+     * than {@link #SHARED_PIN_ROUTING_COLUMNS} columns. Across a cut between neighbouring CLEs two
+     * leaves can each need the same control node: a 2x8 GEMM drain's reset pins, split between slices
+     * X301 and X302 of a row (an SLL tile's control nodes serve both), left RWRoute three nodes it could
+     * not share. A cut through a slice's flops would also put two of its reset pins, one RST site pin,
+     * on two leaves. When the longer side has no such cut the rows are tried; a part with none (a single
+     * row of neighbouring tiles) is kept whole.
      */
     private static List<List<EDIFHierPortInst>> bisectToFanout(Design design, List<EDIFHierPortInst> portInsts, int max) {
         List<List<EDIFHierPortInst>> parts = new ArrayList<>();
@@ -686,8 +737,24 @@ public class FlopTreeTools {
             maxCol = Math.max(maxCol, t.getColumn());
         }
         boolean byRow = maxRow - minRow >= maxCol - minCol;
+        List<EDIFHierPortInst> sorted = sortedAlong(portInsts, tiles, byRow);
+        int cut = separatingCut(sorted, tiles, byRow);
+        if (cut < 0 && !byRow) {
+            sorted = sortedAlong(portInsts, tiles, true);
+            cut = separatingCut(sorted, tiles, true);
+        }
+        if (cut < 0) {
+            parts.add(portInsts);
+            return parts;
+        }
+        parts.addAll(bisectToFanout(design, sorted.subList(0, cut), max));
+        parts.addAll(bisectToFanout(design, sorted.subList(cut, sorted.size()), max));
+        return parts;
+    }
+
+    /** By rows, then columns (or by columns, then rows): each tile's sinks contiguous. */
+    private static List<EDIFHierPortInst> sortedAlong(List<EDIFHierPortInst> portInsts, Map<EDIFHierPortInst, Tile> tiles, boolean byRow) {
         List<EDIFHierPortInst> sorted = new ArrayList<>(portInsts);
-        // by the longer side, then the other: each tile's sinks contiguous
         sorted.sort(java.util.Comparator.<EDIFHierPortInst>comparingInt(p -> {
             Tile t = tiles.get(p);
             return t == null ? -1 : byRow ? t.getRow() : t.getColumn();
@@ -695,23 +762,30 @@ public class FlopTreeTools {
             Tile t = tiles.get(p);
             return t == null ? -1 : byRow ? t.getColumn() : t.getRow();
         }));
-        // the cut nearest the median between two tiles
-        int n = sorted.size(), cut = -1;
-        for (int d = 0; d < n && cut < 0; d++) {
+        return sorted;
+    }
+
+    /**
+     * The cut nearest the median of {@code sorted} whose two sides share no pin routing (see
+     * {@link #bisectToFanout}), or -1. Sorted by rows, a cut between rows qualifies, as does one inside
+     * a row across a column gap; sorted by columns, only a column gap does, since the rows of the
+     * neighbouring columns fall on both sides of any other cut.
+     */
+    private static int separatingCut(List<EDIFHierPortInst> sorted, Map<EDIFHierPortInst, Tile> tiles, boolean byRow) {
+        int n = sorted.size();
+        for (int d = 0; d < n; d++) {
             for (int c : new int[] {n / 2 + d, n / 2 - d}) {
-                if (c > 0 && c < n && !java.util.Objects.equals(tiles.get(sorted.get(c)), tiles.get(sorted.get(c - 1)))) {
-                    cut = c;
-                    break;
+                if (c <= 0 || c >= n) continue;
+                Tile a = tiles.get(sorted.get(c - 1)), b = tiles.get(sorted.get(c));
+                if (a == null || b == null) {
+                    if (a != b) return c;
+                    continue;
                 }
+                boolean gap = Math.abs(a.getColumn() - b.getColumn()) > SHARED_PIN_ROUTING_COLUMNS;
+                if (gap || (byRow && a.getRow() != b.getRow())) return c;
             }
         }
-        if (cut < 0) {
-            parts.add(portInsts);
-            return parts;
-        }
-        parts.addAll(bisectToFanout(design, sorted.subList(0, cut), max));
-        parts.addAll(bisectToFanout(design, sorted.subList(cut, n), max));
-        return parts;
+        return -1;
     }
 
     private static Map<ClockRegion, List<EDIFHierPortInst>> splitPortInstsByClockRegion(Design design,
@@ -770,8 +844,10 @@ public class FlopTreeTools {
                     }
                 }
                 String newNetName = netName.replace(EDIFTools.EDIF_HIER_SEP, "_") + "_slr" + slr.getId() + "_d" + currDepth + "_" + i;
+                // above the last level the flop drives the next level's flops, one per quadrant
+                Site target = TREE_FLOPS_BETWEEN_CHILDREN && currDepth < depth - 1 ? centreOfQuadrantCentroids(design, portInsts) : null;
                 Pair<Site, Net> centroidNetPair = placeFlopNearCentroidOfPortInsts(design, clkName, net, newNetName,
-                        portInsts, siteInstsToRoute, slr, noGo);
+                        portInsts, siteInstsToRoute, slr, noGo, target);
 
                 Site centroid = centroidNetPair.getFirst();
                 Net newNet = centroidNetPair.getSecond();
