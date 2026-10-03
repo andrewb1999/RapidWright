@@ -381,9 +381,9 @@ public class ArrayBuilderSLRCrossingCreator {
         for (String line : postPlaceTclLines) {
             pe.addPostPlaceTclLine(line);
         }
+        pe.setPlacerDirectives(Arrays.asList(PlacerDirective.Explore));
+        pe.setRouterDirectives(Arrays.asList(RouterDirective.Explore));
         if (noExplore) {
-            pe.setPlacerDirectives(Arrays.asList(PlacerDirective.Explore));
-            pe.setRouterDirectives(Arrays.asList(RouterDirective.Explore));
             pe.setClockUncertaintyValues(Arrays.asList(0.0));
         } else {
             pe.setMinClockUncertainty(DEFAULT_MIN_CLK_UNCERT);
@@ -443,8 +443,7 @@ public class ArrayBuilderSLRCrossingCreator {
     /**
      * @param noExplore when true, the PerformanceExplorer pass runs a single
      *        Explore/Explore implementation at clock uncertainty 0.0 instead of
-     *        the full cross product of placer/router directives and the
-     *        clock-uncertainty sweep.
+     *        Explore/Explore over the clock-uncertainty sweep.
      */
     public static void createSLRCrossing(Design kernelDesign, Design topDesign,
                                          Map<EDIFPort, PBlockSide> sideMap,
