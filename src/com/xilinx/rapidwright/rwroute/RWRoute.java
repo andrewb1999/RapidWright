@@ -1186,8 +1186,13 @@ public class RWRoute {
                 }
             }
 
+            // A LUT output and the route-through of its letter's flop slot (X_O and XQ, Versal) share
+            // the site wires from the LUT: removing either pin unroutes them, and the other is left
+            // undriven (a GEMM drain's net, re-routed by the hold fixer from XQ alone, lost X_O and
+            // with it XQ's driver: an antenna in Vivado). The unused one is left unrouted instead.
+            boolean sharedSiteRouting = altSource != null && isLutAndRouteThruFlopOutput(source, altSource);
             // If the alt source was previously routed, and is no longer, let's remove it
-            if (altSource != null && altSourcePreviouslyRouted && !altSource.isRouted()) {
+            if (altSource != null && altSourcePreviouslyRouted && !altSource.isRouted() && !sharedSiteRouting) {
                 // If altSource is not routed, then source must be routed
                 assert(source.isRouted());
                 altSource.getSiteInst().removePin(altSource);
@@ -1202,7 +1207,7 @@ public class RWRoute {
             // If the original source was routed and is now no longer used, it must
             // mean that the alternate source is used instead. Let's remove the main
             // source which will promote the alternate to main.
-            if (sourcePreviouslyRouted && !source.isRouted()) {
+            if (sourcePreviouslyRouted && !source.isRouted() && !sharedSiteRouting) {
                 assert(altSource != null && altSource.isRouted());
                 net.removePin(source, true);
                 assert(net.getSource() == altSource);
@@ -1215,6 +1220,13 @@ public class RWRoute {
                 }
             }
         }
+    }
+
+    /** Whether the two output pins are a LUT's ({@code X_O}) and its letter's flop slot's ({@code XQ}, {@code XQ2}). */
+    private static boolean isLutAndRouteThruFlopOutput(SitePinInst a, SitePinInst b) {
+        String x = a.getName(), y = b.getName();
+        if (x.isEmpty() || y.isEmpty() || x.charAt(0) != y.charAt(0)) return false;
+        return (x.endsWith("_O") && y.matches(".Q2?")) || (y.endsWith("_O") && x.matches(".Q2?"));
     }
 
     /**
