@@ -34,6 +34,7 @@ import com.xilinx.rapidwright.device.ClockRegion;
 import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.Node;
+import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Wire;
 import com.xilinx.rapidwright.device.SLR;
 import com.xilinx.rapidwright.device.Series;
@@ -302,8 +303,36 @@ public class FlopTreeTools {
         };
     }
 
+    private static java.lang.ref.WeakReference<Design> routedThroughDesign = new java.lang.ref.WeakReference<>(null);
+    private static Set<Node> routedThroughNodes = Collections.emptySet();
+
+    /**
+     * The slice pin nodes the design's routes hold, by its PIPs inside CLE tiles: a net's own source
+     * pin, and the flop outputs a route to an SLL passes through. Such a slice can be without a site
+     * instance and look free, and a flop placed on that output is a second driver of the node (a reset
+     * chain flop in a GEMM crossing's landing rows: Vivado's "Invalid Programming for Site"). Found
+     * once per design: the trees and chains are inserted between routing steps, not during one.
+     */
+    private static Set<Node> routedThroughNodes(Design design) {
+        if (routedThroughDesign.get() != design) {
+            Set<Node> nodes = new HashSet<>();
+            for (Net net : design.getNets()) {
+                for (PIP pip : net.getPIPs()) {
+                    if (!pip.getTile().getTileTypeEnum().name().startsWith("CLE")) continue;
+                    Node a = pip.getStartNode(), b = pip.getEndNode();
+                    if (a != null) nodes.add(a);
+                    if (b != null) nodes.add(b);
+                }
+            }
+            routedThroughNodes = nodes;
+            routedThroughDesign = new java.lang.ref.WeakReference<>(design);
+        }
+        return routedThroughNodes;
+    }
+
     private static Pair<Site, BEL> nextAvailFlopPlacement(Design design, Iterator<Site> itr, SLR slr, String clkName) {
         Set<String> clock = clockAliases(design, clkName);
+        Set<Node> routedThrough = routedThroughNodes(design);
         while (itr.hasNext()) {
             Site curr = itr.next();
             if (slr != null && curr.getTile().getSLR() != slr) {
@@ -328,6 +357,11 @@ public class FlopTreeTools {
                 if (usedBelNames.contains(letter + "6LUT") || usedBelNames.contains(letter + "5LUT")) continue;
                 if (!isControlSetCompatibleForInsertedFDRE(candidate, b)) continue;
                 String belName = b.getName();
+                if (belName.length() >= 3 && belName.charAt(1) == 'F' && belName.charAt(2) == 'F' && !usedBelNames.contains(belName)) {
+                    // its output's node already on some net's route (through this slice to an SLL)
+                    Node out = curr.getConnectedNode(belName.charAt(0) + "Q" + belName.substring(3));
+                    if (out != null && routedThrough.contains(out)) continue;
+                }
                 if (candidate != null) {
                     // Verify the FF's output site pin is not already in use. Relies on the
                     // SLICE FF naming convention (BEL "AFF"->"AQ", "AFF2"->"AQ2", etc.) since
@@ -337,6 +371,12 @@ public class FlopTreeTools {
                         sitePinName = belName.charAt(0) + "Q" + belName.substring(3);
                     }
                     if (sitePinName != null && candidate.getSitePinInst(sitePinName) != null) {
+                        continue;
+                    }
+                    // nor its site wire: an output a LUT of the slice drives through the output mux
+                    // has the wire while the net's site pin may be missing (a crossing tile's
+                    // accum_out on AQ, where a reset chain flop then made a second driver)
+                    if (sitePinName != null && candidate.getNetFromSiteWire(sitePinName) != null) {
                         continue;
                     }
                     // nor the input site pin its D takes from outside the site (another cell of the
@@ -692,6 +732,125 @@ public class FlopTreeTools {
     }
 
     /**
+     * Longest hop between two flops of a tree or chain, in tile rows plus tile columns (0: no limit,
+     * and the depth is spent as before: a quadrant tree of the given levels, the rest as chains before
+     * it). A quadrant tree's first hop spans a quarter of its sinks' region however deep the tree, and
+     * its flops land off their targets where tiles are in the way: the GEMM 32x8 of 2x8-PE tiles had
+     * root hops of 180 and 190 tiles in SLR1 and SLR2 (1.6 ns of routing and 0.38 ns of skew across a
+     * clock region row, 0.18 ns short at 2 ns) behind chains of 80-tile hops. With a limit, the tree is
+     * built first, each level's edges get the flops their longest hop needs, and what the depth has
+     * left goes to the chains, to each segment by its length. See {@link #maxHopTilesFor}.
+     */
+    public static int MAX_HOP_TILES = 0;
+
+    /** Of a clock period, what a hop's routing does not get: skew across clock regions, uncertainty, the flops, margin. */
+    private static final int HOP_RESERVE_PS = 1000;
+    /** Routing delay per tile of a long RWRoute route, slow corner (the failing 180-tile hop: 1.61 ns). */
+    private static final int HOP_PS_PER_TILE = 11;
+
+    /** The hop limit for a clock period: 90 tiles at 2 ns, 181 at 3 ns. */
+    public static int maxHopTilesFor(double periodNs) {
+        return Math.max(40, (int) ((periodNs * 1000 - HOP_RESERVE_PS) / HOP_PS_PER_TILE));
+    }
+
+    /** The share of the limit hops are planned at. */
+    private static final double HOP_FILL = 0.85;
+
+    /** How far off its target a tree flop lands among placed tiles, as a factor on the ideal quadrant hop. */
+    private static final double HOP_PLACEMENT_FACTOR = 1.4;
+
+    /**
+     * The depth {@link #insertFlopTreeForNet} needs for {@code netName} to keep every hop within
+     * {@link #MAX_HOP_TILES}, estimated from where its source and sinks are: per SLR the two flops of
+     * each crossing on the way, the chain over the rest of the way to the sinks' middle, the tree's
+     * levels, and the flops inside the tree's edges (a level's edge is half the one above, the first a
+     * quarter of the sinks' height plus width). 0 without a limit.
+     */
+    public static int requiredDepth(Design design, String netName, int maxDepthPerSLR) {
+        if (MAX_HOP_TILES <= 0) return 0;
+        EDIFNetlist netlist = design.getNetlist();
+        EDIFHierNet parentNet = netlist.getHierNetFromName(netName).getLeafSourcePortInst().getHierarchicalNet();
+        Net topNet = design.getNet(parentNet.getHierarchicalNetName());
+        List<EDIFHierPortInst> sinks = topNet.getLogicalHierNet().getLeafHierPortInsts(false);
+        Cell source = topNet.getLogicalHierNet().getSourcePortInsts(false).get(0).getPhysicalCell(design);
+        Tile src = source.getSite().getTile();
+        int need = 0;
+        for (Map.Entry<SLR, List<EDIFHierPortInst>> e : splitPortInstsBySLR(design, sinks).entrySet()) {
+            int minRow = Integer.MAX_VALUE, maxRow = Integer.MIN_VALUE, minCol = Integer.MAX_VALUE, maxCol = Integer.MIN_VALUE;
+            for (EDIFHierPortInst p : e.getValue()) {
+                Tile t = p.getPhysicalCell(design).getTile();
+                minRow = Math.min(minRow, t.getRow()); maxRow = Math.max(maxRow, t.getRow());
+                minCol = Math.min(minCol, t.getColumn()); maxCol = Math.max(maxCol, t.getColumn());
+            }
+            int crossings = Math.abs(e.getKey().getId() - src.getSLR().getId());
+            int way = Math.abs((minRow + maxRow) / 2 - src.getRow()) + Math.abs((minCol + maxCol) / 2 - src.getColumn());
+            int chain = (int) Math.ceil(Math.max(0, way - crossings * DEFAULT_SLL_SPAN_ROWS) / (HOP_FILL * MAX_HOP_TILES));
+            int inEdges = 0;
+            double edge = HOP_PLACEMENT_FACTOR * ((maxRow - minRow) + (maxCol - minCol)) / 4.0;
+            for (int level = 1; level < maxDepthPerSLR; level++, edge /= 2) {
+                inEdges += Math.max(0, (int) Math.ceil(edge / (HOP_FILL * MAX_HOP_TILES)) - 1);
+            }
+            need = Math.max(need, 2 * crossings + chain + maxDepthPerSLR + inEdges);
+        }
+        return need;
+    }
+
+    /**
+     * The stages {@link #insertFlopChain} needs from {@code net}'s source to the middle of
+     * {@code portInsts} under {@link #MAX_HOP_TILES}: two per SLR crossing and one per limit's worth of
+     * the rest of the way. 0 without a limit.
+     */
+    public static int requiredChainDepth(Design design, Net net, List<EDIFHierPortInst> portInsts) {
+        if (MAX_HOP_TILES <= 0) return 0;
+        Tile src = net.getLogicalHierNet().getLeafHierPortInsts(true, false).get(0).getPhysicalCell(design).getTile();
+        Site c = findCentroidOfPortInsts(design, portInsts);
+        if (c == null) return 0;
+        Tile dst = c.getTile();
+        int crossings = Math.abs(dst.getSLR().getId() - src.getSLR().getId());
+        int way = Math.abs(dst.getRow() - src.getRow()) + Math.abs(dst.getColumn() - src.getColumn());
+        return 2 * crossings + (int) Math.ceil(Math.max(0, way - crossings * DEFAULT_SLL_SPAN_ROWS) / (HOP_FILL * MAX_HOP_TILES));
+    }
+
+    /**
+     * The longest hop out of the flops in {@code flopSites} (a tree's or chain's, as
+     * {@code siteInstsToRoute} collects them) to a load in the same SLR, printed per name in {@code names}
+     * (a flop counts for the name its own contains), with a warning for each hop over {@link #MAX_HOP_TILES}. An SLL hop is as long
+     * as the SLL and not counted.
+     */
+    public static void reportHops(Design design, Collection<SiteInst> flopSites, List<String> names) {
+        Map<String, int[]> longest = new java.util.LinkedHashMap<>();
+        Map<String, String> where = new HashMap<>();
+        for (String n : names) longest.put(n.replace(EDIFTools.EDIF_HIER_SEP, "_"), new int[2]);
+        for (SiteInst si : flopSites) {
+            for (Cell c : si.getCells()) {
+                if (!"FDRE".equals(c.getType())) continue;
+                String key = null;
+                for (String n : longest.keySet()) if (c.getName().contains(n)) key = n;
+                if (key == null) continue;
+                Net net = design.getNet(c.getName());
+                if (net == null) continue;
+                for (EDIFHierPortInst p : net.getLogicalHierNet().getLeafHierPortInsts(false)) {
+                    Cell load = p.getPhysicalCell(design);
+                    if (load == null || !load.isPlaced() || load.getTile().getSLR() != c.getTile().getSLR()) continue;
+                    int d = tileDistance(c.getSite(), load.getSite());
+                    int[] l = longest.get(key);
+                    if (d > l[0]) { l[0] = d; where.put(key, c.getName() + " (" + c.getSite() + ") -> " + load.getSite()); }
+                    if (MAX_HOP_TILES > 0 && d > MAX_HOP_TILES) {
+                        l[1]++;
+                        if (l[1] <= 5) System.out.println("WARNING: [FlopTree] hop of " + d + " tiles (limit " + MAX_HOP_TILES + "): "
+                                + c.getName() + " (" + c.getSite() + ") -> " + p.getFullHierarchicalInstName() + " (" + load.getSite() + ")");
+                    }
+                }
+            }
+        }
+        for (Map.Entry<String, int[]> e : longest.entrySet()) {
+            System.out.println("[FlopTree] " + e.getKey() + ": longest hop " + e.getValue()[0] + " tiles"
+                    + (MAX_HOP_TILES > 0 ? " (limit " + MAX_HOP_TILES + ", " + e.getValue()[1] + " over)" : "")
+                    + (where.containsKey(e.getKey()) ? ", " + where.get(e.getKey()) : ""));
+        }
+    }
+
+    /**
      * Most sink pins one flop of the tree's last level drives (0: no limit). The quadrants split at
      * the sinks' centroid, not their median, so a dense cluster keeps its sinks together; a larger
      * group at the last level is bisected at its median along its longer side until each part fits,
@@ -803,6 +962,26 @@ public class FlopTreeTools {
                                                   List<EDIFHierPortInst> sinkHierPortInsts,
                                                   Set<SiteInst> siteInstsToRoute,
                                                   Predicate<Tile> noGo) {
+        insertFlopTreeForNetInSLR(design, slr, netName, clkName, depth, sinkHierPortInsts, siteInstsToRoute, noGo, 0);
+    }
+
+    /** Tile rows plus tile columns between two sites. */
+    private static int tileDistance(Site a, Site b) {
+        return Math.abs(a.getTile().getRow() - b.getTile().getRow()) + Math.abs(a.getTile().getColumn() - b.getTile().getColumn());
+    }
+
+    /**
+     * As above, with every hop between two levels held to {@link #MAX_HOP_TILES} where that is set:
+     * once a level's flops are placed, the longest distance from a flop of the level above to one of
+     * these decides how many flops go into each of the level's edges (the same number in every edge,
+     * evenly spaced along it, so all sinks stay behind the same number of flops), up to
+     * {@code maxExtra} stages over all levels. Returns the stages added.
+     */
+    private static int insertFlopTreeForNetInSLR(Design design, SLR slr, String netName, String clkName, int depth,
+                                                  List<EDIFHierPortInst> sinkHierPortInsts,
+                                                  Set<SiteInst> siteInstsToRoute,
+                                                  Predicate<Tile> noGo, int maxExtra) {
+        int extraUsed = 0;
         Net topNet = design.getNet(netName);
         List<Pair<Net, List<EDIFHierPortInst>>> currPortInstList = new ArrayList<>();
         currPortInstList.add(new Pair<>(topNet, sinkHierPortInsts));
@@ -811,6 +990,8 @@ public class FlopTreeTools {
 
         for (int currDepth = 0; currDepth < depth; currDepth++) {
             int i = 0;
+            // this level's flops (by name) with the net of the level above that feeds each
+            List<Pair<Net, String>> levelFlops = new ArrayList<>();
             for (Pair<Net, List<EDIFHierPortInst>> pair : currPortInstList) {
                 Net net = pair.getFirst();
                 List<EDIFHierPortInst> portInsts = pair.getSecond();
@@ -838,6 +1019,7 @@ public class FlopTreeTools {
                             String leafNetName = netName.replace(EDIFTools.EDIF_HIER_SEP, "_") + "_slr" + slr.getId() + "_d" + currDepth + "_" + i;
                             Predicate<Tile> where = cr == null ? noGo : tile -> noGo.test(tile) || !cr.equals(tile.getClockRegion());
                             placeFlopNearCentroidOfPortInsts(design, clkName, net, leafNetName, leaf.getSecond(), siteInstsToRoute, slr, where);
+                            levelFlops.add(new Pair<>(net, leafNetName));
                             i++;
                         }
                         continue;
@@ -849,6 +1031,7 @@ public class FlopTreeTools {
                 Pair<Site, Net> centroidNetPair = placeFlopNearCentroidOfPortInsts(design, clkName, net, newNetName,
                         portInsts, siteInstsToRoute, slr, noGo, target);
 
+                levelFlops.add(new Pair<>(net, newNetName));
                 Site centroid = centroidNetPair.getFirst();
                 Net newNet = centroidNetPair.getSecond();
                 PortInstQuadrants quadrants = splitPortInstsIntoQuadrants(design, portInsts, centroid);
@@ -859,9 +1042,35 @@ public class FlopTreeTools {
                 }
                 i++;
             }
+            if (MAX_HOP_TILES > 0 && currDepth > 0) {
+                int longest = 0;
+                for (Pair<Net, String> f : levelFlops) {
+                    Cell parent = design.getCell(f.getFirst().getName()), child = design.getCell(f.getSecond());
+                    if (parent != null && child != null) longest = Math.max(longest, tileDistance(parent.getSite(), child.getSite()));
+                }
+                // flops inside each edge, for hops of 85% of the limit: they land off their targets too
+                int want = (int) Math.ceil(longest / (HOP_FILL * MAX_HOP_TILES)) - 1;
+                int stages = Math.min(want, maxExtra - extraUsed);
+                if (stages < want) {
+                    System.out.println("WARNING: [FlopTree] " + netName + " SLR" + slr.getId() + " level " + currDepth + ": hops of up to "
+                            + longest + " tiles want " + want + " more stage(s), the depth leaves " + stages);
+                }
+                if (stages > 0) {
+                    for (Pair<Net, String> f : levelFlops) {
+                        Cell child = design.getCell(f.getSecond());
+                        EDIFHierPortInst d = child.getEDIFHierCellInst().getPortInst("D");
+                        insertFlopChain(design, f.getFirst(), clkName, stages, new ArrayList<>(Collections.singletonList(d)),
+                                siteInstsToRoute, noGo, f.getSecond() + "_hop");
+                    }
+                    extraUsed += stages;
+                }
+                System.out.println("[FlopTree] " + netName + " SLR" + slr.getId() + " level " + currDepth + ": " + levelFlops.size()
+                        + " flops, longest hop " + longest + " tiles, " + stages + " flop(s) inside each");
+            }
             currPortInstList = nextPortInstList;
             nextPortInstList = new ArrayList<>();
         }
+        return extraUsed;
     }
 
     private static Site getNearestValidSite(Design design, int row, int col) {
@@ -913,8 +1122,12 @@ public class FlopTreeTools {
                 List<Point> points = new ArrayList<>();
                 points.add(new Point(currentCol, row));
                 Site target = ECOPlacementHelper.getCentroidOfPoints(design.getDevice(), points, VALID_CENTROID_SITE_TYPES);
+                // a slice nothing else uses where one is near, as the chains: among a tile's cells the
+                // flop's pins can be taken in ways the shared-slice checks miss
+                Pair<Site, BEL> chainLoc = nextAvailFlopPlacement(design, applyNoGoFilter(unusedSitesOnly(design, withinDistance(target,
+                        ECOPlacementHelper.spiralOutFrom(target).iterator(), 40)), noGo), currentSLR, clkName);
                 Iterator<Site> chainItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGo);
-                Pair<Site, BEL> chainLoc = nextAvailFlopPlacement(design, chainItr, currentSLR, clkName);
+                if (chainLoc == null) chainLoc = nextAvailFlopPlacement(design, chainItr, currentSLR, clkName);
                 if (chainLoc == null) {
                     throw new RuntimeException("Failed to place src pacing flop in SLR " + currentSLR.getId()
                             + " for crossing " + crossingIdx + " of net " + net.getName());
@@ -1053,16 +1266,35 @@ public class FlopTreeTools {
 
         Net currentNet = net;
         EDIFNetlist netlist = design.getNetlist();
+        // Under a hop limit, a chain inside one SLR places each stage from where the one before
+        // actually landed (among placed tiles a flop can land tens of tiles off its target, and the
+        // even spacing then left one hop half as long again as the rest): the rest of the way split
+        // evenly over the stages left, on a site no further than the limit from the stage before.
+        boolean bounded = MAX_HOP_TILES > 0 && sourceSite.getTile().getSLR() == portInstCentroid.getTile().getSLR();
+        Site prev = sourceSite;
         for (int i = 0; i < depth; i++) {
             Point pt = targets.get(i);
+            if (bounded) {
+                double frac = 1.0 / (depth - i + 1);
+                pt = new Point((int) Math.round(prev.getTile().getColumn() + frac * (dstCol - prev.getTile().getColumn())),
+                               (int) Math.round(prev.getTile().getRow() + frac * (dstRow - prev.getTile().getRow())));
+            }
             Site target = getNearestValidSite(design, pt.y, pt.x);
 
             // Prefer slices nothing else uses, so two chains placed along the same line (e.g. a
             // request and its reply) never share a slice: the deskew must be able to move each
             // stage on its own. Fall back to any free flop BEL if no empty slice is in reach.
+            Pair<Site, BEL> loc = null;
+            if (bounded) {
+                Tile from = prev.getTile();
+                Predicate<Tile> tooFar = tile -> noGo.test(tile)
+                        || Math.abs(tile.getRow() - from.getRow()) + Math.abs(tile.getColumn() - from.getColumn()) > MAX_HOP_TILES;
+                loc = nextAvailFlopPlacement(design, applyNoGoFilter(unusedSitesOnly(design, withinDistance(target,
+                        ECOPlacementHelper.spiralOutFrom(target).iterator(), 2 * MAX_HOP_TILES)), tooFar), null, clkName);
+            }
             Iterator<Site> siteItr = applyNoGoFilter(unusedSitesOnly(design,
                     ECOPlacementHelper.spiralOutFrom(target).iterator()), noGo);
-            Pair<Site, BEL> loc = nextAvailFlopPlacement(design, siteItr, null, clkName);
+            if (loc == null) loc = nextAvailFlopPlacement(design, siteItr, null, clkName);
             if (loc == null) {
                 siteItr = applyNoGoFilter(ECOPlacementHelper.spiralOutFrom(target).iterator(), noGo);
                 loc = nextAvailFlopPlacement(design, siteItr, null, clkName);
@@ -1082,6 +1314,7 @@ public class FlopTreeTools {
 
             siteInstsToRoute.add(netCellPair.getFirst().getSiteInst());
             currentNet = netCellPair.getSecond();
+            prev = loc.getFirst();
         }
 
         return currentNet;
@@ -1327,6 +1560,11 @@ public class FlopTreeTools {
             int newDepth = depth - (2 * slrDistFromSource);
             int extra = Math.max(0, newDepth - maxDepthPerSLR);
             int treeDepth = Math.min(newDepth, maxDepthPerSLR);
+            if (MAX_HOP_TILES > 0 && treeDepth > 0) {
+                insertBoundedInSLR(design, topNet, clkName, slr, portInsts, sourceSite, slrDistFromSource, treeDepth, extra,
+                        siteInstsToRoute, noGo);
+                continue;
+            }
 
             // Even split across (slrDist + 1) segments
             int totalSegments = slrDistFromSource + 1;
@@ -1355,6 +1593,65 @@ public class FlopTreeTools {
 
         if (routeHere) {
             routeSites(siteInstsToRoute);
+        }
+    }
+
+    /**
+     * One SLR's part of a tree under {@link #MAX_HOP_TILES}: the quadrant tree first, straight on the
+     * source's net, with the flops its edges need; then the chain from the source to the tree's root
+     * with the stages left, each segment of the way (to each SLR boundary, and from the last landing
+     * to the root) getting them by its length.
+     */
+    private static void insertBoundedInSLR(Design design, Net topNet, String clkName, SLR slr, List<EDIFHierPortInst> portInsts,
+                                           Site sourceSite, int crossings, int treeDepth, int budget,
+                                           Set<SiteInst> siteInstsToRoute, Predicate<Tile> noGo) {
+        String base = topNet.getName().replace(EDIFTools.EDIF_HIER_SEP, "_");
+        int inEdges = insertFlopTreeForNetInSLR(design, slr, topNet.getName(), clkName, treeDepth, portInsts, siteInstsToRoute, noGo, budget);
+        Cell root = design.getCell(base + "_slr" + slr.getId() + "_d0_0");
+        if (root == null) throw new RuntimeException("No root flop of the tree on " + topNet.getName() + " in SLR " + slr.getId());
+        List<EDIFHierPortInst> rootD = new ArrayList<>(Collections.singletonList(root.getEDIFHierCellInst().getPortInst("D")));
+        int left = budget - inEdges;
+
+        // the segments of the way: rows to each boundary, then from the last landing to the root
+        SLR sourceSLR = sourceSite.getTile().getSLR();
+        boolean down = slr.getUpperLeft().getRow() > sourceSLR.getLowerRight().getRow();
+        double[] length = new double[crossings + 1];
+        int row = sourceSite.getTile().getRow();
+        SLR at = sourceSLR;
+        Device dev = design.getDevice();
+        for (int i = 0; i < crossings; i++) {
+            int boundary = down ? at.getLowerRight().getRow() : at.getUpperLeft().getRow();
+            length[i] = Math.abs(boundary - row);
+            row = boundary + (down ? SLL_WIRE_LENGTH_ROWS : -SLL_WIRE_LENGTH_ROWS);
+            SLR next = slrOfRow(dev, row);
+            if (next != null) at = next;
+        }
+        Tile rootTile = root.getSite().getTile();
+        length[crossings] = Math.abs(rootTile.getRow() - row) + Math.abs(rootTile.getColumn() - sourceSite.getTile().getColumn());
+        int[] stages = new int[crossings + 1];
+        for (int k = 0; k < left; k++) {
+            int best = 0;
+            for (int i = 1; i <= crossings; i++) {
+                if (length[i] / (stages[i] + 1) > length[best] / (stages[best] + 1)) best = i;
+            }
+            stages[best]++;
+        }
+        int longest = 0;
+        for (int i = 0; i <= crossings; i++) longest = Math.max(longest, (int) Math.ceil(length[i] / (stages[i] + 1)));
+        System.out.println("[FlopTree] " + topNet.getName() + " SLR" + slr.getId() + ": " + treeDepth + " tree levels, " + inEdges
+                + " stage(s) inside its edges, " + (2 * crossings) + " on SLLs, chain stages " + Arrays.toString(stages)
+                + " over " + Arrays.toString(length) + " tiles (hops of about " + longest + ", limit " + MAX_HOP_TILES + ")");
+        if (longest > MAX_HOP_TILES) {
+            System.out.println("WARNING: [FlopTree] " + topNet.getName() + " SLR" + slr.getId() + ": the depth leaves chain hops of about "
+                    + longest + " tiles, over the limit of " + MAX_HOP_TILES);
+        }
+        Net net = topNet;
+        if (crossings > 0) {
+            net = insertSourceChainToSLR(design, topNet, clkName, Arrays.copyOf(stages, crossings), slr, rootD, siteInstsToRoute, noGo);
+        }
+        if (stages[crossings] > 0) {
+            insertFlopChain(design, net, clkName, stages[crossings], rootD, siteInstsToRoute, noGo,
+                    crossings > 0 ? net.getName().replace(EDIFTools.EDIF_HIER_SEP, "_") : base + "_slr" + slr.getId());
         }
     }
 
