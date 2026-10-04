@@ -278,7 +278,10 @@ public class VersalClockRouting {
             verticalSpineCRs.add(device.getClockRegion(i, x));
         }
 
-        VersalClockTree clkTree = getVersalClockTree(clk, device, minY, maxY);
+        // the tree (each row's path from the root) may be that of a wider span than the loaded rows
+        int treeMinY = treeMinY(device, minY, maxY);
+        if (treeMinY != minY) System.out.println("INFO: Clock " + clk + " is loaded in rows Y" + minY + "..Y" + maxY + " of more than one SLR: its vertical tree is that of rows Y" + treeMinY + "..Y" + maxY);
+        VersalClockTree clkTree = getVersalClockTree(clk, device, treeMinY, maxY);
         assert (clkTree != null);
         if (clkTree == null) {
             System.err.println("ERROR: No clock tree found for " + device + " Y" + minY + "-Y" + maxY
@@ -287,8 +290,10 @@ public class VersalClockRouting {
 
         SpineRoute spine = routeSpine(clockRootNode, verticalSpineCRs, clkTree, getNodeStatus,
                 Collections.emptyMap());
-        spine = balanceLvl1Ends(clk, spine, clockRootNode, verticalSpineCRs, clockRegions, clkTree,
-                getNodeStatus);
+        if (BALANCE_LVL1_ENDS) {
+            spine = balanceLvl1Ends(clk, spine, clockRootNode, verticalSpineCRs, clockRegions, clkTree,
+                    getNodeStatus);
+        }
         Map<ClockRegion, Node> crToVdist = spine.crToVdist;
         clk.getPIPs().addAll(spine.pips);
 
@@ -397,6 +402,29 @@ public class VersalClockRouting {
     private static boolean isLowerEndDriver(Node driver, Node wire) {
         return driver.getTile().getClockRegion().getInstanceY() < wire.getTile().getClockRegion().getInstanceY();
     }
+
+    /**
+     * The lowest clock region row of the span the vertical tree of a clock loaded in more than one
+     * SLR is chosen for, when lower than its loaded rows (property rapidwright.clock.extentMinY; -1:
+     * the loaded rows). Vivado's trees are templates by span: the interSLR tree of rows Y6..Y10
+     * rooted at Y7 gives the rows next to the root 0.7 ns more delay after the root than the tree of
+     * Y3..Y10 does (GEMM 24x8 against 32x8), and with it more pessimism on the paths between them.
+     */
+    public static int EXTENT_MIN_Y = Integer.getInteger("rapidwright.clock.extentMinY", -1);
+
+    /**
+     * The lowest row of the span the tree is chosen for: {@link #EXTENT_MIN_Y} when that widens the
+     * span of a clock whose loaded rows minY..maxY lie in more than one SLR, else minY.
+     */
+    public static int treeMinY(Device device, int minY, int maxY) {
+        if (EXTENT_MIN_Y < 0 || EXTENT_MIN_Y >= minY) return minY;
+        ClockRegion lo = device.getClockRegion(minY, 0), hi = device.getClockRegion(maxY, 0);
+        if (lo == null || hi == null || lo.getApproximateCenter().getSLR().equals(hi.getApproximateCenter().getSLR())) return minY;
+        return EXTENT_MIN_Y;
+    }
+
+    /** Whether the spine's two-ended LVL1 wires are balanced ({@link #balanceLvl1Ends}); property rapidwright.clock.balanceLvl1Ends. */
+    public static boolean BALANCE_LVL1_ENDS = !"false".equals(System.getProperty("rapidwright.clock.balanceLvl1Ends"));
 
     /** At most this many LVL1 wires are balanced together (2^n spine routes). */
     private static final int MAX_BALANCED_LVL1 = 4;

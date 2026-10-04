@@ -775,6 +775,20 @@ public class VersalClockModel {
      * (IMUX_CLK_MODE / CLK_DLY_VAL taps) when present.
      */
     public float[] siteDelay(SitePinInst spi, Cell cell) {
+        float[] d = baseSiteDelay(spi, cell);
+        // a DSP58's clock modifier sits in its interface tile's IRI_QUAD site, in front of the site pin
+        SiteInst si = spi.getSiteInst();
+        if (si != null && si.getDesign() != null && spi.getName().equals("CLK") && com.xilinx.rapidwright.router.VersalClockDeskew.isDspSite(si.getSite())) {
+            float[] iri = com.xilinx.rapidwright.router.VersalClockDeskew.getDspClockDelayPs(si.getDesign(), si.getSite());
+            if (iri != null) {
+                d = d.clone();
+                for (int i = 0; i < 4; i++) d[i] += iri[i];
+            }
+        }
+        return d;
+    }
+
+    private float[] baseSiteDelay(SitePinInst spi, Cell cell) {
         SiteInst si = spi.getSiteInst();
         if (si != null && cell != null && cell.getBEL() != null) {
             // clock pins first, then any other mapped input pin (e.g. the I pin of a clock buffer)

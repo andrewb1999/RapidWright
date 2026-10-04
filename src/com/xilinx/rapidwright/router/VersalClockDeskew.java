@@ -32,6 +32,8 @@ import com.xilinx.rapidwright.design.SiteConfig;
 import com.xilinx.rapidwright.device.BEL;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
+import com.xilinx.rapidwright.device.SitePin;
+import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.SiteTypeEnum;
 import com.xilinx.rapidwright.device.Tile;
 
@@ -107,6 +109,102 @@ public class VersalClockDeskew {
         design.addBELAttr(clk, slice, type, bel, ATTR_CLK_DLY_VAL, "4'h" + Integer.toHexString(taps));
         design.addBELAttr(clk, slice, type, bel, ATTR_IMUX_CLK_MODE, "DELAY");
         design.addBELAttr(clk, slice, type, bel, ATTR_FF_CLK_EN, "TRUE");
+    }
+
+    // ------------------------------------------------------------------ DSP58 clock delay
+    /**
+     * A DSP58's clock comes through the IRI_QUAD site of its interface tile (CLK -> CLKINV ->
+     * IRI_FF_CLK_MOD -> CLK_O -> the DSP's CLK pin), whose clock modifier delays it as a slice's
+     * FF_CLK_MOD does a slice's: CLK_SEL = DLYD_CLK with CLK_DLY_VAL_COE taps. Vivado reads the
+     * setting from the checkpoint's BEL attributes (a Tcl set_property on the BEL is ignored).
+     */
+    public static final String IRI_FF_CLK_MOD = "IRI_FF_CLK_MOD";
+    public static final String ATTR_IRI_CLK_SEL = "CLK_SEL";
+    public static final String ATTR_IRI_CLK_DLY_VAL = "CLK_DLY_VAL_COE";
+    public static final String ATTR_IRI_CLK_EN = "CLK_EN";
+    /** Largest CLK_DLY_VAL_COE Vivado times: 10..15 add nothing, not even the delayed clock's base. */
+    public static final int IRI_MAX_TAPS = 9;
+    /**
+     * Clock delay the delayed clock adds at the DSP58's clock pin, by tap value 0..9, at slow max,
+     * slow min, fast max and fast min, ps: Vivado's clock net delay to the pin against the
+     * unconfigured modifier, the same to 1 ps on every DSP58 measured (the GEMM tile's SLR crossing,
+     * 32 DSP58s, each value on two).
+     */
+    public static final float[][] IRI_DELAY_PS = {
+        {152, 163, 108, 110}, {196, 201, 144, 136}, {252, 250, 182, 170}, {302, 290, 214, 198}, {358, 341, 252, 232},
+        {406, 381, 285, 258}, {458, 427, 316, 292}, {508, 467, 350, 318}, {558, 513, 393, 350}, {608, 553, 427, 378}};
+
+    /** Whether the site is a DSP58 whose clock a {@link #IRI_FF_CLK_MOD} can delay. */
+    public static boolean isDspSite(Site site) {
+        return site != null && site.getSiteTypeEnum() == SiteTypeEnum.DSP58_PRIMARY;
+    }
+
+    /** The IRI_QUAD site whose clock modifier feeds the DSP58's CLK pin, or null. */
+    public static Site getIriClockSite(Site dsp) {
+        Node pin = dsp.getConnectedNode("CLK");
+        if (pin == null) return null;
+        for (Node o : pin.getAllUphillNodes()) {
+            for (Node p : o.getAllUphillNodes()) {
+                SitePin sp = p.getSitePin();
+                if (sp != null && sp.getPinName().equals("CLK_O") && sp.getSite().getBEL(IRI_FF_CLK_MOD) != null) return sp.getSite();
+            }
+        }
+        return null;
+    }
+
+    /** The DSP58 site whose CLK pin the IRI_QUAD site's CLK_O drives, or null. */
+    public static Site getDspSiteOfIri(Site iri) {
+        Node o = iri.getConnectedNode("CLK_O");
+        if (o == null) return null;
+        for (Node n : o.getAllDownhillNodes()) {
+            for (Node pin : n.getAllDownhillNodes()) {
+                SitePin sp = pin.getSitePin();
+                if (sp != null && sp.getPinName().equals("CLK") && isDspSite(sp.getSite())) return sp.getSite();
+            }
+        }
+        return null;
+    }
+
+    /** Delays the DSP58's clock by {@code taps} (0..{@link #IRI_MAX_TAPS}) of its interface tile's clock modifier. */
+    public static void setDspClockDelay(Design design, Net clk, Site dsp, int taps) {
+        if (taps < 0 || taps > IRI_MAX_TAPS) throw new IllegalArgumentException("Invalid " + ATTR_IRI_CLK_DLY_VAL + " taps " + taps + " (0.." + IRI_MAX_TAPS + ") for " + dsp);
+        Site iri = getIriClockSite(dsp);
+        if (iri == null) throw new IllegalArgumentException("No IRI clock modifier in front of " + dsp);
+        BEL bel = iri.getBEL(IRI_FF_CLK_MOD);
+        SiteTypeEnum type = iri.getSiteTypeEnum();
+        design.addBELAttr(clk, iri, type, bel, ATTR_IRI_CLK_SEL, "DLYD_CLK");
+        design.addBELAttr(clk, iri, type, bel, ATTR_IRI_CLK_DLY_VAL, "4'h" + Integer.toHexString(taps));
+        design.addBELAttr(clk, iri, type, bel, ATTR_IRI_CLK_EN, "TRUE");
+    }
+
+    /** The taps the DSP58's clock is delayed by, or -1 when its modifier is not in the delayed mode. */
+    public static int getDspClockDelay(Design design, Site dsp) {
+        Map<Site, SiteConfig> attrs = design.getBELAttrs();
+        if (attrs == null || attrs.isEmpty()) return -1;
+        Site iri = getIriClockSite(dsp);
+        SiteConfig sc = iri == null ? null : attrs.get(iri);
+        if (sc == null) return -1;
+        BEL bel = iri.getBEL(IRI_FF_CLK_MOD);
+        BELAttr sel = sc.getBELAttribute(bel, ATTR_IRI_CLK_SEL);
+        if (sel == null || !"DLYD_CLK".equals(sel.getValue())) return -1;
+        BELAttr val = sc.getBELAttribute(bel, ATTR_IRI_CLK_DLY_VAL);
+        return val == null ? 0 : parseTapValue(val.getValue());
+    }
+
+    /** Takes the DSP58's clock modifier back to its unconfigured state. */
+    public static void clearDspClockDelay(Design design, Site dsp) {
+        Map<Site, SiteConfig> attrs = design.getBELAttrs();
+        Site iri = attrs == null ? null : getIriClockSite(dsp);
+        SiteConfig sc = iri == null ? null : attrs.get(iri);
+        if (sc == null) return;
+        BEL bel = iri.getBEL(IRI_FF_CLK_MOD);
+        for (String attr : new String[] {ATTR_IRI_CLK_SEL, ATTR_IRI_CLK_DLY_VAL, ATTR_IRI_CLK_EN}) sc.removeBELAttribute(bel, attr);
+    }
+
+    /** The extra clock delay (4 corners, ps) the DSP58's programmed modifier adds, or null when it adds none. */
+    public static float[] getDspClockDelayPs(Design design, Site dsp) {
+        int taps = getDspClockDelay(design, dsp);
+        return taps < 0 || taps > IRI_MAX_TAPS ? null : IRI_DELAY_PS[taps];
     }
 
     /**

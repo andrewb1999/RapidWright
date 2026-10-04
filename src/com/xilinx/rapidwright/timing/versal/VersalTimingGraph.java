@@ -1167,12 +1167,19 @@ public class VersalTimingGraph {
         if (attrs == null) return out;
         for (Map.Entry<Site, SiteConfig> e : attrs.entrySet()) {
             BEL mod = e.getKey().getBEL("FF_CLK_MOD");
-            if (mod == null || e.getValue().getBELAttributes() == null) continue;
+            Site key = e.getKey();
+            if (mod == null) {
+                // a DSP58's clock modifier is in its interface tile's IRI_QUAD site: the setting is the DSP site's
+                mod = e.getKey().getBEL(com.xilinx.rapidwright.router.VersalClockDeskew.IRI_FF_CLK_MOD);
+                key = mod == null ? null : com.xilinx.rapidwright.router.VersalClockDeskew.getDspSiteOfIri(e.getKey());
+                if (key == null) continue;
+            }
+            if (e.getValue().getBELAttributes() == null) continue;
             Map<String, BELAttr> m = e.getValue().getBELAttributes().get(mod);
             if (m == null || m.isEmpty()) continue;
             StringBuilder sb = new StringBuilder();
             for (Map.Entry<String, BELAttr> a : new TreeMap<>(m).entrySet()) sb.append(a.getKey()).append('=').append(a.getValue().getValue()).append(';');
-            out.put(e.getKey(), sb.toString());
+            out.put(key, sb.toString());
         }
         return out;
     }

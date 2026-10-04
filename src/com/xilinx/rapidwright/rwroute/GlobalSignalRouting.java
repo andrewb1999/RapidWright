@@ -433,7 +433,7 @@ public class GlobalSignalRouting {
         // Clock roots on Versal appear to only be possible on odd-numbered columns
         int clkRootXCoord = origCentroid.getColumn() % 2 == 0 ? nearerSpineColumn(origCentroid)
                 : origCentroid.getInstanceX();
-        Integer preferredYCoord = VersalClockRouting.getPreferredClockRootYCoord(clk, device, minY, maxY);
+        Integer preferredYCoord = VersalClockRouting.getPreferredClockRootYCoord(clk, device, VersalClockRouting.treeMinY(device, minY, maxY), maxY);
         int clkRootYCoord = preferredYCoord == null ? origCentroid.getInstanceY() : preferredYCoord;
 
         // If the current column doesn't work, try neighboring ones on both sides
