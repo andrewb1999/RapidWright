@@ -355,6 +355,13 @@ public class PerformanceExplorer {
 
     /** Placeholder in a post-place Tcl line for the run's directory. */
     public static final String POST_PLACE_INST_DIR = "%INST_DIR%";
+    private boolean physOpt = false;
+
+    /** Whether each run does {@code phys_opt_design -directive Explore} between placement and routing (default: no). */
+    public void setPhysOpt(boolean physOpt) {
+        this.physOpt = physOpt;
+    }
+
     private final List<String> postPlaceTclLines = new ArrayList<>();
 
     /**
@@ -399,6 +406,9 @@ public class PerformanceExplorer {
         lines.add("place_design -directive " + p.name());
         lines.add("# set_clock_uncertainty -setup "+baseClockUncertainty+" [get_clocks "+clkName+"]");
         lines.add("report_timing -file "+instDirectory + File.separator+PLACED_TIMING_RESULT);
+        if (physOpt) {
+            lines.add("phys_opt_design -directive Explore");
+        }
         for (String line : postPlaceTclLines) {
             lines.add(line.replace(POST_PLACE_INST_DIR, instDirectory));
         }

@@ -778,8 +778,9 @@ public class VersalClockModel {
         float[] d = baseSiteDelay(spi, cell);
         // a DSP58's clock modifier sits in its interface tile's IRI_QUAD site, in front of the site pin
         SiteInst si = spi.getSiteInst();
-        if (si != null && si.getDesign() != null && spi.getName().equals("CLK") && com.xilinx.rapidwright.router.VersalClockDeskew.isDspSite(si.getSite())) {
-            float[] iri = com.xilinx.rapidwright.router.VersalClockDeskew.getDspClockDelayPs(si.getDesign(), si.getSite());
+        // (a block RAM's too, one per clock pin; Vivado's router programs those itself)
+        if (si != null && si.getDesign() != null && spi.getName().startsWith("CLK") && com.xilinx.rapidwright.router.VersalClockDeskew.isIriClockedSite(si.getSite())) {
+            float[] iri = com.xilinx.rapidwright.router.VersalClockDeskew.getIriClockDelayPs(si.getDesign(), si.getSite(), spi.getName());
             if (iri != null) {
                 d = d.clone();
                 for (int i = 0; i < 4; i++) d[i] += iri[i];

@@ -21,6 +21,8 @@
 package com.xilinx.rapidwright.router;
 
 import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
@@ -139,9 +141,43 @@ public class VersalClockDeskew {
         return site != null && site.getSiteTypeEnum() == SiteTypeEnum.DSP58_PRIMARY;
     }
 
-    /** The IRI_QUAD site whose clock modifier feeds the DSP58's CLK pin, or null. */
-    public static Site getIriClockSite(Site dsp) {
-        Node pin = dsp.getConnectedNode("CLK");
+    /** Whether the site is a block RAM (RAMB36, RAMB18_L, RAMB18_U), whose clock pins each come through an {@link #IRI_FF_CLK_MOD} too. */
+    public static boolean isBramSite(Site site) {
+        return site != null && site.getSiteTypeEnum().name().startsWith("RAMB");
+    }
+
+    /**
+     * Whether the site's clock comes through interface-tile clock modifiers: a DSP58 (one, on CLK) or
+     * a block RAM (one per clock pin: CLKARDCLK and CLKBWRCLK, each L and U on a RAMB36). The delays
+     * are the same ({@link #IRI_DELAY_PS}, to 1 ps on the mesh tile's 8 RAMB36s), and Vivado's router
+     * sets them itself on block RAMs (the mesh tile's crossing came with two on tap 0, 152 ps).
+     */
+    public static boolean isIriClockedSite(Site site) {
+        return isDspSite(site) || isBramSite(site) || isUramSite(site);
+    }
+
+    /** Whether the site is an UltraRAM (URAM288), whose CLK comes through an {@link #IRI_FF_CLK_MOD} as a DSP58's does. */
+    public static boolean isUramSite(Site site) {
+        return site != null && site.getSiteTypeEnum().name().startsWith("URAM288");
+    }
+
+    /** The site's clock input pins that come through a clock modifier. */
+    public static List<String> getIriClockPins(Site block) {
+        List<String> pins = new ArrayList<>();
+        if (isDspSite(block) || isUramSite(block)) {
+            pins.add("CLK");
+        } else if (isBramSite(block)) {
+            for (int i = 0; i < block.getSitePinCount(); i++) {
+                String name = block.getPinName(i);
+                if (name.startsWith("CLK") && block.isInputPin(name)) pins.add(name);
+            }
+        }
+        return pins;
+    }
+
+    /** The IRI_QUAD site whose clock modifier feeds the site's clock pin {@code pinName}, or null. */
+    public static Site getIriClockSite(Site block, String pinName) {
+        Node pin = block.getConnectedNode(pinName);
         if (pin == null) return null;
         for (Node o : pin.getAllUphillNodes()) {
             for (Node p : o.getAllUphillNodes()) {
@@ -152,37 +188,72 @@ public class VersalClockDeskew {
         return null;
     }
 
-    /** The DSP58 site whose CLK pin the IRI_QUAD site's CLK_O drives, or null. */
-    public static Site getDspSiteOfIri(Site iri) {
-        Node o = iri.getConnectedNode("CLK_O");
-        if (o == null) return null;
-        for (Node n : o.getAllDownhillNodes()) {
-            for (Node pin : n.getAllDownhillNodes()) {
-                SitePin sp = pin.getSitePin();
-                if (sp != null && sp.getPinName().equals("CLK") && isDspSite(sp.getSite())) return sp.getSite();
-            }
+    /** The IRI_QUAD site whose clock modifier feeds the site's (first) clock pin, or null. */
+    public static Site getIriClockSite(Site block) {
+        for (String pin : getIriClockPins(block)) {
+            Site iri = getIriClockSite(block, pin);
+            if (iri != null) return iri;
         }
         return null;
     }
 
-    /** Delays the DSP58's clock by {@code taps} (0..{@link #IRI_MAX_TAPS}) of its interface tile's clock modifier. */
-    public static void setDspClockDelay(Design design, Net clk, Site dsp, int taps) {
-        if (taps < 0 || taps > IRI_MAX_TAPS) throw new IllegalArgumentException("Invalid " + ATTR_IRI_CLK_DLY_VAL + " taps " + taps + " (0.." + IRI_MAX_TAPS + ") for " + dsp);
-        Site iri = getIriClockSite(dsp);
-        if (iri == null) throw new IllegalArgumentException("No IRI clock modifier in front of " + dsp);
-        BEL bel = iri.getBEL(IRI_FF_CLK_MOD);
-        SiteTypeEnum type = iri.getSiteTypeEnum();
-        design.addBELAttr(clk, iri, type, bel, ATTR_IRI_CLK_SEL, "DLYD_CLK");
-        design.addBELAttr(clk, iri, type, bel, ATTR_IRI_CLK_DLY_VAL, "4'h" + Integer.toHexString(taps));
-        design.addBELAttr(clk, iri, type, bel, ATTR_IRI_CLK_EN, "TRUE");
+    /** The IRI_QUAD sites in front of the site's clock pins. */
+    public static List<Site> getIriClockSites(Site block) {
+        List<Site> sites = new ArrayList<>();
+        for (String pin : getIriClockPins(block)) {
+            Site iri = getIriClockSite(block, pin);
+            if (iri != null && !sites.contains(iri)) sites.add(iri);
+        }
+        return sites;
     }
 
-    /** The taps the DSP58's clock is delayed by, or -1 when its modifier is not in the delayed mode. */
-    public static int getDspClockDelay(Design design, Site dsp) {
+    /**
+     * The DSP58 or block RAM site whose clock pin the IRI_QUAD site's CLK_O drives, or null. A block
+     * RAM tile's pins belong to its RAMB36 and to its two RAMB18s: the one the design uses, when
+     * {@code design} is given and uses one.
+     */
+    public static Site getBlockSiteOfIri(Design design, Site iri) {
+        Node o = iri.getConnectedNode("CLK_O");
+        if (o == null) return null;
+        Site first = null;
+        for (Node n : o.getAllDownhillNodes()) {
+            for (Node pin : n.getAllDownhillNodes()) {
+                for (Site s : pin.getTile().getSites()) {
+                    if (!isIriClockedSite(s)) continue;
+                    for (String name : getIriClockPins(s)) {
+                        if (!pin.equals(s.getConnectedNode(name))) continue;
+                        if (design == null || design.getSiteInstFromSite(s) != null) return s;
+                        if (first == null) first = s;
+                    }
+                }
+            }
+        }
+        return first;
+    }
+
+    /** As {@link #getBlockSiteOfIri(Design, Site)} without a design. */
+    public static Site getDspSiteOfIri(Site iri) {
+        return getBlockSiteOfIri(null, iri);
+    }
+
+    /** Delays the DSP58's or block RAM's clock (every clock pin alike) by {@code taps} (0..{@link #IRI_MAX_TAPS}) of its interface tiles' clock modifiers. */
+    public static void setDspClockDelay(Design design, Net clk, Site block, int taps) {
+        if (taps < 0 || taps > IRI_MAX_TAPS) throw new IllegalArgumentException("Invalid " + ATTR_IRI_CLK_DLY_VAL + " taps " + taps + " (0.." + IRI_MAX_TAPS + ") for " + block);
+        List<Site> iris = getIriClockSites(block);
+        if (iris.isEmpty()) throw new IllegalArgumentException("No IRI clock modifier in front of " + block);
+        for (Site iri : iris) {
+            BEL bel = iri.getBEL(IRI_FF_CLK_MOD);
+            SiteTypeEnum type = iri.getSiteTypeEnum();
+            design.addBELAttr(clk, iri, type, bel, ATTR_IRI_CLK_SEL, "DLYD_CLK");
+            design.addBELAttr(clk, iri, type, bel, ATTR_IRI_CLK_DLY_VAL, "4'h" + Integer.toHexString(taps));
+            design.addBELAttr(clk, iri, type, bel, ATTR_IRI_CLK_EN, "TRUE");
+        }
+    }
+
+    /** The taps the modifier in IRI_QUAD site {@code iri} delays its clock by, or -1 when it is not in the delayed mode. */
+    private static int getIriDelay(Design design, Site iri) {
         Map<Site, SiteConfig> attrs = design.getBELAttrs();
-        if (attrs == null || attrs.isEmpty()) return -1;
-        Site iri = getIriClockSite(dsp);
-        SiteConfig sc = iri == null ? null : attrs.get(iri);
+        SiteConfig sc = iri == null || attrs == null ? null : attrs.get(iri);
         if (sc == null) return -1;
         BEL bel = iri.getBEL(IRI_FF_CLK_MOD);
         BELAttr sel = sc.getBELAttribute(bel, ATTR_IRI_CLK_SEL);
@@ -191,19 +262,41 @@ public class VersalClockDeskew {
         return val == null ? 0 : parseTapValue(val.getValue());
     }
 
-    /** Takes the DSP58's clock modifier back to its unconfigured state. */
-    public static void clearDspClockDelay(Design design, Site dsp) {
+    /**
+     * The taps the DSP58's or block RAM's clock is delayed by, or -1 when no modifier of its is in the
+     * delayed mode; the most among a block RAM's pins when they differ (Vivado sets them one by one).
+     */
+    public static int getDspClockDelay(Design design, Site block) {
         Map<Site, SiteConfig> attrs = design.getBELAttrs();
-        Site iri = attrs == null ? null : getIriClockSite(dsp);
-        SiteConfig sc = iri == null ? null : attrs.get(iri);
-        if (sc == null) return;
-        BEL bel = iri.getBEL(IRI_FF_CLK_MOD);
-        for (String attr : new String[] {ATTR_IRI_CLK_SEL, ATTR_IRI_CLK_DLY_VAL, ATTR_IRI_CLK_EN}) sc.removeBELAttribute(bel, attr);
+        if (attrs == null || attrs.isEmpty()) return -1;
+        int taps = -1;
+        for (Site iri : getIriClockSites(block)) taps = Math.max(taps, getIriDelay(design, iri));
+        return taps;
+    }
+
+    /** Takes the DSP58's or block RAM's clock modifiers back to their unconfigured state. */
+    public static void clearDspClockDelay(Design design, Site block) {
+        Map<Site, SiteConfig> attrs = design.getBELAttrs();
+        if (attrs == null) return;
+        for (Site iri : getIriClockSites(block)) {
+            SiteConfig sc = attrs.get(iri);
+            if (sc == null) continue;
+            BEL bel = iri.getBEL(IRI_FF_CLK_MOD);
+            for (String attr : new String[] {ATTR_IRI_CLK_SEL, ATTR_IRI_CLK_DLY_VAL, ATTR_IRI_CLK_EN}) sc.removeBELAttribute(bel, attr);
+        }
     }
 
     /** The extra clock delay (4 corners, ps) the DSP58's programmed modifier adds, or null when it adds none. */
     public static float[] getDspClockDelayPs(Design design, Site dsp) {
         int taps = getDspClockDelay(design, dsp);
+        return taps < 0 || taps > IRI_MAX_TAPS ? null : IRI_DELAY_PS[taps];
+    }
+
+    /** The extra clock delay (4 corners, ps) the programmed modifier in front of the site's clock pin {@code pinName} adds, or null when it adds none. */
+    public static float[] getIriClockDelayPs(Design design, Site block, String pinName) {
+        Map<Site, SiteConfig> attrs = design.getBELAttrs();
+        if (attrs == null || attrs.isEmpty()) return null;
+        int taps = getIriDelay(design, getIriClockSite(block, pinName));
         return taps < 0 || taps > IRI_MAX_TAPS ? null : IRI_DELAY_PS[taps];
     }
 

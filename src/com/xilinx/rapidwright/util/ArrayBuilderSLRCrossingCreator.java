@@ -378,6 +378,7 @@ public class ArrayBuilderSLRCrossingCreator {
     private static void explorePerformance(Design design, String runDirectory, boolean reuse, double clkPeriod,
                                            boolean noExplore, List<String> postPlaceTclLines) {
         PerformanceExplorer pe = new PerformanceExplorer(design, runDirectory, "clk", clkPeriod);
+        pe.setPhysOpt(PHYS_OPT);
         for (String line : postPlaceTclLines) {
             pe.addPostPlaceTclLine(line);
         }
@@ -502,6 +503,18 @@ public class ArrayBuilderSLRCrossingCreator {
         public Options setDisableHoldTiming(boolean disable) { this.disableHoldTiming = disable; return this; }
         public boolean isNoExplore() { return noExplore; }
         public Options setNoExplore(boolean noExplore) { this.noExplore = noExplore; return this; }
+        private double setupUncertainty = 0;
+
+        /**
+         * Setup clock uncertainty the crossing is implemented under (ns; 0: none): margin on every path
+         * of the two tiles, taken off the checkpoint again. In an array the tiles' own paths meet the
+         * clock tree's jitter and the skew between a block RAM and its slices, which a crossing closed
+         * at +0.005 ns has nothing for (the mesh 8x16: a BRAM-to-decoder path of the top tile 23 ps
+         * short, where the clock taps had run out).
+         */
+        public double getSetupUncertainty() { return setupUncertainty; }
+        public Options setSetupUncertainty(double ns) { this.setupUncertainty = ns; return this; }
+
         /** set_max_delay applied to every top-register to bottom-register path (ns). */
         public double getMaxDelay() { return maxDelay; }
         public Options setMaxDelay(double maxDelay) { this.maxDelay = maxDelay; return this; }
@@ -711,6 +724,10 @@ public class ArrayBuilderSLRCrossingCreator {
         if (disableHoldTiming) {
             addSLRCrossingHoldFalsePathConstraint(topDesign, topInstName, bottomInstName);
         }
+        if (options.getSetupUncertainty() > 0) {
+            System.out.println("[SLR-CROSSING] setup clock uncertainty " + options.getSetupUncertainty() + " ns");
+            topDesign.addXDCConstraint(ConstraintGroup.LATE, SETUP_UNCERTAINTY_CMD + " " + options.getSetupUncertainty() + " [get_clocks clk]");
+        }
         addNoReplicateConstraintsForSLRCrossingNets(topDesign, topInstName, bottomInstName);
         addClockTreeConstraints(topDesign, topPBlock, bottomPBlock, options);
         if (options.getClockVTreeType() != null) {
@@ -782,6 +799,7 @@ public class ArrayBuilderSLRCrossingCreator {
         }
         DesignTools.createPossiblePinsToStaticNets(bestDesign);
         DesignTools.createMissingSitePinInsts(bestDesign);
+        removeConstraintsContaining(bestDesign, SETUP_UNCERTAINTY_CMD);
         removeConstraintsContaining(bestDesign, USER_CLOCK_ROOT);
         removeConstraintsContaining(bestDesign, USER_CLOCK_EXPANSION_WINDOW);
         removeConstraintsContaining(bestDesign, USER_CLOCK_VTREE_TYPE);
@@ -826,6 +844,14 @@ public class ArrayBuilderSLRCrossingCreator {
         }
         physicalClkIn.connect(bufg, "I");
     }
+
+    /**
+     * Whether the crossing's implementation runs {@code phys_opt_design} after placement (set by the
+     * caller before {@code createSLRCrossing}; default no, as every crossing was built until Oct 2026).
+     */
+    public static boolean PHYS_OPT = false;
+
+    private static final String SETUP_UNCERTAINTY_CMD = "set_clock_uncertainty -setup";
 
     private static void removePEClockBUFGCE(Design design) {
         ArrayBuilder.removeBUFGs(design);

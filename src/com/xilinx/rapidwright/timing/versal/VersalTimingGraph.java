@@ -676,6 +676,14 @@ public class VersalTimingGraph {
         String site = c.getSiteInst() == null || c.getSiteInst().getSiteTypeEnum() == null ? null : c.getSiteInst().getSiteTypeEnum().name();
         String fam = belKeyFor(c), bare = c.getBELName();
         short v = -1;
+        // a block RAM's arcs depend on its output registers (clock to output: 0.25 ns with one, the read
+        // access time of 0.90 ns without): the section of its DOA_REG / DOB_REG setting where the tables
+        // have one, before the plain section, which was fit on registered outputs
+        if (site != null && c.getType() != null && c.getType().startsWith("RAMB") && c.getEDIFCellInst() != null) {
+            com.xilinx.rapidwright.edif.EDIFPropertyValue a = c.getEDIFCellInst().getProperty("DOA_REG"), b = c.getEDIFCellInst().getProperty("DOB_REG");
+            if (a != null && b != null) v = tryIndex(dm, fam + "_DOA" + a.getIntValue() + "_DOB" + b.getIntValue() + "@" + site);
+            if (v >= 0) return v;
+        }
         if (site != null) {
             v = tryIndex(dm, fam + "@" + site);
             if (v < 0 && !fam.equals(bare)) v = tryIndex(dm, bare + "@" + site);
@@ -1163,6 +1171,7 @@ public class VersalTimingGraph {
     /** FF_CLK_MOD attributes of every slice that has any, as one string per site. */
     private Map<Site, String> leafSettings() {
         Map<Site, String> out = new HashMap<>();
+        Map<Site, TreeMap<String, String>> parts = new HashMap<>();
         Map<Site, SiteConfig> attrs = design.getBELAttrs();
         if (attrs == null) return out;
         for (Map.Entry<Site, SiteConfig> e : attrs.entrySet()) {
@@ -1171,7 +1180,8 @@ public class VersalTimingGraph {
             if (mod == null) {
                 // a DSP58's clock modifier is in its interface tile's IRI_QUAD site: the setting is the DSP site's
                 mod = e.getKey().getBEL(com.xilinx.rapidwright.router.VersalClockDeskew.IRI_FF_CLK_MOD);
-                key = mod == null ? null : com.xilinx.rapidwright.router.VersalClockDeskew.getDspSiteOfIri(e.getKey());
+                // (or a block RAM's, one IRI_QUAD site per clock pin: their settings joined in site order)
+                key = mod == null ? null : com.xilinx.rapidwright.router.VersalClockDeskew.getBlockSiteOfIri(design, e.getKey());
                 if (key == null) continue;
             }
             if (e.getValue().getBELAttributes() == null) continue;
@@ -1179,8 +1189,10 @@ public class VersalTimingGraph {
             if (m == null || m.isEmpty()) continue;
             StringBuilder sb = new StringBuilder();
             for (Map.Entry<String, BELAttr> a : new TreeMap<>(m).entrySet()) sb.append(a.getKey()).append('=').append(a.getValue().getValue()).append(';');
-            out.put(key, sb.toString());
+            if (key == e.getKey()) out.put(key, sb.toString());
+            else parts.computeIfAbsent(key, k -> new TreeMap<>()).put(e.getKey().getName(), sb.toString());
         }
+        for (Map.Entry<Site, TreeMap<String, String>> e : parts.entrySet()) out.put(e.getKey(), e.getValue().toString());
         return out;
     }
 

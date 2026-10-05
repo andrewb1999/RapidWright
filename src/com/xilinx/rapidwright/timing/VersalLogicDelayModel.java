@@ -303,9 +303,38 @@ public class VersalLogicDelayModel implements LogicDelayModel {
                 return d == null ? null : d[ci];
             }
             modeMisses++;
+            // A configuration the table has not seen: the nearest one it has (most properties alike) that
+            // has this arc, before the plain BEL entry. The plain entry is the union over every configuration
+            // and takes whichever wrote it last: a block RAM read with no output register (0.90 ns clock to
+            // output) was timed with a registered one's 0.25 ns, 650 ps optimistic on every path out of it.
+            String near = nearestMode(bel, sig);
+            if (near != null) {
+                float[] d = arcs.get(key(near, from, to, kind));
+                if (d != null) return d[ci];
+            }
         }
         float[] d = arcs.get(key(bel, from, to, kind));
         return d == null ? null : d[ci];
+    }
+
+    private final java.util.Map<String, String> nearestModeCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The mode-qualified BEL of the table whose signature shares the most properties with {@code sig}, or null. */
+    private String nearestMode(String bel, String sig) {
+        String k = bel + "#" + sig;
+        String cached = nearestModeCache.get(k);
+        if (cached != null) return cached.isEmpty() ? null : cached;
+        java.util.Set<String> want = new java.util.HashSet<>(java.util.Arrays.asList(sig.split(";")));
+        String best = null;
+        int bestScore = 0;
+        for (String m : modeBels) {
+            if (!m.startsWith(bel + "#")) continue;
+            int score = 0;
+            for (String kv : m.substring(bel.length() + 1).split(";")) if (want.contains(kv)) score++;
+            if (score > bestScore || (score == bestScore && best != null && m.compareTo(best) < 0)) { bestScore = score; best = m; }
+        }
+        nearestModeCache.put(k, best == null ? "" : best);
+        return best;
     }
 
     /** Mode-qualified BEL names the table has any arc for. */

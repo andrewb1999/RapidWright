@@ -28,6 +28,7 @@ import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.device.IntentCode;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
+import com.xilinx.rapidwright.device.SLR;
 import com.xilinx.rapidwright.device.Series;
 import com.xilinx.rapidwright.design.DesignTools;
 import com.xilinx.rapidwright.timing.delayestimator.DelayEstimatorBase;
@@ -47,6 +48,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -806,6 +808,8 @@ public class HoldFixRouter extends PartialRouter {
     public static class Outcome {
         public float whsBefore, whsAfter, wnsBefore, wnsAfter;
         public int violatingBefore, violatingAfter, belowMarginBefore, belowMarginAfter;
+        /** short paths budgeted on a net before their last one, where more setup slack passes */
+        public int earlierNetBudgeted;
         public int endpointsTargeted, pathsBudgeted, sinksBudgeted, skippedNoNetEdge, skippedCrossing, skippedSetupRoom, skippedNoRouteDelay, routed, budgetMet, fallbacks;
         /** endpoints (any, not only targets) whose setup slack the detours pushed under the floor, before and after the revert */
         public int setupPushedUnderFloor, sinksNotSlower;
@@ -899,6 +903,9 @@ public class HoldFixRouter extends PartialRouter {
         System.out.println("[HoldWatch] " + stage + ": " + n.getPins().size() + " pins, " + n.getPIPs().size() + " PIPs" + sb);
     }
 
+    /** Setup slack (ps) a hold path's last net must have beyond its detour for the detour to go there rather than on the net with the most. */
+    static final float LAST_NET_SPARE_PS = 200f;
+
     private static boolean traced(VersalTimingGraph.Vertex v) { return TRACE != null && TRACE.matcher(v.getName()).matches(); }
 
     public static Outcome fixHoldByDetour(Design design, VersalSlackAnalysis sa, float marginPs, float setupFloorPs, float setupUncertaintyPs, float maxExtraPs) {
@@ -973,10 +980,35 @@ public class HoldFixRouter extends PartialRouter {
             for (VersalSlackAnalysis.PathSlack ps : paths) {
                 SitePinInst sink = null;
                 VersalTimingGraph.Vertex sinkVertex = null;
+                // The net of the path with the most setup slack through its sink pin (the last one on a tie, and
+                // when none can be told): each net of a hold path is shared with other paths, and the delay goes
+                // where those have the most to give. The net into the endpoint is often where its critical setup
+                // path comes in too: the mesh's reset, leaf flop -> LUT -> an owner register, had 2 ns on its own net
+                // into the LUT while the LUT's output ended the router's arbitration loop, and a 0.4 ns detour there
+                // (the model had the loop 70 ps better than Vivado) left the 8x24 87 ps short of setup.
+                // The last net keeps the detour when it has that slack to spare with LAST_NET_SPARE_PS over (the
+                // model's optimism on a long path): one detour there covers every launch into the endpoint, where
+                // the nets before it are one per launch and an endpoint with more short paths than a round
+                // enumerates took a round per few of them (a mesh link's route decode, 12 header bits into one
+                // register: -201, -99, -48, -31 ps over three rounds with 1.4 ns of setup on its last net).
+                float best = Float.NEGATIVE_INFINITY;
+                SitePinInst last = null;
+                boolean lastHasSpare = false;
                 for (int i = ps.path.size() - 1; i >= 0; i--) {
                     VersalTimingGraph.Edge e = ps.path.get(i);
-                    if ("net".equals(e.kind) && e.sinkPin != null) { sink = e.sinkPin; sinkVertex = e.dst; break; }
+                    if (!"net".equals(e.kind) || e.sinkPin == null) continue;
+                    if (last == null) { last = sink = e.sinkPin; sinkVertex = e.dst; }
+                    Net en = e.sinkPin.getNet();
+                    if (en == null || en.getSource() == null || en.isStaticNet() || en.isClockNet()) continue;
+                    if (en.getSource().getTile().getSLR() != e.sinkPin.getTile().getSLR() || e.sinkPin.getName().startsWith("LAG")) continue;
+                    Float th = setupThrough.get(e.dst);
+                    if (th == null) { th = sa.setupSlackThrough(e.dst, SETUP_THROUGH_MAX_VERTICES); setupThrough.put(e.dst, th); }
+                    if (Float.isNaN(th)) continue;
+                    if (e.sinkPin == last && th - setupFloorPs >= marginPs + BUDGET_OVERSHOOT_PS - ps.holdSlack + LAST_NET_SPARE_PS) { lastHasSpare = true; break; }
+                    if (th > best) { best = th; sink = e.sinkPin; sinkVertex = e.dst; }
                 }
+                if (lastHasSpare) sink = last;
+                if (sink != null && sink != last) out.earlierNetBudgeted++;
                 Net net = sink == null ? null : sink.getNet();
                 if (net == null || net.getSource() == null || net.isStaticNet() || net.isClockNet()) {
                     if (traced(v)) System.out.printf("[HoldTrace]   path from %s (hold %.0f): no net edge to budget (last net sink %s)%n", ps.launch == null ? "?" : ps.launch.getName(), ps.holdSlack, sink);
@@ -987,7 +1019,10 @@ public class HoldFixRouter extends PartialRouter {
                 // cannot reach an SLL input pin or a sink across the boundary inside its window, and the plain search
                 // it falls back to re-routes the connection shorter than it was (32x8: a crossing entry went from
                 // 1562 to 913 ps and its endpoint from -2 to -224 ps)
-                if (sink.getName().startsWith("LAG") || (ps.launch != null && VersalClockArrivals.crossesSlr(ps.launch, v))) {
+                // (the net's own source and sink too: the launch and endpoint can sit in one SLR, or have no cell to
+                // tell by, while the net between them comes over an SLL: the 8x16 mesh's out_valid into the bottom tile)
+                if (sink.getName().startsWith("LAG") || (ps.launch != null && VersalClockArrivals.crossesSlr(ps.launch, v))
+                        || net.getSource().getTile().getSLR() != sink.getTile().getSLR()) {
                     out.skippedCrossing++;
                     if (traced(v)) System.out.printf("[HoldTrace]   path from %s (hold %.0f): SLR crossing, left to the ladder%n", ps.launch == null ? "?" : ps.launch.getName(), ps.holdSlack);
                     continue;
@@ -1084,6 +1119,7 @@ public class HoldFixRouter extends PartialRouter {
             byNet.computeIfAbsent(net, n -> new ArrayList<>()).add(sink);
         }
         out.sinksBudgeted = router.getDelayBudgets().size();
+        if (out.earlierNetBudgeted > 0) System.out.printf("[HoldFixRouter] %d short paths budgeted on an earlier net of the path, where more setup slack passes than through their last net%n", out.earlierNetBudgeted);
         Map<Net, List<PIP>> pipsBefore = new HashMap<>();
         for (Net net : byNet.keySet()) { out.pipsBefore += net.getPIPs().size(); pipsBefore.put(net, new ArrayList<>(net.getPIPs())); }
         // A sink reached through a bounce node the net also routes on to another of its sinks (an SRL data pin or
@@ -1091,8 +1127,40 @@ public class HoldFixRouter extends PartialRouter {
         // the node in the net's PIPs, the partial router then rebuilds the connection from them and never routes it
         // with its budget (the FSA's last hold endpoints). Its siblings are unrouted with it and routed again plainly
         // after the budgeted pass, off the detour.
-        List<SitePinInst> siblings = siblingSinksOnBudgetedNodes(byNet);
+        List<SitePinInst> acrossSll = new ArrayList<>();
+        List<SitePinInst> siblings = siblingSinksOnBudgetedNodes(byNet, acrossSll);
+        for (SitePinInst p : acrossSll) router.getDelayBudgets().remove(p);
+        if (!acrossSll.isEmpty()) {
+            out.skippedCrossing += acrossSll.size();
+            out.sinksBudgeted = router.getDelayBudgets().size();
+            System.out.printf("[HoldFixRouter] %d budgeted sinks sit on their net's way to an SLL: left as routed (to the ladder), their net's sinks across the boundary untouched%n", acrossSll.size());
+        }
         for (Map.Entry<Net, List<SitePinInst>> e : byNet.entrySet()) DesignTools.unroutePins(e.getKey(), e.getValue());
+        // Whatever the unrouting took, a sink across an SLL must still be on its net: no search inside a
+        // window reaches it again (the 8x16 mesh shipped two LUT pins of a crossing's bottom tile unrouted).
+        // A net that lost one gets its route back whole and keeps no budget this round.
+        int restored = 0;
+        for (Iterator<Map.Entry<Net, List<SitePinInst>>> it = byNet.entrySet().iterator(); it.hasNext();) {
+            Map.Entry<Net, List<SitePinInst>> e = it.next();
+            Net net = e.getKey();
+            SLR home = net.getSource().getTile().getSLR();
+            boolean crosses = false;
+            for (SitePinInst q : net.getSinkPins()) if (q.getTile().getSLR() != home) { crosses = true; break; }
+            if (!crosses) continue;
+            Set<Node> driven = new HashSet<>();
+            for (PIP pip : net.getPIPs()) { driven.add(pip.getStartNode()); driven.add(pip.getEndNode()); }
+            boolean lost = false;
+            for (SitePinInst q : net.getSinkPins()) {
+                if (q.getTile().getSLR() != home && !driven.contains(q.getConnectedNode())) { lost = true; break; }
+            }
+            if (!lost) continue;
+            net.setPIPs(pipsBefore.get(net));
+            for (SitePinInst p : e.getValue()) { p.setRouted(true); router.getDelayBudgets().remove(p); siblings.remove(p); }
+            System.out.println("[HoldFixRouter] " + net.getName() + ": unrouting its budgeted sinks took a sink across the SLR boundary off the net; route restored, no budget");
+            it.remove();
+            restored++;
+        }
+        if (restored > 0) { out.skippedCrossing += restored; out.sinksBudgeted = router.getDelayBudgets().size(); }
         if (!siblings.isEmpty()) System.out.printf("[HoldFixRouter] %d sibling sinks share a bounce node with a budgeted sink: unrouted with it, routed again after the budgeted pass%n", siblings.size());
         router.setDeferredSinks(siblings);
         watchSinks(design, "budgeted pass, after unrouting", router, siblings, null);
@@ -1148,6 +1216,41 @@ public class HoldFixRouter extends PartialRouter {
             watchSinks(design, "budgeted pass, after the plain re-route", router, siblings, unrouted);
             for (SitePinInst p : unrouted) if (!p.isRouted()) out.unroutedSinks++;
             System.out.printf("[HoldFixRouter] %d sinks left unrouted by the budgeted search routed again plainly (%d deferred siblings, %d PIPs of their nets' budgeted routes held fixed); %d still unrouted%n", unrouted.size(), siblings.size(), locked.size(), out.unroutedSinks);
+        }
+
+        // No net leaves the pass with a sink off it: the searches report a connection they abandoned as routed
+        // again where its pin's flag says so (the 8x24 mesh: three nets of a crossing's top tile, five LUT pins,
+        // unrouted in the checkpoint). Such a net takes back the route it came with, and so does any net whose
+        // new route sits on a node of that route.
+        Map<Node, Net> newNodeOwner = new HashMap<>();
+        for (Net net : byNet.keySet()) for (PIP pip : net.getPIPs()) newNodeOwner.put(pip.isReversed() ? pip.getStartNode() : pip.getEndNode(), net);
+        Deque<Net> toRestore = new ArrayDeque<>();
+        Set<Net> restoredNets = new HashSet<>();
+        for (Net net : byNet.keySet()) {
+            Set<Node> driven = new HashSet<>();
+            for (PIP pip : net.getPIPs()) { driven.add(pip.getStartNode()); driven.add(pip.getEndNode()); }
+            for (SitePinInst q : net.getSinkPins()) {
+                Node n = q.getConnectedNode();
+                if (n != null && !driven.contains(n) && restoredNets.add(net)) { toRestore.push(net); break; }
+            }
+        }
+        while (!toRestore.isEmpty()) {
+            Net net = toRestore.pop();
+            List<PIP> old = pipsBefore.get(net);
+            if (old == null) continue;
+            for (PIP pip : old) {
+                Net other = newNodeOwner.get(pip.isReversed() ? pip.getStartNode() : pip.getEndNode());
+                if (other != null && other != net && restoredNets.add(other)) toRestore.push(other);
+            }
+            net.setPIPs(old);
+            for (SitePinInst q : net.getSinkPins()) q.setRouted(true);
+        }
+        if (!restoredNets.isEmpty()) {
+            out.unroutedSinks = 0;
+            StringBuilder names = new StringBuilder();
+            for (Net n : restoredNets) { if (names.length() > 300) { names.append(" ..."); break; } names.append(' ').append(n.getName()); }
+            System.out.println("WARNING: HoldFixRouter: " + restoredNets.size() + " nets were left with a sink off the net or sat on such a net's old route: their routes from before the pass restored, their hold as it was:" + names);
+            conflicted.removeAll(restoredNets);
         }
 
         // a router that stops at its iteration cap leaves the nodes it could not share out used twice, and the
@@ -1243,10 +1346,53 @@ public class HoldFixRouter extends PartialRouter {
      * sinks: they have to be unrouted with it for its connection to be open to the budgeted search.
      */
     private static List<SitePinInst> siblingSinksOnBudgetedNodes(Map<Net, List<SitePinInst>> byNet) {
+        return siblingSinksOnBudgetedNodes(byNet, null);
+    }
+
+    /** Whether the net's route from {@code from} goes on to a sink in another SLR than the net's source (through an SLL). */
+    private static boolean leadsAcrossSlr(Net net, SitePinInst from, Map<Node, List<Node>> downhill) {
+        SLR home = net.getSource().getTile().getSLR();
+        Set<Node> reached = new HashSet<>();
+        Deque<Node> stack = new ArrayDeque<>();
+        Node start = RouterHelper.projectInputPinToINTNode(from);
+        if (start == null) return false;
+        reached.add(start);
+        stack.push(start);
+        while (!stack.isEmpty()) {
+            for (Node child : downhill.getOrDefault(stack.pop(), Collections.emptyList())) if (reached.add(child)) stack.push(child);
+        }
+        for (SitePinInst q : net.getSinkPins()) {
+            if (q == from || q.getTile().getSLR() == home) continue;
+            Node n = RouterHelper.projectInputPinToINTNode(q);
+            if ((n != null && reached.contains(n)) || reached.contains(q.getConnectedNode())) return true;
+        }
+        return false;
+    }
+
+    /**
+     * As above; a budgeted sink whose INT node the net's route passes on its way to an SLL is taken out
+     * of {@code byNet} and added to {@code acrossSll} when that is given: its siblings would be the
+     * net's sinks in the other SLR, which no re-route inside a window reaches (the 8x16 mesh: a
+     * crossing's out_valid, two LUT pins of the bottom tile left unrouted).
+     */
+    private static List<SitePinInst> siblingSinksOnBudgetedNodes(Map<Net, List<SitePinInst>> byNet, List<SitePinInst> acrossSll) {
         List<SitePinInst> siblings = new ArrayList<>();
-        for (Map.Entry<Net, List<SitePinInst>> e : byNet.entrySet()) {
+        for (Iterator<Map.Entry<Net, List<SitePinInst>>> it = byNet.entrySet().iterator(); it.hasNext();) {
+            Map.Entry<Net, List<SitePinInst>> e = it.next();
             Net net = e.getKey();
             if (net.getSinkPins().size() <= e.getValue().size()) continue;
+            if (acrossSll != null) {
+                Map<Node, List<Node>> down = new HashMap<>();
+                for (PIP pip : net.getPIPs()) {
+                    down.computeIfAbsent(pip.isReversed() ? pip.getEndNode() : pip.getStartNode(), k -> new ArrayList<>())
+                            .add(pip.isReversed() ? pip.getStartNode() : pip.getEndNode());
+                }
+                for (Iterator<SitePinInst> pi = e.getValue().iterator(); pi.hasNext();) {
+                    SitePinInst p = pi.next();
+                    if (leadsAcrossSlr(net, p, down)) { acrossSll.add(p); pi.remove(); }
+                }
+                if (e.getValue().isEmpty()) { it.remove(); continue; }
+            }
             Map<Node, List<Node>> downhill = new HashMap<>();
             for (PIP pip : net.getPIPs()) {
                 Node start = pip.isReversed() ? pip.getEndNode() : pip.getStartNode();
