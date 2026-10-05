@@ -149,9 +149,15 @@ public class VersalTimingModel {
             }
             sig = sb.length() == 0 ? "-" : sb.toString();
         }
+        // one String per distinct signature, not per node: there are a few hundred signatures and as many
+        // cached nodes as the design routes on (20 million strings, 2.4 GB of a 14 GB heap, on the FSA 16x16)
+        String shared = signatures.putIfAbsent(sig, sig);
+        if (shared != null) sig = shared;
         cache.put(n, sig);
         return sig;
     }
+
+    private final Map<String, String> signatures = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Rows a tile type must occupy in a device column to be that column's class. */
     private static final int COLUMN_CLASS_MIN_ROWS = 5;
@@ -752,10 +758,15 @@ public class VersalTimingModel {
         String missKey = DEBUG_INTRA != null ? missKeyOf.get() : null;
         boolean dbg = missKey != null && missKey.contains(DEBUG_INTRA);
         String siteType = si.getSiteTypeEnum().name();
+        // Only slices are memoized: their (from, to) pairs repeat across the design. A hard block's do not
+        // (a driver lookup offers every output pin of the cell for each site pin, thousands by thousands on
+        // an HBM or DDR controller interface), and beside the V80 shell their keys were 10 million strings,
+        // 2 GB of the heap, each used once.
+        boolean memo = si.getSiteTypeEnum() == SiteTypeEnum.SLICEL || si.getSiteTypeEnum() == SiteTypeEnum.SLICEM;
         for (String[] k : keys) {
             String from = k[0], to = k[1];
-            String cacheKey = siteType + "\t" + from + "\t" + to;
-            float[] cached = dbg ? null : intraSiteCache.get(cacheKey);
+            String cacheKey = memo ? siteType + "\t" + from + "\t" + to : null;
+            float[] cached = dbg || !memo ? null : intraSiteCache.get(cacheKey);
             if (cached == INTRA_MISS) continue;
             if (cached != null) return cached.clone();
             SiteTypeEnum st = si.getSiteTypeEnum();
@@ -781,14 +792,14 @@ public class VersalTimingModel {
                     }
                 }
             }
-            if (v == null) { intraSiteCache.put(cacheKey, INTRA_MISS); continue; }
+            if (v == null) { if (memo) intraSiteCache.put(cacheKey, INTRA_MISS); continue; }
             float[] out = new float[corners.length];
             out[0] = v;
             for (int i = 1; i < corners.length; i++) {
                 Short vi = lookup(i, st, from, to);
                 out[i] = vi == null ? v : vi;
             }
-            intraSiteCache.put(cacheKey, out.clone());
+            if (memo) intraSiteCache.put(cacheKey, out.clone());
             return out;
         }
         intraSiteMisses.incrementAndGet();
