@@ -4819,14 +4819,18 @@ public class DesignTools {
      * @return Number of unrouted sink pins (not driven by hierarchical ports) across design.
      */
     public static int updatePinsIsRouted(Design design) {
+        // Each net is traced on its own (its pins, its PIPs, a set of its own), so the nets go in parallel; the
+        // netlist is asked about the few with unrouted sinks afterwards, serially (it builds its maps lazily)
+        Map<Net, Integer> unrouted = new java.util.concurrent.ConcurrentHashMap<>();
+        design.getNets().parallelStream().forEach(net -> {
+            int numUnroutedSinkPins = updatePinsIsRouted(net);
+            if (numUnroutedSinkPins > 0) unrouted.put(net, numUnroutedSinkPins);
+        });
         int totalUnroutedSinkPins = 0;
-        Set<NetTools.NodeTree> multiplyDrivenNodesVisited = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (Net net : design.getNets()) {
-            int numUnroutedSinkPins = updatePinsIsRouted(net, multiplyDrivenNodesVisited);
-            if (!DesignTools.isNetDrivenByHierPort(net)) {
-                totalUnroutedSinkPins += numUnroutedSinkPins;
+        for (Map.Entry<Net, Integer> e : unrouted.entrySet()) {
+            if (!DesignTools.isNetDrivenByHierPort(e.getKey())) {
+                totalUnroutedSinkPins += e.getValue();
             }
-            multiplyDrivenNodesVisited.clear();
         }
         return totalUnroutedSinkPins;
     }

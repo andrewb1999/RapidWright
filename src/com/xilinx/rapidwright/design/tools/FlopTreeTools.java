@@ -315,15 +315,15 @@ public class FlopTreeTools {
      */
     private static Set<Node> routedThroughNodes(Design design) {
         if (routedThroughDesign.get() != design) {
-            Set<Node> nodes = new HashSet<>();
-            for (Net net : design.getNets()) {
+            Set<Node> nodes = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            design.getNets().parallelStream().forEach(net -> {
                 for (PIP pip : net.getPIPs()) {
                     if (!pip.getTile().getTileTypeEnum().name().startsWith("CLE")) continue;
                     Node a = pip.getStartNode(), b = pip.getEndNode();
                     if (a != null) nodes.add(a);
                     if (b != null) nodes.add(b);
                 }
-            }
+            });
             routedThroughNodes = nodes;
             routedThroughDesign = new java.lang.ref.WeakReference<>(design);
         }

@@ -290,9 +290,31 @@ public class NetTools {
      * @return The list of nets that overlap.
      */
     public static List<Net> getNetsWithOverlappingNodes(Design design) {
+        // The nets that share a node with another are found in parallel first, and the pass below runs on those
+        // alone, in the design's order: a net with no node in common with any other neither meets a claim nor
+        // has one of its own met, so the result is that of the pass over every net (which, serial over a design
+        // of 1.4 million nets, took 8 to 17 s a call).
+        Map<Node, Net> claimed = new java.util.concurrent.ConcurrentHashMap<>();
+        Set<Net> contested = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        design.getNets().parallelStream().forEach(net -> {
+            for (PIP pip : net.getPIPs()) {
+                for (int end = 0; end < 2; end++) {
+                    Node node = end == 0 ? pip.getStartNode() : pip.getEndNode();
+                    if (node == null) continue;
+                    Net existing = claimed.putIfAbsent(node, net);
+                    if (existing != null && existing != net) {
+                        contested.add(existing);
+                        contested.add(net);
+                    }
+                }
+            }
+        });
+        claimed.clear();
         List<Net> overlappingNets = new ArrayList<>();
+        if (contested.isEmpty()) return overlappingNets;
         Map<Node, Net> used = new HashMap<>();
         for (Net net : design.getNets()) {
+            if (!contested.contains(net)) continue;
             for (PIP pip : net.getPIPs()) {
                 for (Node node : new Node[] { pip.getStartNode(), pip.getEndNode() }) {
                     if (node == null)

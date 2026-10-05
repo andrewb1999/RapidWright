@@ -531,8 +531,28 @@ public class PartialRouter extends RWRoute {
             return;
         }
         int reserved = 0, missing = 0;
-        for (Net net : preservedNonTargetNets) {
+        // The pins without a driver of their own are few and every other pin only reads the graph, so the nets
+        // are scanned in parallel first (9 million pins beside the V80 shell: a third of a router's start-up
+        // when scanned serially) and the reservations made serially below, on those pins alone
+        java.util.Queue<SitePinInst> candidates = new java.util.concurrent.ConcurrentLinkedQueue<>();
+        preservedNonTargetNets.parallelStream().forEach(net -> {
             for (SitePinInst pin : net.getSinkPins()) {
+                Node pinNode = pin.getConnectedNode();
+                if (pinNode == null) continue;
+                List<Node> uphill = pinNode.getAllUphillNodes();
+                if (uphill.size() != 1 || uphill.get(0).getIntentCode() != IntentCode.NODE_PINBOUNCE) continue;
+                boolean has = false;
+                for (Node driver : uphill.get(0).getAllUphillNodes()) {
+                    if (driver.getIntentCode() == IntentCode.NODE_INODE && routingGraph.getPreservedNet(driver) == net) { has = true; break; }
+                }
+                if (!has) candidates.add(pin);
+            }
+        });
+        List<SitePinInst> ordered = new ArrayList<>(candidates);
+        ordered.sort(java.util.Comparator.comparing((SitePinInst q) -> q.getNet().getName()).thenComparing(SitePinInst::getName).thenComparing(q -> q.getSiteInst().getSiteName()));
+        {
+            for (SitePinInst pin : ordered) {
+                Net net = pin.getNet();
                 List<Node> uphill = pin.getConnectedNode().getAllUphillNodes();
                 if (uphill.size() != 1 || uphill.get(0).getIntentCode() != IntentCode.NODE_PINBOUNCE) {
                     continue;

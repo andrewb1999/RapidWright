@@ -159,6 +159,13 @@ public class VersalTimingModel {
 
     private final Map<String, String> signatures = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /** Drops the per-node memos (crossing signatures, tile terms): they refill on demand. */
+    public void clearNodeCaches() {
+        tileTermCache.clear();
+        signatureCache.clear();
+        signatureCacheFull.clear();
+    }
+
     /** Rows a tile type must occupy in a device column to be that column's class. */
     private static final int COLUMN_CLASS_MIN_ROWS = 5;
     /** tile types that sit at fixed rows of every column (clock rows, buffers, breaks) and do not say what the column is */

@@ -246,7 +246,12 @@ public class VersalSlackAnalysis {
      * arrivals are already current (a second analysis with other uncertainties) only the slacks are computed.
      */
     public void run() {
-        if (!graph.isBuilt()) graph.build();
+        if (!graph.isBuilt()) {
+            graph.build();
+            // the model's per-node memos served the build of every net at once; an update re-times a few nets
+            // and refills what it needs (1 GB per FSA 16x16 system otherwise held for the rest of the flow)
+            // model.clearNodeCaches() would give back 1.6 GB on a three-system FSA, but the incremental updates then recompute what they need: about 15 s of that flow
+        }
         if (!graph.hasArrivals()) {
             long t = System.currentTimeMillis();
             graph.resetArrivals();
@@ -436,24 +441,24 @@ public class VersalSlackAnalysis {
                 // the capture's own leaf (a launch there may be the capture pin itself)
                 Object[] rep = tg.tag == null || tg.tag.equals(capGroup) ? null : leafPin.get(tg.tag);
                 // setup: the group's latest arrival at the max corner, with its launch's pessimism removal
-                if (!Float.isInfinite(tg.arrival[iMax])) {
+                if (!Float.isInfinite(tg.arrival(iMax))) {
                     VersalTimingGraph.Vertex launch = rep != null ? (VersalTimingGraph.Vertex) rep[1] : launchOf(v, iMax, tg.tag);
                     float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
                     float slr = crossesSlr(launch, v) ? (r.captureClockMin - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
-                    float slack = requirementPs(clockSitePin(launch), cap) + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival[iMax] - slr;
+                    float slack = requirementPs(clockSitePin(launch), cap) + r.captureClockMin + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - r.setupCheck - tg.arrival(iMax) - slr;
                     if (slack < r.setupSlack) {
-                        r.setupSlack = slack; r.launch = launch; r.setupTag = tg.tag; r.dataMax = tg.arrival[iMax]; r.setupPessimism = cpr[0][fast ? 1 : 0]; r.setupSlrComp = slr;
+                        r.setupSlack = slack; r.launch = launch; r.setupTag = tg.tag; r.dataMax = tg.arrival(iMax); r.setupPessimism = cpr[0][fast ? 1 : 0]; r.setupSlrComp = slr;
                         setupByLeaf = rep != null;
                     }
                 }
                 // hold: the group's earliest arrival at the min corner
-                if (!Float.isInfinite(tg.arrival[iMin])) {
+                if (!Float.isInfinite(tg.arrival(iMin))) {
                     VersalTimingGraph.Vertex launch = rep != null ? (VersalTimingGraph.Vertex) rep[1] : launchOf(v, iMin, tg.tag);
                     float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
-                    float slr = crossesSlr(launch, v) ? (tg.arrival[iMin] - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
-                    float slack = tg.arrival[iMin] - (r.captureClockMax - cpr[1][fast ? 1 : 0] + holdUncertaintyPs + r.holdCheck) - slr;
+                    float slr = crossesSlr(launch, v) ? (tg.arrival(iMin) - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
+                    float slack = tg.arrival(iMin) - (r.captureClockMax - cpr[1][fast ? 1 : 0] + holdUncertaintyPs + r.holdCheck) - slr;
                     if (slack < r.holdSlack) {
-                        r.holdSlack = slack; r.holdLaunch = launch; r.holdTag = tg.tag; r.dataMin = tg.arrival[iMin]; r.holdPessimism = cpr[1][fast ? 1 : 0]; r.holdSlrComp = slr;
+                        r.holdSlack = slack; r.holdLaunch = launch; r.holdTag = tg.tag; r.dataMin = tg.arrival(iMin); r.holdPessimism = cpr[1][fast ? 1 : 0]; r.holdSlrComp = slr;
                         holdByLeaf = rep != null;
                     }
                 }
@@ -536,13 +541,13 @@ public class VersalSlackAnalysis {
                 float delay = d.getValue()[fast ? 1 : 0];
                 if (Float.isInfinite(delay)) continue;
                 for (VersalTimingGraph.Tagged tg : tags) {
-                    if (Float.isInfinite(tg.arrival[iMax])) continue;
+                    if (Float.isInfinite(tg.arrival(iMax))) continue;
                     Object[] rep = tg.tag == null || tg.tag.equals(capGroup) ? null : leafPin.get(tg.tag);
                     VersalTimingGraph.Vertex launch = rep != null ? (VersalTimingGraph.Vertex) rep[1] : launchOf(p, iMax, tg.tag);
                     float[][] cpr = cprOf.computeIfAbsent(launch, l -> pessimismOf(tree, l, clockSitePin(l), cap, capArr));
                     float slr = crossesSlr(launch, v) ? (capArr[iMin] - commonDelayMin(tree, clockSitePin(launch), cap)[fast ? 1 : 0]) * SLR_PRORATING : 0;
                     float slack = requirementPs(clockSitePin(launch), cap) + capArr[iMin] + cpr[0][fast ? 1 : 0] - setupUncertaintyPs - v.check[iMax]
-                            - (tg.arrival[iMax] + delay) - slr;
+                            - (tg.arrival(iMax) + delay) - slr;
                     worst = Math.min(worst, slack);
                 }
             }
@@ -552,8 +557,7 @@ public class VersalSlackAnalysis {
 
     /** The launch at the head of an arrival group's path into an endpoint at a corner (the endpoint itself if none). */
     private VersalTimingGraph.Vertex launchOf(VersalTimingGraph.Vertex v, int corner, Object tag) {
-        List<VersalTimingGraph.Edge> path = graph.getPath(v, corner, tag);
-        return path.isEmpty() ? v : path.get(0).src;
+        return graph.getPathLaunch(v, corner, tag);
     }
 
     /** {setup {slow, fast}, hold {slow, fast}} pessimism removal between a launch and a capture pin ({@link VersalClockArrivals#pessimismOf}). */

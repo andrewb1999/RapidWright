@@ -824,6 +824,10 @@ public class HoldFixRouter extends PartialRouter {
         /** sinks of an earlier round routed again here to give back setup; sinks whose detour pushed the paths through them under the floor, to route again next round */
         public int setupRepairsRouted;
         public final Map<SitePinInst, SetupRepair> setupRepairs = new HashMap<>();
+        /** budgeted sinks whose route ended below their minimum after every attempt (or unrouted by the budgeted search) */
+        public final Set<SitePinInst> belowMinimum = new HashSet<>();
+        /** short paths not budgeted because their sink ended below its minimum in an earlier round: left to the ladder */
+        public int skippedBelowMinimum;
         /** sinks whose paths went under the floor with no delay of their own added (another budgeted sink on the paths did it) */
         public int underFloorNotAttributed;
         @Override
@@ -920,6 +924,17 @@ public class HoldFixRouter extends PartialRouter {
      */
     public static Outcome fixHoldByDetour(Design design, VersalSlackAnalysis sa, float marginPs, float setupFloorPs, float setupUncertaintyPs, float maxExtraPs,
                                           Map<SitePinInst, SetupRepair> repairs, Map<SitePinInst, Float> modelOverRouter) {
+        return fixHoldByDetour(design, sa, marginPs, setupFloorPs, setupUncertaintyPs, maxExtraPs, repairs, modelOverRouter, Collections.emptySet());
+    }
+
+    /**
+     * @param gaveUp sinks an earlier round's search could not bring up to their minimum (its {@link Outcome#belowMinimum}):
+     *               not budgeted again. The search is the same each round and so is its end (three FSA systems: the
+     *               same 10 sinks next to an SLR crossing, each searched three times at up to a million pops in each
+     *               of three rounds, two thirds of the last round's time); the ladder takes their endpoints.
+     */
+    public static Outcome fixHoldByDetour(Design design, VersalSlackAnalysis sa, float marginPs, float setupFloorPs, float setupUncertaintyPs, float maxExtraPs,
+                                          Map<SitePinInst, SetupRepair> repairs, Map<SitePinInst, Float> modelOverRouter, Set<SitePinInst> gaveUp) {
         Outcome out = new Outcome();
         long t0 = System.currentTimeMillis();
         if (sa == null) {
@@ -1046,6 +1061,7 @@ public class HoldFixRouter extends PartialRouter {
                     if (traced(v)) System.out.printf("[HoldTrace]   path from %s (hold %.0f): no setup room (room %.0f < deficit %.0f)%n", ps.launch == null ? "?" : ps.launch.getName(), ps.holdSlack, room, deficit);
                     continue;
                 }
+                if (gaveUp.contains(sink)) { out.skippedBelowMinimum++; continue; }
                 out.pathsBudgeted++;
                 if (traced(v)) System.out.printf("[HoldTrace]   path from %s (hold %.0f): budget sink %s of %s, deficit %.0f, room %.0f%n", ps.launch == null ? "?" : ps.launch.getName(), ps.holdSlack, sink, net.getName(), deficit, room);
                 int corner = ps.fast ? iFastMin : iMin;
@@ -1170,6 +1186,10 @@ public class HoldFixRouter extends PartialRouter {
         router.route();
         out.routeMs = System.currentTimeMillis() - t0;
         out.budgetsDroppedForCongestion = router.getBudgetsDroppedForCongestion();
+        for (Connection c : router.getUnmetBudgets()) out.belowMinimum.add(c.getSink());
+        if (!out.belowMinimum.isEmpty() || out.skippedBelowMinimum > 0) {
+            System.out.printf("[HoldFixRouter] %d budgeted sinks ended below their minimum: not budgeted again; %d short paths skipped for sinks an earlier round gave up on%n", out.belowMinimum.size(), out.skippedBelowMinimum);
+        }
         Set<Net> conflicted = new HashSet<>(router.getNetsOnOverusedNodes());
         List<SitePinInst> unrouted = new ArrayList<>();
         int notTried = 0;

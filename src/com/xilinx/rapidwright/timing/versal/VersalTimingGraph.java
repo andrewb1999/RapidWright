@@ -69,22 +69,26 @@ import java.util.TreeMap;
  */
 public class VersalTimingGraph {
 
+    /** The check of a vertex that has none (every vertex but the endpoints): one array for all of them. */
+    private static final float[] NO_CHECK = new float[4];
+
     public static class Vertex {
         public final Cell cell;
         public final String pin;      // BEL pin name (physical pin)
         /** arrival per corner: -inf (max corners) / +inf (min corners) until reached */
         public final float[] arrival;
-        /** critical predecessor edge per corner */
-        public final Edge[] pred;
-        public final List<Edge> outs = new ArrayList<>(2);
+        public Edge[] outs = NO_EDGES;
         /** live incoming edges, in the order they were added (kept with {@link #outs} by addEdge and dropNetEdges) */
-        public final List<Edge> ins = new ArrayList<>(2);
+        public Edge[] ins = NO_EDGES;
         /** inputs not yet relaxed during a Kahn propagation (scratch; replaces a per-propagation HashMap) */
         int pending;
         public boolean launch;        // clock-to-output pin of a sequential cell
         public boolean endpoint;      // data/control input of a sequential cell
-        /** timing check per corner: setup requirement at max corners, hold requirement at min corners (ps) */
-        public final float[] check;
+        /**
+         * timing check per corner: setup requirement at max corners, hold requirement at min corners (ps);
+         * the shared all-zero {@link #NO_CHECK} (not to be written) until a cell's check is set
+         */
+        public float[] check = NO_CHECK;
         /** arrivals per launch clock group (see {@link Tagged}); null until reached */
         public List<Tagged> tags;
         /**
@@ -100,8 +104,6 @@ public class VersalTimingGraph {
             this.cell = cell;
             this.pin = pin;
             arrival = new float[corners];
-            pred = new Edge[corners];
-            check = new float[corners];
         }
 
         public String getName() {
@@ -125,13 +127,38 @@ public class VersalTimingGraph {
      */
     public static class Tagged {
         public final Object tag;
-        public final float[] arrival;
-        public final Edge[] pred;
+        // The arrival per corner as fields, and no predecessor edges: a design has tens of millions of
+        // groups (63 million on three FSA 16x16 systems), and as {tag, float[4], Edge[4]} each was three
+        // objects, 96 bytes, 6 GB in all. A group's critical predecessor is recomputed when a path is
+        // asked for ({@link #tagPred}): it is the in-edge whose source group plus the edge's delay gives
+        // this arrival, to the bit, since that is how the arrival was computed.
+        private float a0, a1, a2, a3;
+        // The launch at the head of each corner's critical path: the slack computation asks for it for every
+        // group of every endpoint, and walking the path back by {@link #tagPred} for each took 30 s of a
+        // three-system FSA's flow. 16 bytes a group (1 GB there); the group is 48 bytes with them.
+        private Vertex l0, l1, l2, l3;
+
+        /** The launch whose path gives the group's arrival at a corner (null while unreached). */
+        public Vertex launch(int corner) {
+            return corner == 0 ? l0 : corner == 1 ? l1 : corner == 2 ? l2 : l3;
+        }
+
+        void launch(int corner, Vertex v) {
+            if (corner == 0) l0 = v; else if (corner == 1) l1 = v; else if (corner == 2) l2 = v; else l3 = v;
+        }
 
         Tagged(Object tag, int corners) {
+            if (corners > 4) throw new IllegalArgumentException("arrival groups hold at most 4 corners, not " + corners);
             this.tag = tag;
-            arrival = new float[corners];
-            pred = new Edge[corners];
+        }
+
+        /** The group's arrival at a corner. */
+        public float arrival(int corner) {
+            return corner == 0 ? a0 : corner == 1 ? a1 : corner == 2 ? a2 : a3;
+        }
+
+        void arrival(int corner, float value) {
+            if (corner == 0) a0 = value; else if (corner == 1) a1 = value; else if (corner == 2) a2 = value; else a3 = value;
         }
     }
 
@@ -263,8 +290,8 @@ public class VersalTimingGraph {
 
     private Edge addEdge(Vertex s, Vertex d, float[] delay, Net net, String kind, SitePinInst sinkPin, float[] intraSite) {
         Edge e = new Edge(s, d, delay, net, kind, sinkPin, intraSite);
-        s.outs.add(e);
-        d.ins.add(e);
+        s.outs = with(s.outs, e);
+        d.ins = with(d.ins, e);
         edges.add(e);
         return e;
     }
@@ -462,7 +489,6 @@ public class VersalTimingGraph {
             if (!sinks.isEmpty()) netSinks.computeIfAbsent(net.getName(), k -> new ArrayList<>()).addAll(sinks);
             if (net.isStaticNet()) for (String key : sinks) constantPins.put(key, net.isVCCNet() ? 1 : 0);
         }
-        boolean changed = true;
         Set<String> constNets = new HashSet<>();
         // Configuration registers: a flop whose D is its own Q, with no reset that could move it
         // (its SR pin unconnected or on a constant 0), holds its INIT forever. Vivado's STA does not
@@ -484,26 +510,41 @@ public class VersalTimingGraph {
             for (String sink : netSinks.getOrDefault(netName, Collections.emptyList())) constantPins.put(sink, (int) (init & 1));
         }
         if (constantFlops > 0) System.out.println("[Timing] " + constantFlops + " configuration registers (flops fed back their own Q) taken as constants");
-        while (changed) {
-            changed = false;
-            for (Map.Entry<String, Cell> e : lutByOutNet.entrySet()) {
-                if (constNets.contains(e.getKey())) continue;
-                Integer v;
+        // To a fixed point: every LUT once, then only those with an input pin that has become constant since
+        // (a LUT's value can change with nothing else). Each round's LUTs are evaluated in parallel against the
+        // constants so far and their results applied in order; constants only accumulate and a constant LUT
+        // stays at its value, so the fixed point is the one sweeps over every LUT reach (which, serial, were
+        // 16 s of a three-system FSA's build).
+        Map<String, List<String>> outNetsOfLut = new HashMap<>();   // LUT cell name -> the nets it drives
+        for (Map.Entry<String, Cell> e : lutByOutNet.entrySet()) outNetsOfLut.computeIfAbsent(e.getValue().getName(), k -> new ArrayList<>(1)).add(e.getKey());
+        List<String> round = new ArrayList<>(lutByOutNet.keySet());
+        while (!round.isEmpty()) {
+            final List<String> todo = round;
+            Integer[] value = new Integer[todo.size()];
+            java.util.stream.IntStream idx = java.util.stream.IntStream.range(0, todo.size());
+            (parallelNets() ? idx.parallel() : idx).forEach(k -> {
+                String netName = todo.get(k);
+                if (constNets.contains(netName)) return;
+                Cell c = lutByOutNet.get(netName);
                 try {
-                    v = lutConstantValue(e.getValue());
+                    value[k] = lutConstantValue(c);
                 } catch (RuntimeException ex) {
-                    Cell c = e.getValue();
                     EDIFCellInst ci = c.getEDIFCellInst();
                     throw new RuntimeException("constant propagation on " + c.getName() + " (type " + c.getType() + ", site " + c.getSite() + ", bel " + c.getBEL()
-                            + ", inst " + ci + ", cellType " + (ci == null ? null : ci.getCellType()) + ", hier " + c.getEDIFHierCellInst() + ") of net " + e.getKey(), ex);
+                            + ", inst " + ci + ", cellType " + (ci == null ? null : ci.getCellType()) + ", hier " + c.getEDIFHierCellInst() + ") of net " + netName, ex);
                 }
-                if (v == null) continue;
-                constNets.add(e.getKey());
+            });
+            Set<String> next = new java.util.LinkedHashSet<>();
+            for (int k = 0; k < todo.size(); k++) {
+                if (value[k] == null || !constNets.add(todo.get(k))) continue;
                 constantLuts++;
-                for (String sink : netSinks.getOrDefault(e.getKey(), Collections.emptyList())) {
-                    if (constantPins.put(sink, v) == null) changed = true;
+                for (String sink : netSinks.getOrDefault(todo.get(k), Collections.emptyList())) {
+                    if (constantPins.put(sink, value[k]) != null) continue;
+                    List<String> outs = outNetsOfLut.get(sink.substring(0, sink.lastIndexOf('/')));
+                    if (outs != null) for (String o : outs) if (!constNets.contains(o)) next.add(o);
                 }
             }
+            round = new ArrayList<>(next);
         }
     }
 
@@ -902,8 +943,8 @@ public class VersalTimingGraph {
                 Object[] a = p.arcs.get(ai++);
                 Vertex s = cb.vertex(c, (String) a[0], nc, this), d = cb.vertex(c, (String) a[1], nc, this);
                 Edge e = new Edge(s, d, (float[]) a[2], null, "logic", null, null);
-                s.outs.add(e);
-                d.ins.add(e);
+                s.outs = with(s.outs, e);
+                d.ins = with(d.ins, e);
                 cb.edges.add(e);
             }
         }
@@ -911,7 +952,7 @@ public class VersalTimingGraph {
             Vertex v = cb.vertex(c, (String) k[0], nc, this);
             v.endpoint = true;
             float[] chk = (float[]) k[1];
-            if (chk != null) System.arraycopy(chk, 0, v.check, 0, nc);
+            if (chk != null) v.check = java.util.Arrays.copyOf(chk, nc);
             cb.checks.add(new Object[] {v, k[2]});
         }
         return cb;
@@ -1088,8 +1129,8 @@ public class VersalTimingGraph {
             List<Edge> list = null;
             for (Edge e : es) {
                 if (e == null) continue;
-                e.src.outs.add(e);
-                e.dst.ins.add(e);
+                e.src.outs = with(e.src.outs, e);
+                e.dst.ins = with(e.dst.ins, e);
                 edges.add(e);
                 if (list == null) list = new ArrayList<>(es.length);
                 list.add(e);
@@ -1121,8 +1162,8 @@ public class VersalTimingGraph {
         if (old == null) return;
         for (Edge e : old) {
             e.removed = true;
-            e.src.outs.remove(e);
-            e.dst.ins.remove(e);
+            e.src.outs = without(e.src.outs, e);
+            e.dst.ins = without(e.dst.ins, e);
             touched.add(e.dst);
             removedEdges++;
         }
@@ -1330,7 +1371,7 @@ public class VersalTimingGraph {
      * the default group when it was never seeded, or unset when it was unseeded.
      */
     private void resetVertex(Vertex v) {
-        for (int i = 0; i < nc; i++) { v.arrival[i] = unset(i); v.pred[i] = null; }
+        for (int i = 0; i < nc; i++) v.arrival[i] = unset(i);
         v.tags = null;
         v.viewOf = null;
         if (!v.launch) return;
@@ -1392,7 +1433,7 @@ public class VersalTimingGraph {
 
     private Tagged launchTag(Vertex v, Object tag) {
         Tagged t = new Tagged(tag, nc);
-        System.arraycopy(v.arrival, 0, t.arrival, 0, nc);
+        for (int i = 0; i < nc; i++) { t.arrival(i, v.arrival[i]); t.launch(i, v); }
         return t;
     }
 
@@ -1439,10 +1480,12 @@ public class VersalTimingGraph {
 
     /** A group shifted through a view chain, its predecessor at every reached corner the view's own edge. */
     private static Tagged shifted(Tagged t, List<Edge> chain, Edge pred) {
-        Tagged out = new Tagged(t.tag, t.arrival.length);
-        for (int i = 0; i < t.arrival.length; i++) {
-            out.arrival[i] = Float.isInfinite(t.arrival[i]) ? t.arrival[i] : through(t.arrival[i], chain, i);
-            out.pred[i] = Float.isInfinite(t.arrival[i]) ? null : pred;
+        int corners = chain.isEmpty() ? 4 : chain.get(0).delay.length;
+        Tagged out = new Tagged(t.tag, corners);
+        for (int i = 0; i < 4; i++) {
+            float a = t.arrival(i);
+            out.arrival(i, i >= corners || Float.isInfinite(a) ? a : through(a, chain, i));
+            out.launch(i, t.launch(i));
         }
         return out;
     }
@@ -1478,14 +1521,14 @@ public class VersalTimingGraph {
         float[] extreme = new float[nc];
         for (int i = 0; i < nc; i++) extreme[i] = unset(i);
         for (Tagged t : v.tags) {
-            for (int i = 0; i < nc; i++) if (isSet(t.arrival[i]) && better(i, t.arrival[i], extreme[i])) extreme[i] = t.arrival[i];
+            for (int i = 0; i < nc; i++) if (isSet(t.arrival(i)) && better(i, t.arrival(i), extreme[i])) extreme[i] = t.arrival(i);
         }
         int before = v.tags.size();
         v.tags.removeIf(t -> {
             for (int i = 0; i < nc; i++) {
-                if (!isSet(t.arrival[i])) continue;
+                if (!isSet(t.arrival(i))) continue;
                 // within the bound of the extreme at any corner: may still be the worst somewhere
-                if (model.isMax(i) ? t.arrival[i] >= extreme[i] - pruneBound[i] : t.arrival[i] <= extreme[i] + pruneBound[i]) return false;
+                if (model.isMax(i) ? t.arrival(i) >= extreme[i] - pruneBound[i] : t.arrival(i) <= extreme[i] + pruneBound[i]) return false;
             }
             return true;
         });
@@ -1496,7 +1539,7 @@ public class VersalTimingGraph {
         tagsPruned = 0; tagsKept = 0; views = 0;
         // Kahn topological order restricted to the reachable graph
         propagating = true;
-        for (Vertex v : vertices) { v.viewOf = null; v.pending = v.ins.size(); }
+        for (Vertex v : vertices) { v.viewOf = null; v.pending = v.ins.length; }
         Deque<Vertex> queue = new ArrayDeque<>();
         for (Vertex v : vertices) if (v.pending == 0) queue.add(v);
         // launches never seeded through seedLaunch (clock-to-Q only) form the default group
@@ -1558,13 +1601,13 @@ public class VersalTimingGraph {
         for (int i = 0; i < nc; i++) {
             if (!isSet(v.arrival[i])) continue;
             float a = v.arrival[i] + e.delay[i];
-            if (better(i, a, e.dst.arrival[i])) { e.dst.arrival[i] = a; e.dst.pred[i] = e; }
+            if (better(i, a, e.dst.arrival[i])) e.dst.arrival[i] = a;
         }
         Vertex base = v;
         List<Edge> chain = null;
         if (v.viewOf != null) { chain = new ArrayList<>(2); base = resolveView(v, chain); }
         if (base.tags == null) return;
-        if (!e.dst.launch && propagating && e.dst.ins.size() == 1 && e.dst.tags == null) {
+        if (!e.dst.launch && propagating && e.dst.ins.length == 1 && e.dst.tags == null) {
             // the only input: the groups are the source's, shifted; nothing to store
             e.dst.viewOf = e;
             return;
@@ -1573,14 +1616,14 @@ public class VersalTimingGraph {
             Tagged d = getTag(e.dst, s.tag);
             if (d == null) {
                 d = new Tagged(s.tag, nc);
-                for (int i = 0; i < nc; i++) d.arrival[i] = unset(i);
+                for (int i = 0; i < 4; i++) d.arrival(i, i < nc ? unset(i) : Float.NaN);
                 if (e.dst.tags == null) e.dst.tags = new ArrayList<>(1);
                 e.dst.tags.add(d);
             }
             for (int i = 0; i < nc; i++) {
-                if (!isSet(s.arrival[i])) continue;
-                float a = (chain == null ? s.arrival[i] : through(s.arrival[i], chain, i)) + e.delay[i];
-                if (better(i, a, d.arrival[i])) { d.arrival[i] = a; d.pred[i] = e; }
+                if (!isSet(s.arrival(i))) continue;
+                float a = (chain == null ? s.arrival(i) : through(s.arrival(i), chain, i)) + e.delay[i];
+                if (better(i, a, d.arrival(i))) { d.arrival(i, a); d.launch(i, s.launch(i)); }
             }
         }
     }
@@ -1655,22 +1698,93 @@ public class VersalTimingGraph {
     /** Path from the launching vertex to the given endpoint at a corner. */
     public List<Edge> getPath(Vertex end, int corner) {
         List<Edge> path = new ArrayList<>();
-        for (Edge e = end.pred[corner]; e != null; e = e.src.pred[corner]) path.add(e);
+        for (Edge e = pred(end, corner); e != null; e = pred(e.src, corner)) path.add(e);
         Collections.reverse(path);
         return path;
+    }
+
+    /**
+     * The critical predecessor edge of a vertex at a corner, or null where its arrival is a launch's
+     * own: the in-edge whose source arrival plus delay is the vertex's arrival (as {@link #relax}
+     * computed it, so the match is exact; the nearest within a hundredth of a ps should none be).
+     * Recomputed on request: stored per vertex and corner it was 32 bytes for each of millions of
+     * vertices.
+     */
+    private Edge pred(Vertex v, int corner) {
+        float a = v.arrival[corner];
+        if (!isSet(a)) return null;
+        Edge near = null;
+        float nearBy = 0.01f;
+        for (Edge e : v.ins) {
+            float sa = e.src.arrival[corner];
+            if (!isSet(sa)) continue;
+            float d = Math.abs(sa + e.delay[corner] - a);
+            if (d == 0f) return e;
+            if (d < nearBy) { nearBy = d; near = e; }
+        }
+        return near;
     }
 
     /** Path of one arrival group (see {@link Tagged}) into the endpoint at a corner; empty if the group does not reach it. */
     public List<Edge> getPath(Vertex end, int corner, Object tag) {
         List<Edge> path = new ArrayList<>();
-        Tagged t = getTag(end, tag);
-        while (t != null && t.pred[corner] != null) {
-            Edge e = t.pred[corner];
+        Vertex v = end;
+        for (Edge e = tagPred(v, tag, corner); e != null; e = tagPred(v, tag, corner)) {
             path.add(e);
-            t = getTag(e.src, tag);
+            v = e.src;
         }
         Collections.reverse(path);
         return path;
+    }
+
+    /** The launch at the head of {@link #getPath(Vertex, int, Object)}'s path, the endpoint itself when that is empty. */
+    public Vertex getPathLaunch(Vertex end, int corner, Object tag) {
+        Vertex v = end;
+        while (v.viewOf != null) v = v.viewOf.src;
+        if (v.tags != null) {
+            for (Tagged t : v.tags) {
+                if (t.tag == tag || (tag != null && tag.equals(t.tag))) {
+                    Vertex l = t.launch(corner);
+                    return l == null || !isSet(t.arrival(corner)) ? end : l;
+                }
+            }
+        }
+        return end;
+    }
+
+    /**
+     * The arrival of a vertex's group with the given tag at a corner, NaN without one: a view's through its
+     * chain's edges one by one from the base, the additions {@link #through} makes, with nothing allocated
+     * (slack computation asks for the launch of every endpoint's every group, each a walk of these).
+     */
+    private static float tagArrival(Vertex v, Object tag, int corner) {
+        if (v.viewOf != null) return tagArrival(v.viewOf.src, tag, corner) + v.viewOf.delay[corner];
+        if (v.tags == null) return Float.NaN;
+        for (Tagged t : v.tags) if (t.tag == tag || (tag != null && tag.equals(t.tag))) return t.arrival(corner);
+        return Float.NaN;
+    }
+
+    /**
+     * The critical predecessor edge of a vertex's arrival group at a corner, or null at the group's
+     * launch (and without the group): a view's is its one input; otherwise the in-edge whose source
+     * group plus the edge's delay is this arrival (the same additions in the same order as
+     * {@link #relax} made, so the match is exact; the nearest within a hundredth of a ps is taken
+     * should none be).
+     */
+    private static Edge tagPred(Vertex v, Object tag, int corner) {
+        float a = tagArrival(v, tag, corner);
+        if (Float.isInfinite(a) || Float.isNaN(a)) return null;
+        if (v.viewOf != null) return v.viewOf;
+        Edge near = null;
+        float nearBy = 0.01f;
+        for (Edge e : v.ins) {
+            float sa = tagArrival(e.src, tag, corner);
+            if (Float.isInfinite(sa) || Float.isNaN(sa)) continue;
+            float d = Math.abs(sa + e.delay[corner] - a);
+            if (d == 0f) return e;
+            if (d < nearBy) { nearBy = d; near = e; }
+        }
+        return near;
     }
 
     public String formatPath(Vertex end) {
@@ -1826,8 +1940,31 @@ public class VersalTimingGraph {
     /** The live edges into each of the given vertices (vertices without any are absent). */
     public Map<Vertex, List<Edge>> inEdges(Collection<Vertex> of) {
         Map<Vertex, List<Edge>> ins = new HashMap<>();
-        for (Vertex v : of) if (!v.ins.isEmpty()) ins.put(v, new ArrayList<>(v.ins));
+        for (Vertex v : of) if (v.ins.length > 0) ins.put(v, new ArrayList<>(Arrays.asList(v.ins)));
         return ins;
+    }
+
+    /**
+     * A vertex's edge arrays are exact-sized (13 million vertices, most with one or two edges each way: as lists
+     * they took 2.3 GB of a three-system FSA's heap).
+     */
+    static final Edge[] NO_EDGES = new Edge[0];
+    private static Edge[] with(Edge[] a, Edge e) {
+        Edge[] b = Arrays.copyOf(a, a.length + 1);
+        b[a.length] = e;
+        return b;
+    }
+    /** Without the first occurrence of e, the others in order. */
+    private static Edge[] without(Edge[] a, Edge e) {
+        for (int i = 0; i < a.length; i++) {
+            if (a[i] != e) continue;
+            if (a.length == 1) return NO_EDGES;
+            Edge[] b = new Edge[a.length - 1];
+            System.arraycopy(a, 0, b, 0, i);
+            System.arraycopy(a, i + 1, b, i, a.length - 1 - i);
+            return b;
+        }
+        return a;
     }
 
     /** Every edge added so far; skip those with {@link Edge#removed} set. */
