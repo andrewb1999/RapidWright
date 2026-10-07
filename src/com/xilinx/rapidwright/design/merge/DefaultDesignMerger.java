@@ -31,6 +31,7 @@ import java.util.Set;
 
 import com.xilinx.rapidwright.design.Cell;
 import com.xilinx.rapidwright.design.Net;
+import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.design.SiteInst;
 import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.PIP;
@@ -291,6 +292,15 @@ public class DefaultDesignMerger extends AbstractDesignMerger {
         Set<PIP> pips = new HashSet<>(n0.getPIPs());
         if (n1 != null) pips.addAll(n1.getPIPs());
         n0.setPIPs(pips);
+        // n1's site pins come along too (its site instances are now n0's design's, and their pins
+        // still named n1 as their net): without this the merged design is consistent only after a
+        // checkpoint round trip, whose reader hangs every site pin on the net of that name
+        if (n1 != null) {
+            for (SitePinInst p : new ArrayList<>(n1.getPins())) {
+                if (p.getNet() == n0) continue;
+                n0.addPin(p);
+            }
+        }
     }
 
 
