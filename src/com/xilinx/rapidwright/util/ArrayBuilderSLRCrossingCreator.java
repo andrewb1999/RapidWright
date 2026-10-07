@@ -689,10 +689,16 @@ public class ArrayBuilderSLRCrossingCreator {
 
         EDIFCell topCell = netlist.getTopCell();
         EDIFCellInst topBBInst = netlist.getCellInstFromHierName(topInstName);
+        // Each tile's top-level ports get the harness flops of their side. The black-box port maps hold
+        // only the ports that still reach a top-level port, so the links wired between the two tiles
+        // are not in them, whichever side they are on; a port of the tile's own that faces the other
+        // tile (a reset on the TOP side, a bottom tile's) keeps its flop, in the gap between the tiles.
+        // Without it the port is a bare out-of-context port that Vivado leaves unrouted, with no
+        // guarantee that its loads can be reached from outside the tile once it is stamped.
         Map<EDIFPort, PBlockSide> topSideMap = new HashMap<>();
         for (Map.Entry<String, String> portPair : topBBPortMap.entrySet()) {
             PBlockSide originalSide = sideMap.get(topBBInst.getPort(portPair.getKey()));
-            if (originalSide == null || originalSide == PBlockSide.BOTTOM) {
+            if (originalSide == null) {
                 continue;
             }
             topSideMap.put(topCell.getPort(portPair.getValue()), originalSide);
@@ -706,12 +712,13 @@ public class ArrayBuilderSLRCrossingCreator {
         for (Map.Entry<String, String> portPair : bottomBBPortMap.entrySet()) {
             EDIFPort bbPort = bottomBBInst.getPort(portPair.getKey());
             PBlockSide originalSide = sideMap.get(bbPort);
-            if (originalSide == null || originalSide == PBlockSide.TOP) {
+            if (originalSide == null) {
                 continue;
             }
             EDIFPort topCellPort = topCell.getPort(portPair.getValue());
             bottomSideMap.put(topCellPort, originalSide);
         }
+        // a port both tiles share (the clock, a shared reset) is harnessed once, at the top tile
         bottomSideMap.keySet().removeAll(topSideMap.keySet());
 
         InlineFlopTools.createAndPlacePortFlopsOnSide(topDesign, "clk", bottomPBlock, bottomSideMap);

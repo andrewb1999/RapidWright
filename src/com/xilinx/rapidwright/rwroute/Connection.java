@@ -232,6 +232,9 @@ public class Connection implements Comparable<Connection>{
     }
 
     public void updateRouteDelay() {
+        // a connection without a route yet (an unpreserved net's connection whose route could not be recovered)
+        // has no delay to set; it gets one when it is routed
+        if (rnodes.isEmpty()) return;
         setTimingEdgesDelay(getRouteDelay());
     }
 

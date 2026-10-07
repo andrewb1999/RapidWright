@@ -779,6 +779,7 @@ public class HoldFixRouter extends PartialRouter {
         List<Connection> out = new ArrayList<>();
         for (Map.Entry<Connection, Float> e : achievedDelay.entrySet()) {
             DelayBudget b = budgetOfConnection.get(e.getKey());
+            if (b == null) continue;   // a setup repair's connection: routed to a window of its own, no budget
             if (Float.isNaN(e.getValue()) || e.getValue() < b.min - retryToleranceUnder) out.add(e.getKey());
         }
         return out;

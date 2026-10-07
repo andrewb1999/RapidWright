@@ -416,10 +416,16 @@ public class TimingManager {
     
     
     /**
+     * The timing requirement (ps) to use instead of the design's constraints when set: a design beside a shell
+     * carries the shell's clocks too, and {@link #getDesignTimingRequirement} takes the longest period of all.
+     */
+    public static float REQUIREMENT_OVERRIDE_PS = 0;
+
+    /**
      * Set the timing requirement of the design
      */
     public void setTimingRequirement() {
-        setTimingRequirementPs(getDesignTimingRequirement(design) * 1000);
+        setTimingRequirementPs(REQUIREMENT_OVERRIDE_PS > 0 ? REQUIREMENT_OVERRIDE_PS : getDesignTimingRequirement(design) * 1000);
     }
 
     public void setTimingRequirementPs(float ps) {
